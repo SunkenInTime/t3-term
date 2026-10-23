@@ -1,8 +1,31 @@
-// Port of apps/web/src/components/pullRequest/PullRequestTimelineTab.tsx. Read-only: comment
-// editing and reactions write to the host and are left out. A commit row opens the commit on the
-// host instead of scoping the Code tab to it.
-import type { PullRequestActor } from "@t3tools/contracts";
-import { useState, type ReactNode } from "react";
+// Port of apps/web/src/components/pullRequest/PullRequestTimelineTab.tsx: the pull request's
+// history as one rail, with remarks the viewer may rewrite in place and reaction bars on
+// remarks and verdicts. A commit row scopes the Code tab to that commit.
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import type { EnvironmentId, PullRequestActor, PullRequestComment, PullRequestRef } from "@t3tools/contracts";
+import { createContext, useContext, useState, type ReactNode } from "react";
+
+import { pullRequestEnvironment } from "../state/pullRequests.ts";
+import { toast } from "../ui/toast.tsx";
+import { canEditPullRequestComment } from "../web/components/pullRequest/pullRequestEditing.logic.ts";
+import { PrEditButton } from "./prControls.tsx";
+import { PullRequestMarkdownEditor } from "./PullRequestMarkdownEditor.tsx";
+import { PullRequestReactionBar } from "./PullRequestReactions.tsx";
+import { PullRequestMoreReplies } from "./PullRequestSummaryTab.tsx";
+import { PullRequestActivityUnavailableState } from "./PullRequestUnavailableStates.tsx";
+import { PullRequestDryRunError, runPullRequestWrite } from "./pullRequestWrites.ts";
+
+/** What every remark on the rail needs to be rewritten or reacted to (web: ReactionSurface). */
+interface TimelineSurface {
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+  readonly canReact: boolean;
+  readonly editable: ReadonlyMap<string, PullRequestComment>;
+  readonly onRefresh: () => void;
+  readonly onOpenCommit: (oid: string) => void;
+}
+
+const TimelineSurfaceContext = createContext<TimelineSurface | null>(null);
 
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Tooltip } from "../ui/overlay.tsx";
@@ -20,7 +43,7 @@ import {
   type PullRequestTimelineThread,
 } from "../web/components/pullRequest/pullRequestDetail.logic.ts";
 import type { PullRequestDetailView } from "./PullRequestDetailPanel.tsx";
-import { GhostBar, PullRequestsUnavailableState } from "./PullRequestListStates.tsx";
+import { GhostBar } from "./PullRequestListStates.tsx";
 import { PrMarkdown } from "./PullRequestSummaryTab.tsx";
 import {
   PullRequestActorAvatar,
@@ -156,9 +179,39 @@ function TimelineBody({ body, markdown }: { body: string; markdown: boolean }) {
 
 function ConversationCard({ event, showPath = true }: { event: PullRequestTimelineEvent; showPath?: boolean }) {
   const theme = useTheme();
+  const surface = useContext(TimelineSurfaceContext);
+  const editable = surface?.editable.get(event.id) ?? null;
+  const [hovered, setHovered] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const save = async (body: string) => {
+    // A review's own summary is not a kind any host rewrites, which is why `editable` is never one.
+    if (surface === null || editable === null || saving || editable.kind === "review") return;
+    setSaving(true);
+    const result = await runPullRequestWrite(pullRequestEnvironment.updateComment, {
+      environmentId: surface.environmentId,
+      input: { ...surface.reference, commentId: editable.id, kind: editable.kind, body },
+    });
+    setSaving(false);
+    if (result._tag === "Failure") {
+      const failure = squashAtomCommandFailure(result);
+      toast({
+        type: "error",
+        title: "Could not save the comment",
+        ...(failure instanceof PullRequestDryRunError ? { description: failure.message } : {}),
+      });
+      return;
+    }
+    setEditing(false);
+    surface.onRefresh();
+  };
   return (
-    <div style={{ display: "flex", flexDirection: "column", paddingTop: 8, paddingBottom: 8 }}>
-      <div style={{ display: "flex", flexDirection: "row", alignItems: "flex-start", gap: 8, paddingLeft: 8, paddingRight: 8 }}>
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ display: "flex", flexDirection: "column", paddingTop: 8, paddingBottom: 8 }}
+    >
+      <div style={{ display: "flex", flexDirection: "row", alignItems: "flex-start", flexWrap: "wrap", gap: 8, paddingLeft: 8, paddingRight: 8 }}>
         <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
             <ActorName actor={event.actor} />
@@ -182,9 +235,39 @@ function ConversationCard({ event, showPath = true }: { event: PullRequestTimeli
             </MetaLine>
           </div>
         </div>
+        {editable !== null && !editing ? (
+          <PrEditButton
+            visible={hovered}
+            label="Edit comment"
+            onClick={() => setEditing(true)}
+            testId="pr-timeline-edit"
+            style={{ marginTop: -4 }}
+          />
+        ) : null}
+        {surface !== null && (surface.canReact || event.reactions.length > 0) ? (
+          <PullRequestReactionBar
+            reactions={event.reactions}
+            canReact={surface.canReact}
+            subjectId={event.id}
+            environmentId={surface.environmentId}
+            reference={surface.reference}
+            onRefresh={surface.onRefresh}
+          />
+        ) : null}
         <OpenOnHostButton url={event.url} />
       </div>
-      {event.body ? (
+      {editing && editable !== null && surface !== null ? (
+        <div style={{ display: "flex", paddingLeft: 8, paddingRight: 8, paddingBottom: 8, paddingTop: 12 }}>
+          <PullRequestMarkdownEditor
+            value={editable.body}
+            environmentId={surface.environmentId}
+            saving={saving}
+            onSave={(body) => void save(body)}
+            onCancel={() => setEditing(false)}
+            testId="pr-timeline-editor"
+          />
+        </div>
+      ) : event.body ? (
         <div style={{ paddingLeft: 8, paddingRight: 8, paddingBottom: 8 }}>
           <TimelineBody body={event.body} markdown={event.markdown} />
         </div>
@@ -301,18 +384,24 @@ function ReviewThreadEvent({ event, thread }: { event: PullRequestTimelineEvent;
           ) : null}
         </>
       ) : null}
+      {thread.hasMoreReplies ? (
+        <div style={{ paddingLeft: 8, paddingRight: 8 }}>
+          <PullRequestMoreReplies {...thread} />
+        </div>
+      ) : null}
     </TimelineRow>
   );
 }
 
-function CommitEvent({ event, url }: { event: PullRequestTimelineEvent; url: string | null }) {
+function CommitEvent({ event }: { event: PullRequestTimelineEvent }) {
   const theme = useTheme();
+  const surface = useContext(TimelineSurfaceContext);
   const [hovered, setHovered] = useState(false);
   return (
     <div onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} style={{ display: "flex", flexDirection: "column" }}>
       <TimelineRow
         marker={<ActorMarker actors={event.commitAuthors} fallback="git-commit-horizontal" />}
-        {...(url ? { onClick: () => openExternalUrl(url) } : {})}
+        {...(surface ? { onClick: () => surface.onOpenCommit(event.id) } : {})}
       >
         <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 6, paddingBottom: 6, minWidth: 0 }}>
           <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
@@ -364,6 +453,7 @@ function outcomeTone(outcome: PullRequestReviewOutcome, dark: boolean, error: st
 
 function ReviewVerdictEvent({ event, outcome, stale }: { event: PullRequestTimelineEvent; outcome: PullRequestReviewOutcome; stale: boolean }) {
   const theme = useTheme();
+  const surface = useContext(TimelineSurfaceContext);
   const label = outcome === "approved" ? "approved" : outcome === "changes-requested" ? "changes requested" : "review dismissed";
   const verdict = (
     <Text size="xs" weight={500} color={stale ? alpha(theme.mutedForeground, 0.7) : outcomeTone(outcome, theme.appearance === "dark", theme.error, theme.mutedForeground)}>
@@ -398,6 +488,16 @@ function ReviewVerdictEvent({ event, outcome, stale }: { event: PullRequestTimel
             </MetaLine>
           </div>
         </div>
+        {surface !== null && (surface.canReact || event.reactions.length > 0) ? (
+          <PullRequestReactionBar
+            reactions={event.reactions}
+            canReact={surface.canReact}
+            subjectId={event.id}
+            environmentId={surface.environmentId}
+            reference={surface.reference}
+            onRefresh={surface.onRefresh}
+          />
+        ) : null}
         <OpenOnHostButton url={event.url} />
       </div>
       {event.body ? <TimelineBody body={event.body} markdown={event.markdown} /> : null}
@@ -424,30 +524,50 @@ function TimelineGhost({ rows = 6 }: { rows?: number }) {
 
 export function PullRequestTimelineTab({
   detail,
+  environmentId,
+  reference,
   order,
   activityPending,
   activityError,
   onRetry,
+  onRefresh,
+  onOpenCommit,
   onScrollTop,
 }: {
   detail: PullRequestDetailView;
+  environmentId: EnvironmentId;
+  reference: PullRequestRef;
   order: "newest" | "oldest";
   activityPending: boolean;
   activityError: string | null;
   onRetry: () => void;
+  onRefresh: () => void;
+  onOpenCommit: (oid: string) => void;
   onScrollTop: (top: number) => void;
 }) {
   const theme = useTheme();
   if (activityPending) return <TimelineGhost />;
-  if (activityError) {
-    return <PullRequestsUnavailableState title="Activity unavailable" error={activityError} onRetry={onRetry} />;
-  }
+  if (activityError) return <PullRequestActivityUnavailableState error={activityError} onRetry={onRetry} />;
   const events = buildPullRequestTimeline(detail);
   const newestCommitAt = newestPullRequestCommitAt(detail.commits);
   const orderedEvents = order === "newest" ? events : events.toReversed();
   const rows = groupPullRequestTimelineConversations(orderedEvents);
-  const repositoryUrl = detail.url.replace(/\/pull\/\d+.*$/u, "");
+  const surface: TimelineSurface = {
+    environmentId,
+    reference,
+    canReact: detail.capabilities.reactions === true,
+    editable: new Map(
+      events
+        .flatMap((event) => [event, ...(event.thread?.replies ?? [])])
+        .flatMap((event) => (event.comment ? [event.comment] : []))
+        .filter((comment) => canEditPullRequestComment(detail, comment))
+        .map((comment) => [comment.id, comment] as const),
+    ),
+    onRefresh,
+    onOpenCommit,
+  };
   return (
+    <TimelineSurfaceContext.Provider value={surface}>
     <div
       testId="pr-timeline-scroll"
       onScrollChange={(event) => onScrollTop(Math.abs(event.scrollY ?? 0))}
@@ -464,13 +584,7 @@ export function PullRequestTimelineTab({
             return <ReviewThreadEvent key={`thread:${event.id}`} event={event} thread={event.thread} />;
           }
           if (event.kind === "commit") {
-            return (
-              <CommitEvent
-                key={event.id}
-                event={event}
-                url={detail.provider === "github" ? `${repositoryUrl}/pull/${detail.number}/commits/${event.id}` : null}
-              />
-            );
+            return <CommitEvent key={event.id} event={event} />;
           }
           const outcome = pullRequestReviewOutcome(event.reviewState);
           if (outcome !== null) {
@@ -495,5 +609,6 @@ export function PullRequestTimelineTab({
         ) : null}
       </div>
     </div>
+    </TimelineSurfaceContext.Provider>
   );
 }

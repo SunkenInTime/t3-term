@@ -205,7 +205,29 @@ export type DiffRow =
   | { readonly type: "line"; readonly key: string; readonly file: DiffFileModel; readonly cell: LineCell }
   | { readonly type: "split"; readonly key: string; readonly file: DiffFileModel; readonly left: LineCell | null; readonly right: LineCell | null }
   | { readonly type: "binary"; readonly key: string; readonly file: DiffFileModel }
-  | { readonly type: "end"; readonly key: string; readonly file: DiffFileModel };
+  | { readonly type: "end"; readonly key: string; readonly file: DiffFileModel }
+  | {
+      readonly type: "annotation";
+      readonly key: string;
+      readonly file: DiffFileModel;
+      readonly annotation: DiffLineAnnotation;
+    };
+
+/**
+ * Content drawn under one line (pierre's line annotations): review threads, pending comments,
+ * a comment draft. `additions` anchors to a new-side line number, `deletions` to an old-side one.
+ */
+export interface DiffLineAnnotation {
+  readonly key: string;
+  readonly side: "additions" | "deletions";
+  readonly lineNumber: number;
+}
+
+function annotationMatches(annotation: DiffLineAnnotation, line: DiffLine): boolean {
+  return annotation.side === "additions"
+    ? line.kind !== "deletion" && line.newLine === annotation.lineNumber
+    : line.kind !== "addition" && line.oldLine === annotation.lineNumber;
+}
 
 function unmodifiedLabel(count: number): string {
   return `${count} unmodified line${count === 1 ? "" : "s"}`;
@@ -244,9 +266,23 @@ export function buildDiffRows(
   files: ReadonlyArray<DiffFileModel>,
   preferredLayout: DiffLayout,
   collapsed: ReadonlySet<string>,
+  annotations?: ReadonlyMap<string, ReadonlyArray<DiffLineAnnotation>>,
 ): DiffRow[] {
   const rows: DiffRow[] = [];
   for (const file of files) {
+    const fileAnnotations = annotations?.get(file.path) ?? [];
+    // A context line carries both line numbers; each annotation is drawn once, under the first
+    // line that matches it.
+    const placed = new Set<string>();
+    const annotate = (lines: ReadonlyArray<DiffLine | null | undefined>) => {
+      if (fileAnnotations.length === 0) return;
+      for (const annotation of fileAnnotations) {
+        if (placed.has(annotation.key)) continue;
+        if (!lines.some((line) => line && annotationMatches(annotation, line))) continue;
+        placed.add(annotation.key);
+        rows.push({ type: "annotation", key: `a:${file.path}:${annotation.key}`, file, annotation });
+      }
+    };
     // pierre paints an added or deleted file as one column even in split view.
     const layout: DiffLayout = file.kind === "new" || file.kind === "deleted" ? "stacked" : preferredLayout;
     const isCollapsed = collapsed.has(file.path);
@@ -276,6 +312,7 @@ export function buildDiffRows(
         const key = `l:${file.path}:${hunkIndex}:${lineIndex}`;
         if (layout === "split") {
           rows.push({ type: "split", key, file, left: pair.left, right: pair.right });
+          annotate([pair.left?.line, pair.right?.line]);
         }
       });
       if (layout === "stacked") {
@@ -288,6 +325,7 @@ export function buildDiffRows(
         }
         hunk.lines.forEach((line, lineIndex) => {
           rows.push({ type: "line", key: `l:${file.path}:${hunkIndex}:${lineIndex}`, file, cell: { line, emphasis: emphasisByLine.get(line) ?? [] } });
+          annotate([line]);
         });
       }
     });

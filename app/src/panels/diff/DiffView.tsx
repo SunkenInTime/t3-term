@@ -7,7 +7,8 @@
 // the rows near the viewport. Highlighting runs in a worker per file side and
 // arrives later without moving anything.
 import type { EventPayload } from "@gpuix/native";
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useGpuixRequired } from "@gpuix/react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { copyTextToClipboard } from "../../chat/header/osActions.ts";
 import { Icon } from "../../ui/Icon.tsx";
@@ -27,7 +28,7 @@ import {
 import { requestSyntaxTokens, peekSyntaxTokens, type SyntaxLines } from "../code/highlighter.ts";
 import { EXPAND_BOTH, EXPAND_DOWN, EXPAND_UP, FILE_ADDED, FILE_DELETED, FILE_MODIFIED, FILE_MOVED } from "./pierreIcons.ts";
 import { useListWindow } from "../code/listWindow.ts";
-import { buildDiffRows, type DiffFileModel, type DiffLayout, type DiffRow, type LineCell } from "./diffModel.ts";
+import { buildDiffRows, type DiffFileModel, type DiffLayout, type DiffLineAnnotation, type DiffRow, type LineCell } from "./diffModel.ts";
 
 const WINDOW = 160;
 
@@ -80,6 +81,28 @@ export interface DiffViewProps {
   readonly onOpenFile: (path: string) => void;
   /** Changes whenever the patch content changes, so scroll and window reset. */
   readonly resetKey: string;
+  /** Drawn under their lines, keyed by file path (the pull request Code tab's review threads). */
+  readonly annotations?: ReadonlyMap<string, ReadonlyArray<DiffLineAnnotation>>;
+  readonly renderAnnotation?: (file: DiffFileModel, annotation: DiffLineAnnotation) => ReactNode;
+  /** A press on a line's number (pierre's gutter utility): starts a line comment. */
+  readonly onLineNumberClick?: (file: DiffFileModel, side: "additions" | "deletions", lineNumber: number) => void;
+  /** Extra controls at the end of a file header (the viewed checkbox). */
+  readonly renderHeaderExtras?: (file: DiffFileModel) => ReactNode;
+  /** Paint every row in a plain column that grows with its content, for a short excerpt inside an outer scroller. */
+  readonly inline?: boolean;
+  /** The row list as built, for callers that scroll a file into view. */
+  readonly onRows?: (rows: ReadonlyArray<DiffRow>) => void;
+  /** Asks the list to bring this row index to the top. */
+  readonly scrollRequest?: { readonly index: number; readonly nonce: number } | null;
+  /** The last rows came on screen: time to ask for the next page of a paged diff. */
+  readonly onReachEnd?: () => void;
+}
+
+/** What DiffView's row callbacks need beyond the row itself, passed once instead of per prop. */
+interface RowExtras {
+  readonly renderAnnotation?: DiffViewProps["renderAnnotation"];
+  readonly onLineNumberClick?: DiffViewProps["onLineNumberClick"];
+  readonly renderHeaderExtras?: DiffViewProps["renderHeaderExtras"];
 }
 
 export function DiffView(props: DiffViewProps) {
@@ -93,7 +116,35 @@ export function DiffView(props: DiffViewProps) {
   const [tokens, setTokens] = useState<ReadonlyMap<DiffFileModel, FileTokens>>(new Map());
   const requested = useRef(new WeakSet<DiffFileModel>());
 
-  const rows = useMemo(() => buildDiffRows(props.files, props.layout, props.collapsed), [props.files, props.layout, props.collapsed]);
+  const rows = useMemo(
+    () => buildDiffRows(props.files, props.layout, props.collapsed, props.annotations),
+    [props.files, props.layout, props.collapsed, props.annotations],
+  );
+  const extras: RowExtras = {
+    ...(props.renderAnnotation ? { renderAnnotation: props.renderAnnotation } : {}),
+    ...(props.onLineNumberClick ? { onLineNumberClick: props.onLineNumberClick } : {}),
+    ...(props.renderHeaderExtras ? { renderHeaderExtras: props.renderHeaderExtras } : {}),
+  };
+  const onRows = props.onRows;
+  useEffect(() => {
+    onRows?.(rows);
+  }, [rows, onRows]);
+  const renderer = useGpuixRequired();
+  const scrollNonce = props.scrollRequest?.nonce ?? null;
+  const pendingReveal = useRef(false);
+  useEffect(() => {
+    if (!props.scrollRequest) return;
+    pendingReveal.current = true;
+    reset(props.scrollRequest.index);
+    // oxlint-disable-next-line react/exhaustive-deps -- one jump per request
+  }, [scrollNonce]);
+  // The window now starts at the requested row; scroll the list to the window's first item.
+  useLayoutEffect(() => {
+    if (!pendingReveal.current) return;
+    pendingReveal.current = false;
+    const id = listRef.current?.id;
+    if (id != null) renderer.scrollToItem?.(id, 0, 0);
+  }, [start, scrollNonce, renderer, listRef]);
 
   useEffect(() => {
     reset(0);
@@ -106,7 +157,7 @@ export function DiffView(props: DiffViewProps) {
     const from = Math.max(0, Math.min(visible.start, start));
     const to = Math.min(rows.length, Math.max(visible.end, start + WINDOW));
     const files = new Set<DiffFileModel>();
-    for (let index = from; index < to; index += 1) {
+    for (let index = props.inline ? 0 : from; index < (props.inline ? rows.length : to); index += 1) {
       const row = rows[index];
       if (row && row.type !== "header" && row.type !== "end") files.add(row.file);
     }
@@ -167,10 +218,37 @@ export function DiffView(props: DiffViewProps) {
         if (deltaX === 0) return;
         setScrollX((current) => Math.max(0, Math.min(maxScrollX, current - deltaX)));
       }}
-      style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, minWidth: 0, position: "relative", backgroundColor: palette.bg }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        width: "100%",
+        ...(props.inline ? { flexShrink: 0 } : { flexGrow: 1, minHeight: 0 }),
+        minWidth: 0,
+        position: "relative",
+        backgroundColor: palette.bg,
+      }}
     >
       {probe}
-      {width > 0 ? (
+      {width > 0 && props.inline ? (
+        <div style={{ display: "flex", flexDirection: "column", width: "100%" }}>
+          {rows.map((row) => (
+            <DiffRowView
+              key={row.key}
+              row={row}
+              layout={props.layout}
+              wrap={props.wrap}
+              width={width}
+              ch={ch}
+              scrollX={clampedScrollX}
+              tokens={tokens.get(row.file) ?? null}
+              palette={palette}
+              onToggleFile={props.onToggleFile}
+              onOpenFile={props.onOpenFile}
+              extras={extras}
+            />
+          ))}
+        </div>
+      ) : width > 0 ? (
         <virtual-list
           ref={listRef}
           itemCount={rows.length}
@@ -184,6 +262,7 @@ export function DiffView(props: DiffViewProps) {
             const last = first + (reportedLast - reportedFirst);
             setVisible((current) => (current.start === first && current.end === last ? current : { start: first, end: last }));
             onVisibleRange(reportedFirst, reportedLast);
+            if (props.onReachEnd && last >= rows.length - 4) props.onReachEnd();
           }}
           style={{ width: "100%", flexGrow: 1, minHeight: 0, scrollbarColor: theme.scrollbar }}
         >
@@ -200,13 +279,21 @@ export function DiffView(props: DiffViewProps) {
               palette={palette}
               onToggleFile={props.onToggleFile}
               onOpenFile={props.onOpenFile}
+              extras={extras}
             />
           ))}
         </virtual-list>
       ) : null}
-      {stickyFile ? (
+      {stickyFile && !props.inline ? (
         <div style={{ position: "absolute", left: 0, right: 0, top: 0, height: HEADER_HEIGHT, backgroundColor: palette.bg }}>
-          <FileHeader file={stickyFile} collapsed={false} palette={palette} onToggleFile={props.onToggleFile} onOpenFile={props.onOpenFile} />
+          <FileHeader
+            file={stickyFile}
+            collapsed={false}
+            palette={palette}
+            onToggleFile={props.onToggleFile}
+            onOpenFile={props.onOpenFile}
+            {...(props.renderHeaderExtras ? { extras: props.renderHeaderExtras(stickyFile) } : {})}
+          />
         </div>
       ) : null}
     </div>
@@ -224,11 +311,27 @@ const DiffRowView = memo(function DiffRowView(props: {
   palette: DiffPalette;
   onToggleFile: (path: string) => void;
   onOpenFile: (path: string) => void;
+  extras: RowExtras;
 }) {
   const { row, palette } = props;
   switch (row.type) {
     case "header":
-      return <FileHeader file={row.file} collapsed={row.collapsed} palette={palette} onToggleFile={props.onToggleFile} onOpenFile={props.onOpenFile} />;
+      return (
+        <FileHeader
+          file={row.file}
+          collapsed={row.collapsed}
+          palette={palette}
+          onToggleFile={props.onToggleFile}
+          onOpenFile={props.onOpenFile}
+          {...(props.extras.renderHeaderExtras ? { extras: props.extras.renderHeaderExtras(row.file) } : {})}
+        />
+      );
+    case "annotation":
+      return (
+        <div style={{ display: "flex", flexDirection: "column", width: props.width }}>
+          {props.extras.renderAnnotation?.(row.file, row.annotation) ?? null}
+        </div>
+      );
     case "separator":
       return <SeparatorRow text={row.text} direction={row.direction} first={row.first} last={row.last} split={row.split} palette={palette} width={props.width} />;
     case "end":
@@ -254,6 +357,9 @@ const DiffRowView = memo(function DiffRowView(props: {
             tokens={props.tokens}
             palette={palette}
             rows={null}
+            {...(props.extras.onLineNumberClick
+              ? { onNumberClick: (side: "additions" | "deletions", line: number) => props.extras.onLineNumberClick?.(row.file, side, line) }
+              : {})}
           />
         </div>
       );
@@ -277,6 +383,9 @@ const DiffRowView = memo(function DiffRowView(props: {
             tokens={props.tokens}
             palette={palette}
             rows={rowCount}
+            {...(props.extras.onLineNumberClick
+              ? { onNumberClick: (side: "additions" | "deletions", line: number) => props.extras.onLineNumberClick?.(row.file, side, line) }
+              : {})}
           />
         ) : (
           <EmptySide width={sideWidth} gutter={gutter} height={rowCount * CODE_LINE_HEIGHT} palette={palette} />
@@ -312,6 +421,8 @@ function LineCellView(props: {
   palette: DiffPalette;
   /** Split rows pass the taller side's row count so both halves match. */
   rows: number | null;
+  /** The number's side follows the cell: a deletion (or the old half of a split) is the old side. */
+  onNumberClick?: (side: "additions" | "deletions", line: number) => void;
 }) {
   const { cell, palette } = props;
   const line = cell.line;
@@ -330,6 +441,12 @@ function LineCellView(props: {
   return (
     <div style={{ display: "flex", flexDirection: "row", width: props.width, height, flexShrink: 0, backgroundColor: lineBg }}>
       <div
+        {...(props.onNumberClick && number !== null
+          ? {
+              onClick: () =>
+                props.onNumberClick?.(kind === "deletion" || (props.side === "old" && kind !== "addition") ? "deletions" : "additions", number),
+            }
+          : {})}
         style={{
           position: "relative",
           display: "flex",
@@ -341,6 +458,7 @@ function LineCellView(props: {
           paddingRight: Math.round(props.ch),
           backgroundColor: gutterBg,
           userSelect: "none",
+          ...(props.onNumberClick ? { cursor: "pointer", hover: { backgroundColor: palette.separator } } : {}),
         }}
       >
         {kind === "context" ? null : (
@@ -527,6 +645,7 @@ const FileHeader = memo(function FileHeader(props: {
   palette: DiffPalette;
   onToggleFile: (path: string) => void;
   onOpenFile: (path: string) => void;
+  extras?: ReactNode;
 }) {
   const theme = useTheme();
   const { file, palette } = props;
@@ -600,6 +719,14 @@ const FileHeader = memo(function FileHeader(props: {
           <text style={{ color: palette.addition, fontSize: 11, lineHeight: 16, fontFamily: FONTS.mono }}>{`+${file.additions}`}</text>
         ) : null}
       </div>
+      {props.extras ? (
+        <div
+          onClick={(event: EventPayload) => consumeClick(event)}
+          style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 }}
+        >
+          {props.extras}
+        </div>
+      ) : null}
     </div>
   );
 });

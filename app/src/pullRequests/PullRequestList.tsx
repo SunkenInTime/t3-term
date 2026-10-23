@@ -16,6 +16,7 @@ import { Popover, Tooltip } from "../ui/overlay.tsx";
 import { Text } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../ui/theme.ts";
 import { pullRequestEnvironment, useEnvironmentQuery } from "../state/pullRequests.ts";
+import { PullRequestStackPopover, wasStackClick } from "./PullRequestStack.tsx";
 import {
   pullRequestEntryKey,
   scorePullRequestMatch,
@@ -272,7 +273,9 @@ function PullRequestRowImpl({
   return (
     <div
       testId={`pr-row-${entry.number}`}
-      onClick={() => onSelect(entry)}
+      onClick={(event) => {
+        if (!wasStackClick(event)) onSelect(entry);
+      }}
       style={{
         display: "flex",
         flexDirection: "row",
@@ -327,11 +330,14 @@ function PullRequestRowImpl({
           ) : null}
           <div style={{ flexGrow: 1, minWidth: 0 }} />
           {entry.stack ? (
-            <Tooltip content="Part of a stack" side="top">
-              <div style={{ display: "flex", flexShrink: 0 }}>
-                <Icon name="layers" size={12} color={muted} />
-              </div>
-            </Tooltip>
+            <PullRequestStackPopover
+              environmentId={entry.environmentId}
+              reference={reference}
+              membership={entry.stack}
+              onSelect={(target) =>
+                onSelect({ ...entry, number: target.number, host: entry.host, environmentId: entry.environmentId })
+              }
+            />
           ) : null}
           <PullRequestDiffStat additions={entry.additions} deletions={entry.deletions} />
         </div>
