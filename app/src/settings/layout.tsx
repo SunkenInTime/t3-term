@@ -63,6 +63,20 @@ interface ScrollHandle {
   scrollIntoView?: (options?: unknown) => void;
 }
 
+/**
+ * Keeps the page still for a wheel an inner scroller (Providers' detail pane) takes.
+ * gpuix sends a wheel to every scroller under the pointer, so both would move; web lets
+ * the inner one have it. The inner region reports its wheel (its onScroll runs before
+ * the page's scrollChange) and the page puts its offset back.
+ */
+const PageWheelClaimContext = createContext<(() => void) | null>(null);
+const NO_CLAIM = () => {};
+const WHEEL_CLAIM_MS = 100;
+
+export function usePageWheelClaim(): () => void {
+  return useContext(PageWheelClaimContext) ?? NO_CLAIM;
+}
+
 /** The page scroller, so a search target can center itself in it. */
 const PageScrollerContext = createContext<{ current: { id: number } | null } | null>(null);
 /** A virtual page's list, and the frame around it (gpuix reports no bounds for a virtual-list). */
@@ -195,13 +209,31 @@ function PlainSettingsPage({
   scroll: boolean;
 }) {
   const theme = useTheme();
+  const renderer = useGpuixRequired();
   const scrollerRef = useRef<{ id: number } | null>(null);
+  const lastOffsetRef = useRef(0);
+  const claimedAtRef = useRef(0);
+  const claimRef = useRef(() => {
+    claimedAtRef.current = performance.now();
+  });
   return (
     <PageScopeSentenceContext.Provider value={showScope}>
+      <PageWheelClaimContext.Provider value={scroll ? claimRef.current : null}>
       <PageScrollerContext.Provider value={scroll ? scrollerRef : null}>
         <div
           ref={scrollerRef as never}
           testId="settings-page-scroll"
+          onScrollChange={(event) => {
+            const id = scrollerRef.current?.id;
+            const y = (event as { scrollY?: number }).scrollY;
+            if (id === undefined || typeof y !== "number") return;
+            if (performance.now() - claimedAtRef.current < WHEEL_CLAIM_MS) {
+              claimedAtRef.current = 0;
+              if (Math.abs(y - lastOffsetRef.current) > 0.5) renderer.scrollTo?.(id, 0, lastOffsetRef.current);
+              return;
+            }
+            lastOffsetRef.current = y;
+          }}
           style={{
             display: "flex",
             flexDirection: "column",
@@ -234,6 +266,7 @@ function PlainSettingsPage({
           </div>
         </div>
       </PageScrollerContext.Provider>
+      </PageWheelClaimContext.Provider>
     </PageScopeSentenceContext.Provider>
   );
 }
