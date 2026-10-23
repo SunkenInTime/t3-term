@@ -231,6 +231,9 @@ const TreeRow = memo(function TreeRow(props: {
       }}
       // Web opens the menu at the pointer; here it hangs under the row at the pointer's x.
       alignOffset={menu?.x ?? 0}
+      // Rows move without resizing as the list scrolls, so their y is not known here;
+      // start the menu inside the row, near where the pointer is, like web's.
+      sideOffset={-(ROW_HEIGHT / 2 + 2)}
       testId={`files-row-menu:${row.path}`}
       rootStyle={{ width: "100%" }}
       trigger={
