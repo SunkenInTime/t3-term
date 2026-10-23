@@ -42,6 +42,7 @@ Bundled highlight languages: Rust, TS, TSX, JS, JSX, Python, Go, JSON, Bash, TOM
 - `onFileDrop` `{paths}` (not on virtual-list).
 - Keys: `onKeyDown/onKeyUp` with `key` (`"enter"`, `"escape"`, `"up"`, `"k"`), `keyChar`, `modifiers {shift, ctrl, alt, cmd}`, `preventDefault()`, `stopPropagation()`. Order: focused element → ancestors → `render({onKeyDown})` → default action.
 - **Inside `<textarea>`, onKeyDown never sees Enter, Shift+Enter, Up/Down, Backspace, Delete, Left/Right, Home/End, cmd/ctrl+A/C/X/Z** (GPUI actions run first). Escape and Tab do arrive. A single-line `<input>` does not bind Up/Down.
+- Modified chords do arrive in a focused `<textarea>` and then bubble to `render({onKeyDown})`: Ctrl/Alt+Enter, Ctrl+Shift+Enter, Alt+Up, Ctrl+S, Ctrl+Shift+<letter>, Ctrl+Alt+Shift+T (checked on Windows, gpuix 0.11.0). The composer handles the Enter chords itself (it needs the submit path) and leaves the rest to the window dispatcher in `keybindings/useGlobalKeybindings.ts`, where areas claim commands with `registerShortcutHandler`. `when: "composerFocus"` reads `composerFocusAtom`, which the composer sets on focus and on any key, since `focusElement` moves focus without `onFocus`.
 - Focus: `tabIndex`, `autoFocus`, `onFocus/onBlur`, `renderer.focusElement(id)` (renderer from `useGpuixRequired()`).
 - Scroll: `onScroll` (deltas), `onScrollChange` (offsets, overflow scroll only); `ref.scrollIntoView()`, `renderer.scrollTo`, `scrollToItem(id, index)`.
 - `onLayout` (div/text, one frame late), `useWindowSize()`.

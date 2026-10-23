@@ -15,7 +15,10 @@
 //   Shift+Tab                           → move the highlight up while the menu is open,
 //                                         otherwise toggle Build/Plan (web parity)
 //   Escape                              → dismiss the menu
-// Ctrl+Enter sends with the alternate dispatch (queue ↔ steer) while a turn runs.
+// Modified Enter follows web composerSubmissionIntentForKey (alternate while running,
+// background in a draft, send-and-new in a thread). Other composer chords (effort, mode,
+// stash, branch, workspace, queue edit/steer) reach the window dispatcher, and this
+// composer claims them with registerShortcutHandler.
 // The caret position is not exposed by gpuix, so trigger detection uses the caret implied
 // by each edit (the end of the inserted text, or the deletion point).
 import { composerInsetAtom, restoredPromptAtom } from "../../state/timeline.ts";
