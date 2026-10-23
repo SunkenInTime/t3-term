@@ -82,6 +82,11 @@ export function previewRuntimeFor(environmentId: EnvironmentId): PreviewRuntime 
   return readEnvironmentSupportsServerBrowser(environmentId) ? "server" : undefined;
 }
 
+/** web: `isPreviewAvailableFor`. Without a desktop bridge only the server browser can preview. */
+export function isPreviewAvailableFor(environmentId: EnvironmentId): boolean {
+  return readEnvironmentSupportsServerBrowser(environmentId);
+}
+
 // ── Session sync (usePreviewSession) ────────────────────────────────────
 
 const previewSessionSyncAtom = Atom.family((threadKey: string) => {
