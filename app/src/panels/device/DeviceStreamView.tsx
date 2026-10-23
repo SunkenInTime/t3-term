@@ -33,6 +33,8 @@ import {
 } from "./stream.ts";
 
 const AX_POLL_INTERVAL_MS = 2_000;
+/** `T3TERM_DEVICE_STATS=1`: log how long each frame upload holds the JS thread (see h264Decoder.ts). */
+const STATS = process.env.T3TERM_DEVICE_STATS === "1";
 const CONTROLS_RAIL_WIDTH = 56;
 /** Web's reason when WebGL is missing, worded for this app. */
 const PHONE_UNAVAILABLE_REASON = "3D is unavailable in t3-term";
@@ -148,12 +150,14 @@ export function DeviceStreamView(props: {
     let waiting: DeviceFrame | null = null;
     let scheduled = false;
     let stopped = false;
+    const paintTimes: number[] = [];
     const paint = () => {
       scheduled = false;
       const frame = waiting;
       waiting = null;
       const img = imgRef.current;
       if (stopped || !frame || !img) return;
+      const started = STATS ? performance.now() : 0;
       try {
         if (frame.kind === "jpeg") img.setImage(frame.bytes);
         else {
@@ -162,6 +166,14 @@ export function DeviceStreamView(props: {
           img.setImagePixels(shown.width, shown.height, shown.pixels, { format: "rgba" });
         }
       } catch {}
+      if (STATS) {
+        paintTimes.push(performance.now() - started);
+        if (paintTimes.length >= 120) {
+          const sorted = paintTimes.toSorted((x, y) => x - y);
+          console.error(`[device-paint] uploads=${sorted.length} p50=${sorted[60]!.toFixed(1)}ms p90=${sorted[108]!.toFixed(1)}ms`);
+          paintTimes.length = 0;
+        }
+      }
     };
     const client = createDeviceStreamClient(
       { platform: props.platform, deviceId: props.deviceId, access },

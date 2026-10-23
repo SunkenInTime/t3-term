@@ -66,8 +66,10 @@ In terminal mode `Ctrl+C` quits t3-term; kitty and Ghostty may claim some
 
 ## What's different from T3 Code
 
-- Device mirroring doesn't work. It streams H.264 video, which t3-term can't
-  decode yet.
+- Device mirroring decodes the H.264 stream with ffmpeg, so `ffmpeg` has to be
+  on `PATH` (or named by `T3TERM_FFMPEG`). Only the flat device view exists:
+  T3 Code's 3D phone needs WebGL. iOS simulators without ffmpeg fall back to
+  MJPEG, as in a browser without WebCodecs.
 - GPUI has no background blur, so menus, dialogs and the composer are solid
   instead of glassy. Links inside agent messages use the body text colour.
 - HTML renders and MCP apps show as a card, because there is no web view.
