@@ -25,7 +25,7 @@ export const AssistantTimelineRow = memo(function AssistantTimelineRow({ row }: 
   return (
     <div {...hover} style={{ display: "flex", flexDirection: "column", width: "100%", minWidth: 0, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2 }}>
       {messageText.length > 0 ? (
-        <ChatMarkdown text={messageText} tone="assistant" lineBreaks={shouldPreserveAssistantLineBreaks(messageText)} />
+        <ChatMarkdown text={messageText} tone="assistant" lineBreaks={shouldPreserveAssistantLineBreaks(messageText)} isStreaming={Boolean(row.message.streaming)} />
       ) : null}
       <AssistantChangedFilesSection turnSummary={row.assistantTurnDiffSummary} />
       {row.showAssistantMeta ? (

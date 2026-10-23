@@ -8,7 +8,7 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import { isHostPath } from "@t3tools/shared/path";
 import { mediaMimeTypeFromExtension } from "@t3tools/shared/filePreview";
-import { memo, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
 import { useClientSettings } from "../../state/clientSettings.ts";
@@ -19,6 +19,9 @@ import { useTheme } from "../../ui/theme.ts";
 import { markdownFileCopyMenuItems } from "../../web/components/chat/MarkdownFileLink.logic.ts";
 import { chipAtom, checkboxAtom, CheckboxBox, ChipBox, faviconAtom, FaviconBox, type ChipPayload } from "../markdown/MarkdownChips.tsx";
 import { MarkdownCodeBlock } from "../markdown/MarkdownCodeBlock.tsx";
+import { InlineMathBox, inlineMathAtom, MathBlock, MermaidBlock } from "../markdown/MarkdownDiagrams.tsx";
+import { InlineImageBox, inlineImageAtom, MarkdownImage } from "../markdown/MarkdownMedia.tsx";
+import { asyncLayoutEpoch, subscribeAsyncLayout } from "../markdown/diagrams.ts";
 import { MarkdownDetails } from "../markdown/MarkdownDetails.tsx";
 import { MarkdownTable } from "../markdown/MarkdownTable.tsx";
 import { useTextMetricsEpoch } from "../markdown/measure.ts";
@@ -144,6 +147,10 @@ function createBoxes(context: LinkContext): InlineBoxRenderers {
           return <FaviconBox key={key} atom={atom} env={env} />;
         case "checkbox":
           return <CheckboxBox key={key} atom={atom} env={env} />;
+        case "math":
+          return <InlineMathBox key={key} atom={atom} />;
+        case "image":
+          return <InlineImageBox key={key} atom={atom} />;
         default:
           return null;
       }
@@ -193,11 +200,11 @@ function createBoxes(context: LinkContext): InlineBoxRenderers {
     checkbox(checked, env) {
       return checkboxAtom(id("chk"), checked, env.styles.body, env.styles.listIndent);
     },
-    inlineMath() {
-      return null;
+    inlineMath(tex, display, env, style) {
+      return inlineMathAtom(id("math"), tex, display, style, env.extent.root);
     },
-    inlineImage() {
-      return null;
+    inlineImage(node, env, style) {
+      return inlineImageAtom(id("img"), node, style, env.extent.root);
     },
   };
 }
@@ -208,7 +215,10 @@ function createBlocks(): BlockRenderers {
       return <MarkdownCodeBlock key={key} code={code} language={language} meta={meta} width={width} styles={env.styles} isStreaming={false} />;
     },
     mathBlock({ tex, width, env, key }) {
-      return <MarkdownCodeBlock key={key} code={tex} language="math" meta={undefined} width={width} styles={env.styles} isStreaming={false} />;
+      return <MathBlock key={key} tex={tex} width={width} styles={env.styles} />;
+    },
+    mermaid({ code, meta, width, env, key }) {
+      return <MermaidBlock key={key} code={code} meta={meta} width={width} env={env} isStreaming={env.isStreaming} />;
     },
     table({ node, width, env, key }) {
       return <MarkdownTable key={key} node={node} width={width} env={env} />;
@@ -216,8 +226,8 @@ function createBlocks(): BlockRenderers {
     details({ node, width, env, key }) {
       return <MarkdownDetails key={key} node={node} width={width} env={env} />;
     },
-    image() {
-      return null;
+    image({ node, width, env, key }) {
+      return <MarkdownImage key={key} node={node} width={width} env={env} />;
     },
   };
 }
@@ -238,6 +248,7 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   parseRawHtml = true,
   maxWidth,
   onFitWidth,
+  isStreaming = false,
 }: {
   text: string;
   tone?: ChatMarkdownTone;
@@ -249,10 +260,14 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   maxWidth?: number;
   /** Reports the shrink-to-fit width, so wrappers can take it as a definite width (Taffy lays auto-width chains out repeatedly). */
   onFitWidth?: (width: number) => void;
+  /** The message is still streaming: Mermaid shows its code until the fence closes. */
+  isStreaming?: boolean;
 }) {
   const palette = useTheme();
   const styles = markdownStyles(palette, tone, textSize);
   const epoch = useTextMetricsEpoch();
+  // Inline formulas and images re-lay out once their size is known.
+  const asyncEpoch = useSyncExternalStore(subscribeAsyncLayout, asyncLayoutEpoch, asyncLayoutEpoch);
   const row = useContext(TimelineRowCtx) as TimelineRowSharedState | null;
   const mathEnabled = useClientSettings((settings) => settings.mathRenderingEnabled);
   const widthKey = `${tone}:${textSize}`;
@@ -275,11 +290,13 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
       blocks: handlers.blocks,
       mathEnabled,
       extent: { width: 0, root: width },
+      media: { environmentId: row?.threadRef.environmentId ?? null, threadId: row?.threadRef.threadId ?? null, cwd, gallery: [] },
+      isStreaming,
     };
     const nodes = renderDocument(tree, width, env);
     return { nodes, extent: env.extent.width };
     // epoch: new text metrics re-lay out lines measured with estimates.
-  }, [tree, width, styles, text, cwd, hover, handlers, mathEnabled, epoch]);
+  }, [tree, width, styles, text, cwd, row, hover, handlers, mathEnabled, epoch, asyncEpoch, isStreaming]);
   const fitWidth = maxWidth !== undefined && rendered ? Math.min(maxWidth, Math.ceil(rendered.extent)) : undefined;
   useEffect(() => {
     if (fitWidth !== undefined) onFitWidth?.(fitWidth);

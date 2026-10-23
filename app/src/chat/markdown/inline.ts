@@ -44,6 +44,8 @@ export interface BoxAtom {
   readonly marginLeft?: number | undefined;
   readonly marginRight?: number | undefined;
   readonly link?: number | undefined;
+  /** How far the box reaches above the line's top (a tall inline image); the line grows by that much. */
+  readonly lift?: number | undefined;
   readonly payload: unknown;
 }
 
@@ -62,6 +64,8 @@ export interface InlineLine {
   readonly height: number;
   /** Ended by a hard break (<br>), not by wrapping. */
   readonly hardBreak: boolean;
+  /** Extra space above the text for boxes taller than the line; every piece moves down by it. */
+  readonly lift: number;
 }
 
 interface Unit {
@@ -275,6 +279,7 @@ function assembleLine(placed: ReadonlyArray<Placed>, lineHeight: number): Omit<I
   const pieces: LinePiece[] = [];
   let width = 0;
   let height = lineHeight;
+  let lift = 0;
   placed.forEach((item, index) => {
     const isLast = index === placed.length - 1;
     const unit = item.unit;
@@ -282,6 +287,7 @@ function assembleLine(placed: ReadonlyArray<Placed>, lineHeight: number): Omit<I
       pieces.push({ kind: "box", atom: unit.box, width: item.width });
       width += item.width;
       height = Math.max(height, unit.box.height);
+      lift = Math.max(lift, unit.box.lift ?? 0);
       return;
     }
     const style = unit.style!;
@@ -304,5 +310,5 @@ function assembleLine(placed: ReadonlyArray<Placed>, lineHeight: number): Omit<I
       width += pieceWidth;
     }
   });
-  return { pieces, width, height };
+  return { pieces, width, height: height + lift, lift };
 }

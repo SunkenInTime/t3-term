@@ -6,6 +6,8 @@
 // margins take the larger; a container without top/bottom padding passes its
 // first/last child's margin out). Inline content goes through inline.ts and
 // paints as rows of nowrap runs.
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { classifyMarkdownImageSource } from "@t3tools/client-runtime/markdown-images";
 import type { Element, ElementContent, Root } from "hast";
 import { cloneElement, Fragment, isValidElement, memo, useSyncExternalStore, type ReactNode } from "react";
 
@@ -68,13 +70,14 @@ export interface InlineBoxRenderers {
   citationChip(entry: LinkEntry, env: RenderEnv): BoxAtom;
   favicon(host: string, link: number, env: RenderEnv): BoxAtom;
   checkbox(checked: boolean, env: RenderEnv): BoxAtom;
-  inlineMath(tex: string, env: RenderEnv, style: RunStyle): BoxAtom | null;
-  inlineImage(node: Element, env: RenderEnv): BoxAtom | null;
+  inlineMath(tex: string, display: boolean, env: RenderEnv, style: RunStyle): BoxAtom | null;
+  inlineImage(node: Element, env: RenderEnv, style: RunStyle): BoxAtom | null;
 }
 
 export interface BlockRenderers {
   codeBlock(input: { code: string; language: string; meta: string | undefined; width: number; env: RenderEnv; key: string }): ReactNode;
   mathBlock(input: { tex: string; width: number; env: RenderEnv; key: string }): ReactNode;
+  mermaid(input: { code: string; meta: string | undefined; width: number; env: RenderEnv; key: string }): ReactNode;
   table(input: { node: Element; width: number; env: RenderEnv; key: string }): ReactNode;
   details(input: { node: Element; width: number; env: RenderEnv; key: string }): ReactNode;
   image(input: { node: Element; width: number; env: RenderEnv; key: string }): ReactNode;
@@ -91,6 +94,14 @@ export interface RenderEnv {
   readonly mathEnabled: boolean;
   /** Widest laid-out content, for shrink-to-fit placements (user bubbles). */
   readonly extent: { width: number; readonly root: number };
+  /** Where media resolves from, and the message's images in order for the viewer. */
+  readonly media: {
+    readonly environmentId: EnvironmentId | null;
+    readonly threadId: ThreadId | null;
+    readonly cwd: string | undefined;
+    readonly gallery: Array<{ src: string; name: string }>;
+  };
+  readonly isStreaming: boolean;
 }
 
 // ── Blocks ──────────────────────────────────────────────────────────────
@@ -241,6 +252,10 @@ function renderBlock(node: Element, width: number, env: RenderEnv, ctx: FlowCtx,
       // A paragraph holding only an image is a standalone figure.
       const image = standaloneImage(node);
       if (image) {
+        const source = classifyMarkdownImageSource(String(image.properties.src ?? ""), null);
+        if (source._tag === "Direct") {
+          env.media.gallery.push({ src: source.uri.startsWith("//") ? `https:${source.uri}` : source.uri, name: String(image.properties.alt ?? "").trim() || "image" });
+        }
         return { node: env.blocks.image({ node: image, width, env, key }), mt: styles.blockMargin, mb: styles.blockMargin };
       }
       return { node: renderParagraph(node.children, width, env, ctx.body, key), mt: styles.blockMargin, mb: styles.blockMargin };
@@ -294,7 +309,10 @@ function renderBlock(node: Element, width: number, env: RenderEnv, ctx: FlowCtx,
       }
       const meta = typeof code.properties.dataCodeMeta === "string" ? code.properties.dataCodeMeta : undefined;
       return {
-        node: env.blocks.codeBlock({ code: source, language: language === "gitignore" ? "ini" : language, meta, width, env, key }),
+        node:
+          language === "mermaid"
+            ? env.blocks.mermaid({ code: source, meta, width, env, key })
+            : env.blocks.codeBlock({ code: source, language: language === "gitignore" ? "ini" : language, meta, width, env, key }),
         mt: styles.blockMargin,
         mb: styles.blockMargin,
       };
@@ -574,7 +592,7 @@ function collectElement(node: Element, style: RunStyle, out: InlineCollect) {
       return;
     }
     case "img": {
-      const box = env.boxes.inlineImage(node, env);
+      const box = env.boxes.inlineImage(node, env, style);
       if (box) out.atoms.push(box);
       else pushText(out, String(node.properties.alt ?? ""), style);
       return;
@@ -591,11 +609,25 @@ function collectCode(node: Element, style: RunStyle, out: InlineCollect) {
   const classes = className(node);
   const text = hastPlainTextDeep(node);
   if (env.mathEnabled && /\bmath-(inline|display)\b/.test(classes)) {
-    const box = env.boxes.inlineMath(text, env, style);
-    if (box) {
-      out.atoms.push(box);
-      return;
-    }
+    // MarkdownMath: `$$...$$` inside a paragraph is still display math, a centred
+    // block of its own. Until the formula renders, and when it cannot, its TeX
+    // source shows instead (web's fallback), never a code pill.
+    const display = /\bmath-display\b/.test(classes);
+    const tex = text.trim();
+    const box = env.boxes.inlineMath(tex, display, env, style);
+    if (display) out.atoms.push({ kind: "break" });
+    if (box) out.atoms.push(box);
+    else if (display) {
+      pushText(out, "\\[", style);
+      for (const line of tex.split("\n")) {
+        out.atoms.push({ kind: "break" });
+        pushText(out, line, style);
+      }
+      out.atoms.push({ kind: "break" });
+      pushText(out, "\\]", style);
+    } else pushText(out, `\\(${tex}\\)`, style);
+    if (display) out.atoms.push({ kind: "break" });
+    return;
   }
   if (node.properties.dataInlineCode != null && out.link === undefined) {
     const meta = inlineCodeFileMeta(text, env.index);
@@ -788,7 +820,7 @@ const InlineLines = memo(function InlineLines({
     children.push(
       <div
         key={lineIndex}
-        style={{ display: "flex", flexDirection: "row", alignItems: "flex-start", height: line.height, width: "100%", whiteSpace: "nowrap" }}
+        style={{ display: "flex", flexDirection: "row", alignItems: "flex-start", height: line.height, width: "100%", whiteSpace: "nowrap", ...(line.lift > 0 ? { paddingTop: line.lift } : {}) }}
       >
         {pieces}
       </div>,

@@ -273,3 +273,10 @@ export function setMeasureHostUpdater(update: (() => void) | null) {
 }
 
 export const MEASURE_FONT_SIZE = MEASURE_SIZE;
+
+/** Known advances for a face (em), for renderers that lay text out elsewhere (diagram worker). */
+export function advanceTable(face: FontFace): Record<string, number> {
+  // Asking for one character makes sure the base set gets measured for this face.
+  advanceEm(face, "a");
+  return Object.fromEntries(advances.get(faceKey(face)) ?? []);
+}
