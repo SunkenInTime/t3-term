@@ -32,7 +32,7 @@ import { buildFileReviewComment } from "../../web/reviewCommentContext.ts";
 import { CODE_FONT_SIZE, CODE_LINE_HEIGHT, gpuiWrapBoundaries, segmentsFor, useMonoCharWidth, type Segment } from "../code/codeRows.tsx";
 import { useSyntaxTokens, type SyntaxToken } from "../code/highlighter.ts";
 import { useListWindow } from "../code/listWindow.ts";
-import { diffPalette, mix, type DiffPalette } from "../code/palette.ts";
+import { diffPalette, mix, mixLab, type DiffPalette } from "../code/palette.ts";
 import { DiffCommentAnnotation } from "../diff/DiffCommentAnnotation.tsx";
 
 /** Lines per textarea. Small enough that the chunks on screen stay cheap to rebuild per keystroke. */
@@ -145,7 +145,17 @@ export interface FileEditorProps {
 
 export function FileEditor(props: FileEditorProps) {
   const theme = useTheme();
-  const palette = diffPalette(theme);
+  // The Files editor is pierre's File with its own selection colours (StyledDiffCodeView's
+  // overrides are the Diff surface's only): the selection blue mixed in lab into the code
+  // background, 25% on lines and 40% on the number column (dark), and no side bar.
+  const basePalette = diffPalette(theme);
+  const codeBg = theme.codeBackground.slice(0, 7);
+  const dark = theme.appearance === "dark";
+  const palette: DiffPalette = {
+    ...basePalette,
+    selectedLine: mixLab(codeBg, basePalette.modified, dark ? 0.25 : 0.18),
+    selectedGutter: mixLab(codeBg, basePalette.modified, dark ? 0.4 : 0.25),
+  };
   const renderer = useGpuixRequired();
   const { width: ch, probe } = useMonoCharWidth();
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -410,14 +420,10 @@ export function FileEditor(props: FileEditorProps) {
                 // pierre keeps the commented lines selected while the form is open, form included.
                 <div
                   key={item.key}
-                  style={{ display: "flex", flexDirection: "row", width: size.width, backgroundColor: hasDraft && selectedRange ? palette.selectedLine : palette.bg }}
+                  style={{ display: "flex", flexDirection: "row", width: size.width, backgroundColor: hasDraft && selectedRange ? palette.selectedLine : theme.codeBackground }}
                 >
-                  <div style={{ position: "relative", width: gutter, flexShrink: 0, backgroundColor: hasDraft && selectedRange ? palette.selectedGutter : palette.bg }}>
-                    {hasDraft && selectedRange ? (
-                      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, backgroundColor: palette.modified }} />
-                    ) : null}
-                  </div>
-                  <div style={{ width: 2, flexShrink: 0, backgroundColor: palette.bg }} />
+                  <div style={{ width: gutter, flexShrink: 0, backgroundColor: hasDraft && selectedRange ? palette.selectedGutter : theme.codeBackground }} />
+                  <div style={{ width: 2, flexShrink: 0 }} />
                   <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, paddingTop: 4, paddingBottom: 4 }}>
                     {item.chunk.entries.map((entry) => (
                       <div key={entry.id} style={{ display: "flex", width: "100%" }}>
@@ -621,9 +627,6 @@ const EditorLine = memo(function EditorLine(props: {
           cursor: "pointer",
         }}
       >
-        {props.selected ? (
-          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, backgroundColor: palette.modified, pointerEvents: "none" }} />
-        ) : null}
         <text
           style={{
             color: props.selected ? palette.selectedNumber : palette.number,
@@ -637,7 +640,7 @@ const EditorLine = memo(function EditorLine(props: {
           {String(props.lineNumber)}
         </text>
       </div>
-      <div style={{ width: 2, flexShrink: 0, backgroundColor: palette.bg }} />
+      <div style={{ width: 2, flexShrink: 0 }} />
       <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, overflow: "hidden", paddingLeft: props.ch, paddingRight: props.ch }}>
         <div
           style={{
