@@ -2,6 +2,7 @@
 // radius 10, remove button top-right), the file list (icon, name, size, remove) and the
 // paperclip attach button. Attachments are local paths; the bytes upload at send time.
 import { Icon } from "../../ui/Icon.tsx";
+import { useSmallViewport } from "../../ui/viewport.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
 import { IconButton, Text } from "../../ui/primitives.tsx";
 import { RADIUS, alpha, useTheme } from "../../ui/theme.ts";
@@ -113,10 +114,12 @@ export function ComposerAttachmentFileList({
 }
 
 export function ComposerAttachButton({ onClick }: { onClick: () => void }) {
+  // Button size="icon-sm" with the default svg size: 32 / 18 below `sm`.
+  const small = useSmallViewport();
   return (
     <Tooltip content="Attach files" side="top">
       <div style={{ display: "flex" }}>
-        <IconButton icon="paperclip" size={28} iconSize={16} onClick={onClick} testId="composer-attach" />
+        <IconButton icon="paperclip" size={28} iconSize={small ? 18 : 16} responsive onClick={onClick} testId="composer-attach" />
       </div>
     </Tooltip>
   );

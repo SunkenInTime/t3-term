@@ -26,7 +26,9 @@ import {
   serverEnvironment,
   threadEnvironment,
 } from "../../state/environment.ts";
-import { rightPanelOpenAtom, routeAtom, sidebarOpenAtom } from "../../state/ui.ts";
+import { rightPanelOpenAtom, routeAtom } from "../../state/ui.ts";
+import { useHeaderInset } from "../../app/MainView.tsx";
+import { rightPanelSheetAtom } from "../../ui/viewport.tsx";
 import { ProjectGlyph } from "../../sidebar/ProjectGlyph.tsx";
 import { Icon } from "../../ui/Icon.tsx";
 import { Dialog, Tooltip } from "../../ui/overlay.tsx";
@@ -63,8 +65,12 @@ export function usePanelShortcutLabels(environmentId: EnvironmentId | null): Pan
 
 export function ChatHeader({ environmentId, threadId }: { environmentId: EnvironmentId; threadId: ThreadId }) {
   const theme = useTheme();
-  const [sidebarOpen, setSidebarOpen] = useAtom(sidebarOpenAtom);
+  const inset = useHeaderInset();
+  // At or below 980 the right panel is a sheet over the chat, so the header keeps
+  // its own toggles (web rightPanelControlsAtRoot / inlineRightPanelOwnsTitleBar).
   const rightPanelOpen = useAtomValue(rightPanelOpenAtom);
+  const rightPanelSheet = useAtomValue(rightPanelSheetAtom);
+  const rightPanelInline = rightPanelOpen && !rightPanelSheet;
   const projects = useAtomValue(projectIndexAtom);
   const thread = useAtomValue(environmentThreadShells.threadShellAtom({ environmentId, threadId } as never)) as
     | EnvironmentThreadShell
@@ -88,29 +94,26 @@ export function ChatHeader({ environmentId, threadId }: { environmentId: Environ
         alignItems: "center",
         height: LAYOUT.topbar,
         flexShrink: 0,
-        paddingLeft: sidebarOpen ? 20 : 12,
+        paddingLeft: inset.paddingLeft,
         paddingRight: 12,
         gap: 12,
         position: "relative",
         backgroundColor: theme.background,
       }}
     >
-      {sidebarOpen ? null : (
-        <Tooltip content="Toggle sidebar">
-          <IconButton icon="panel-left" color={alpha(theme.foreground, 0.8)} onClick={() => setSidebarOpen(true)} testId="sidebar-open" />
-        </Tooltip>
-      )}
+      {inset.toggle}
       {thread ? (
         <ThreadBreadcrumb
           thread={thread}
           project={project}
           parent={parentThreadId ? { threadId: parentThreadId, title: parentThread?.title ?? "Parent thread" } : null}
-          rightPanelOpen={rightPanelOpen}
+          rightPanelOpen={rightPanelInline}
+          gap={inset.crumbGap}
         />
       ) : (
         <div style={{ flexGrow: 1 }} />
       )}
-      {rightPanelOpen ? (
+      {rightPanelInline ? (
         <>
           <PanelLayoutControls
             available={available}
@@ -121,7 +124,8 @@ export function ChatHeader({ environmentId, threadId }: { environmentId: Environ
           />
           <WorkspaceTitlebarControls available={available} shortcuts={shortcuts} />
         </>
-      ) : (
+      ) : rightPanelOpen && rightPanelSheet ? null : (
+        // While the sheet is open its tab bar holds these (web rightPanelControlsInPanel).
         <PanelLayoutControls
           available={available}
           shortcuts={shortcuts}
@@ -129,6 +133,27 @@ export function ChatHeader({ environmentId, threadId }: { environmentId: Environ
         />
       )}
     </div>
+  );
+}
+
+/**
+ * The panel toggles a right-panel sheet carries in its tab bar (web ChatView
+ * `layoutControls`: panelToggleControls in the sheet's header).
+ */
+export function ChatPanelLayoutControls({ environmentId, threadId }: { environmentId: EnvironmentId; threadId: ThreadId }) {
+  const projects = useAtomValue(projectIndexAtom);
+  const thread = useAtomValue(environmentThreadShells.threadShellAtom({ environmentId, threadId } as never)) as
+    | EnvironmentThreadShell
+    | null
+    | undefined;
+  const available = thread ? projects.has(`${environmentId}:${thread.projectId}`) : false;
+  const shortcuts = usePanelShortcutLabels(environmentId);
+  return (
+    <PanelLayoutControls
+      available={available}
+      shortcuts={shortcuts}
+      detailsPopover={<ThreadDetailsContent environmentId={environmentId} threadId={threadId} density="full" />}
+    />
   );
 }
 
@@ -215,11 +240,13 @@ function ThreadBreadcrumb({
   project,
   parent,
   rightPanelOpen,
+  gap,
 }: {
   thread: EnvironmentThreadShell;
   project: OrchestrationProjectShell | undefined;
   parent: { threadId: ThreadId; title: string } | null;
   rightPanelOpen: boolean;
+  gap: number;
 }) {
   const theme = useTheme();
   const canOperate = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
@@ -292,7 +319,7 @@ function ThreadBreadcrumb({
         display: "flex",
         flexDirection: "row",
         alignItems: "center",
-        gap: 12,
+        gap,
         flexGrow: 1,
         flexShrink: 1,
         minWidth: 0,
@@ -383,7 +410,9 @@ function ThreadBreadcrumb({
             minWidth={198}
             rootStyle={{ minWidth: 0, flexShrink: 1 }}
             trigger={
-              <Tooltip content={thread.title}>
+              // The tooltip's wrapper must shrink too, or a long title is clipped mid-glyph
+              // instead of ending in an ellipsis in a narrow window.
+              <Tooltip content={thread.title} rootStyle={{ display: "flex", minWidth: 0, flexShrink: 1 }}>
                 <div
                   testId="thread-title"
                   onClick={onTitleClick}

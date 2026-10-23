@@ -15,6 +15,7 @@ import { Icon } from "../../ui/Icon.tsx";
 import { Dialog, Menu, MenuItem } from "../../ui/overlay.tsx";
 import { Button, Text } from "../../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
+import { useSmallViewport } from "../../ui/viewport.tsx";
 import { toast } from "../../ui/toast.tsx";
 import {
   buildCollapsedProposedPlanPreviewMarkdown,
@@ -73,6 +74,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   workspaceRoot: string | undefined;
 }) {
   const theme = useTheme();
+  const small = useSmallViewport();
   const [expanded, setExpanded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -168,7 +170,8 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
         display: "flex",
         flexDirection: "column",
         minWidth: 0,
-        padding: 20,
+        // web `p-4 sm:p-5`
+        padding: small ? 16 : 20,
         borderRadius: RADIUS["3xl"],
         borderWidth: 1,
         borderColor: alpha(theme.border, 0.8),

@@ -15,6 +15,7 @@ import { Icon, type IconName } from "../../ui/Icon.tsx";
 import { Menu, MenuItem, Tooltip } from "../../ui/overlay.tsx";
 import { Button } from "../../ui/primitives.tsx";
 import { FONTS, alpha, useTheme } from "../../ui/theme.ts";
+import { useSmallViewport } from "../../ui/viewport.tsx";
 import { useStageIdentification } from "../../sidebar/SidebarChrome.tsx";
 import { stageArtSource } from "../../sidebar/StageBackdrop.tsx";
 
@@ -76,6 +77,7 @@ export function ComposerPrimaryActions(props: {
   onImplementPlanInNewThread: () => void;
 }) {
   const theme = useTheme();
+  const small = useSmallViewport();
   // environmentIdentificationMode "artwork" on a Dev or Nightly build paints the send button with the stage art.
   const stageBackdropVariant = useStageIdentification().backdropVariant;
   const isSendDisabled = !props.canOperateThread || props.sendDisabledReason !== null;
@@ -93,7 +95,7 @@ export function ComposerPrimaryActions(props: {
     <Tooltip content="Interrupt" side="top" key="interrupt">
       <CircleButton
         testId="composer-stop"
-        size={insidePendingAction ? 28 : 32}
+        size={insidePendingAction && !small ? 28 : 32}
         background={alpha(theme.error, 0.9)}
         hoverBackground={theme.error}
         disabled={!props.canOperateThread}
@@ -203,7 +205,7 @@ export function ComposerPrimaryActions(props: {
     <Tooltip content={submitTooltip} side="top">
       <CircleButton
         testId="composer-send"
-        size={32}
+        size={small ? 36 : 32}
         background={theme.messageAction}
         hoverBackground={alpha(theme.messageAction, 0.9)}
         art={stageBackdropVariant ? stageArtSource(stageBackdropVariant, theme, "button") : undefined}
@@ -322,7 +324,7 @@ function Pill({
   children,
   disabled,
   onClick,
-  height = 32,
+  height: baseHeight = 32,
   testId,
   roundLeft = true,
   roundRight = true,
@@ -336,6 +338,9 @@ function Pill({
   roundRight?: boolean;
 }) {
   const theme = useTheme();
+  // web pills are `h-9 sm:h-8` (`h-8 sm:h-7` for the pending answer) with `text-base sm:text-sm`.
+  const small = useSmallViewport();
+  const height = small ? baseHeight + 4 : baseHeight;
   return (
     <div
       testId={testId}
@@ -361,8 +366,8 @@ function Pill({
       <text
         style={{
           color: theme.primaryForeground,
-          fontSize: 14,
-          lineHeight: 20,
+          fontSize: small ? 16 : 14,
+          lineHeight: small ? 24 : 20,
           fontWeight: 500,
           fontFamily: FONTS.sans,
           whiteSpace: "nowrap",
@@ -383,6 +388,7 @@ function ImplementSplitButton(props: {
 }) {
   const theme = useTheme();
   const [open, setOpen] = useState(false);
+  const small = useSmallViewport();
   return (
     <div style={{ display: "flex", flexDirection: "row", alignItems: "center" }}>
       <Pill testId="composer-implement" disabled={props.disabled} roundRight={false} onClick={props.onImplement}>
@@ -402,11 +408,11 @@ function ImplementSplitButton(props: {
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              height: 32,
+              height: small ? 36 : 32,
               paddingLeft: 8,
               paddingRight: 8,
-              borderTopRightRadius: 16,
-              borderBottomRightRadius: 16,
+              borderTopRightRadius: small ? 18 : 16,
+              borderBottomRightRadius: small ? 18 : 16,
               borderLeftWidth: 1,
               borderColor: alpha(theme.primaryForeground, 0.2),
               backgroundColor: theme.messageAction,

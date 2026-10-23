@@ -26,6 +26,8 @@ import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Menu, MenuItem, MenuSeparator, Popover, Tooltip } from "../ui/overlay.tsx";
 import { IconButton, Text, type Style } from "../ui/primitives.tsx";
 import { RADIUS, alpha, useTheme } from "../ui/theme.ts";
+import { useSmallViewport } from "../ui/viewport.tsx";
+import { useMainColumnWidth } from "../app/MainView.tsx";
 import {
   isProjectScopedSettingKey,
   listProjectOverrides,
@@ -167,6 +169,28 @@ function SearchTargetRing() {
 
 const PageScopeSentenceContext = createContext(true);
 
+/**
+ * The page column's content width. Rows use it for web's `@container/settings-row`
+ * query: under 32rem of row content the title and control stack.
+ */
+const SettingsColumnWidthContext = createContext<number | null>(null);
+
+/** WorkspacePageContainer `px-5 sm:px-6`, and the column's content width. */
+function useSettingsColumn(maxWidth: number): { padding: number; contentWidth: number } {
+  const small = useSmallViewport();
+  const mainWidth = useMainColumnWidth();
+  const padding = small ? 20 : 24;
+  return { padding, contentWidth: Math.max(0, Math.min(maxWidth, mainWidth) - padding * 2) };
+}
+
+/** True inside a stacked settings row, whose control spans the row (`w-full`). */
+export const SettingsRowStackedContext = createContext(false);
+
+/** `px-3 sm:px-4` on section titles, rows and the scope sentence. */
+export function useSettingsInset(): number {
+  return useSmallViewport() ? 12 : 16;
+}
+
 /** WorkspacePageContainer width="readable": max-w 896, padding 24/24/48, gap 32. */
 export function SettingsPageContainer({
   children,
@@ -210,6 +234,7 @@ function PlainSettingsPage({
 }) {
   const theme = useTheme();
   const renderer = useGpuixRequired();
+  const column = useSettingsColumn(maxWidth);
   const scrollerRef = useRef<{ id: number } | null>(null);
   const lastOffsetRef = useRef(0);
   const claimedAtRef = useRef(0);
@@ -218,6 +243,7 @@ function PlainSettingsPage({
   });
   return (
     <PageScopeSentenceContext.Provider value={showScope}>
+      <SettingsColumnWidthContext.Provider value={column.contentWidth}>
       <PageWheelClaimContext.Provider value={scroll ? claimRef.current : null}>
       <PageScrollerContext.Provider value={scroll ? scrollerRef : null}>
         <div
@@ -254,8 +280,8 @@ function PlainSettingsPage({
                 maxWidth,
                 gap,
                 paddingTop: 24,
-                paddingLeft: 24,
-                paddingRight: 24,
+                paddingLeft: column.padding,
+                paddingRight: column.padding,
                 paddingBottom: 48,
                 ...(scroll ? {} : { minHeight: 0 }),
               }}
@@ -267,6 +293,7 @@ function PlainSettingsPage({
         </div>
       </PageScrollerContext.Provider>
       </PageWheelClaimContext.Provider>
+      </SettingsColumnWidthContext.Provider>
     </PageScopeSentenceContext.Provider>
   );
 }
@@ -363,6 +390,7 @@ function SettingsSectionHeader({
   headerAction?: ReactNode;
 }) {
   const theme = useTheme();
+  const inset = useSettingsInset();
   const { ref, highlighted } = useSettingsSearchTarget(id);
   return (
     <div
@@ -375,8 +403,8 @@ function SettingsSectionHeader({
         justifyContent: "space-between",
         gap: 16,
         minHeight: 28,
-        paddingLeft: 16,
-        paddingRight: 16,
+        paddingLeft: inset,
+        paddingRight: inset,
         borderRadius: RADIUS.md,
         position: "relative",
       }}
@@ -404,6 +432,7 @@ export function SettingsVirtualPage({
   maxWidth?: number;
 }) {
   const renderer = useGpuixRequired();
+  const pageColumn = useSettingsColumn(maxWidth);
   const listRef = useRef<{ id: number } | null>(null);
   const frameRef = useRef<{ id: number } | null>(null);
   const [virtualListRefs] = useState(() => ({ list: listRef, frame: frameRef }));
@@ -417,13 +446,14 @@ export function SettingsVirtualPage({
   }, [targetIndex, target?.nonce, showScope, renderer]);
   const column = (key: string, node: ReactNode, paddingTop: number, paddingBottom = 0) => (
     <div key={key} style={{ display: "flex", flexDirection: "row", justifyContent: "center", width: "100%" }}>
-      <div style={{ display: "flex", flexDirection: "column", width: "100%", maxWidth, paddingLeft: 24, paddingRight: 24, paddingTop, paddingBottom }}>
+      <div style={{ display: "flex", flexDirection: "column", width: "100%", maxWidth, paddingLeft: pageColumn.padding, paddingRight: pageColumn.padding, paddingTop, paddingBottom }}>
         {node}
       </div>
     </div>
   );
   return (
     <PageScopeSentenceContext.Provider value={showScope}>
+      <SettingsColumnWidthContext.Provider value={pageColumn.contentWidth}>
       <PageVirtualListContext.Provider value={virtualListRefs}>
       <div ref={frameRef as never} testId="settings-page-scroll" style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0 }}>
         <virtual-list ref={listRef as never} overdraw={900} style={{ flexGrow: 1, minHeight: 0 }}>
@@ -441,6 +471,7 @@ export function SettingsVirtualPage({
         </virtual-list>
       </div>
       </PageVirtualListContext.Provider>
+      </SettingsColumnWidthContext.Provider>
     </PageScopeSentenceContext.Provider>
   );
 }
@@ -473,8 +504,9 @@ export function GroupedItem({ position, children }: { position: "single" | "firs
 /** A section title row on its own (SettingsSection's header without the group). */
 export function SettingsSectionTitle({ title, headerAction }: { title: string; headerAction?: ReactNode }) {
   const theme = useTheme();
+  const inset = useSettingsInset();
   return (
-    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 16, minHeight: 28, paddingLeft: 16, paddingRight: 16 }}>
+    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 16, minHeight: 28, paddingLeft: inset, paddingRight: inset }}>
       <Text color={alpha(theme.foreground, 0.7)}>{title}</Text>
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>{headerAction}</div>
     </div>
@@ -511,6 +543,7 @@ export function SettingsSection({
   children: ReactNode;
 }) {
   const theme = useTheme();
+  const inset = useSettingsInset();
   const { ref, highlighted } = useSettingsSearchTarget(id);
   return (
     <div ref={ref as never} testId={id ? `settings-section-${id}` : undefined} style={{ display: "flex", flexDirection: "column", width: "100%", gap: hideTitle ? 0 : 10 }}>
@@ -523,8 +556,8 @@ export function SettingsSection({
             justifyContent: "space-between",
             gap: 16,
             minHeight: 28,
-            paddingLeft: 16,
-            paddingRight: 16,
+            paddingLeft: inset,
+            paddingRight: inset,
             borderRadius: RADIUS.md,
             position: "relative",
           }}
@@ -635,6 +668,11 @@ export function SettingsRow({
 }) {
   const theme = useTheme();
   const { ref, highlighted } = useSettingsSearchTarget(id);
+  const inset = useSettingsInset();
+  // `@container/settings-row`: the row's content box (group border and row padding off
+  // the column) under 32rem stacks the control below the title, full width.
+  const columnWidth = useContext(SettingsColumnWidthContext);
+  const stacked = columnWidth !== null && columnWidth - 2 - inset * 2 < 512;
   const context = useOptionalSettingsScope();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const primaryEnvironment = usePrimaryEnvironment();
@@ -764,8 +802,8 @@ export function SettingsRow({
         display: "flex",
         flexDirection: "column",
         width: "100%",
-        paddingLeft: 16,
-        paddingRight: 16,
+        paddingLeft: inset,
+        paddingRight: inset,
         paddingTop: 12,
         paddingBottom: children ? 4 : 12,
         opacity: disabled ? 0.64 : 1,
@@ -773,7 +811,7 @@ export function SettingsRow({
       }}
     >
       {highlighted ? <SearchTargetRing /> : null}
-      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 32 }}>
+      <div style={{ display: "flex", flexDirection: stacked ? "column" : "row", alignItems: stacked ? "stretch" : "center", gap: stacked ? 12 : 32 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 4, flexGrow: 1, flexShrink: 1, minWidth: 0 }}>
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minHeight: 20 }}>
             {typeof title === "string" ? (
@@ -819,14 +857,13 @@ export function SettingsRow({
               display: "flex",
               flexDirection: "row",
               alignItems: "center",
-              justifyContent: "flex-end",
+              justifyContent: stacked ? "flex-start" : "flex-end",
               gap: 8,
               flexShrink: 0,
-              minWidth: 160,
-              ...(controlWidth ? { width: controlWidth } : {}),
+              ...(stacked ? { width: "100%", minWidth: 0 } : { minWidth: 160, ...(controlWidth ? { width: controlWidth } : {}) }),
             }}
           >
-            {controlNode}
+            <SettingsRowStackedContext.Provider value={stacked}>{controlNode}</SettingsRowStackedContext.Provider>
           </div>
         ) : null}
       </div>
@@ -1348,6 +1385,7 @@ export function machineIcon(config: Parameters<typeof resolveEnvironmentMachineK
 
 export function SettingsScopeSentence() {
   const theme = useTheme();
+  const inset = useSettingsInset();
   const scope = useOptionalSettingsScope();
   const showScope = useContext(PageScopeSentenceContext);
   const { environments } = useEnvironments();
@@ -1371,7 +1409,7 @@ export function SettingsScopeSentence() {
     ? environments.filter((environment) => memberEnvironmentIds.has(environment.environmentId))
     : environments;
   return (
-    <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 6, rowGap: 4, paddingLeft: 16, paddingRight: 16 }}>
+    <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 6, rowGap: 4, paddingLeft: inset, paddingRight: inset }}>
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
         <Text size="base" color={theme.mutedForeground}>
           Applying settings for

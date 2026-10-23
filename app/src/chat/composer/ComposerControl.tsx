@@ -2,12 +2,15 @@
 // icon/chevron sizing and the 1×16 separator between control blocks.
 //   sm: h 28, px 10, gap 6, 14px medium muted label, 16px icons, chevron 14 @2.25
 //   xs: h 24, px 7, gap 4, 12px normal muted/70 label, 14px icons (resting strip)
+// Below `sm` web's classes are mobile-first: sm labels are text-base with 18px icons, xs is
+// h-7, and the separators are `hidden sm:block`.
 import type { Props } from "@gpuix/react";
 import { createContext, type ReactNode, useContext, useEffect, useId } from "react";
 
 import { Icon, type IconName } from "../../ui/Icon.tsx";
 import type { Style } from "../../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
+import { useSmallViewport } from "../../ui/viewport.tsx";
 
 export type ComposerControlSize = "sm" | "xs";
 
@@ -31,6 +34,7 @@ export function ComposerControl({
   style?: Style;
 } & Omit<Props, "style" | "onClick" | "children">) {
   const theme = useTheme();
+  const small = useSmallViewport();
   return (
     <div
       {...rest}
@@ -42,7 +46,7 @@ export function ComposerControl({
         alignItems: "center",
         justifyContent: "center",
         flexShrink: 0,
-        height: size === "xs" ? 24 : 28,
+        height: size === "xs" && !small ? 24 : 28,
         gap: size === "xs" ? 4 : 6,
         paddingLeft: size === "xs" ? 7 : 10,
         paddingRight: size === "xs" ? 7 : 10,
@@ -90,13 +94,15 @@ export function composerControlLabelStyle(
   size: ComposerControlSize,
   pressed?: boolean,
   color?: string,
+  /** Below `sm`: sm labels are `text-base`. xs stays 12 (the strip forces `text-xs!`). */
+  small?: boolean,
 ): Style {
   return {
     color:
       color ??
       (pressed ? theme.accentForeground : size === "xs" ? alpha(theme.mutedForeground, 0.7) : theme.mutedForeground),
-    fontSize: size === "xs" ? 12 : 14,
-    lineHeight: size === "xs" ? 16 : 20,
+    fontSize: size === "xs" ? 12 : small ? 16 : 14,
+    lineHeight: size === "xs" ? 16 : small ? 24 : 20,
     fontWeight: size === "xs" ? 400 : 500,
     fontFamily: FONTS.sans,
     whiteSpace: "nowrap",
@@ -120,6 +126,7 @@ export function ComposerControlLabel({
   truncate?: boolean;
 }) {
   const theme = useTheme();
+  const small = useSmallViewport();
   const block = useContext(ComposerControlBlockContext);
   const key = useId();
   const reportLabel = block?.reportLabel;
@@ -136,7 +143,7 @@ export function ComposerControlLabel({
           : undefined
       }
       style={{
-        ...composerControlLabelStyle(theme, size, pressed, color),
+        ...composerControlLabelStyle(theme, size, pressed, color, small),
         ...(truncate && !iconOnly ? { textOverflow: "ellipsis", overflow: "hidden", minWidth: 0, flexShrink: 1 } : {}),
         ...(iconOnly ? COMPOSER_CONTROL_HIDDEN_STYLE : {}),
       }}
@@ -159,10 +166,11 @@ export function ComposerControlIcon({
   color?: string;
 }) {
   const theme = useTheme();
+  const small = useSmallViewport();
   return (
     <Icon
       name={name}
-      size={size === "xs" ? 12 : large ? 18 : 16}
+      size={size === "xs" ? 12 : large || small ? 18 : 16}
       color={color ?? (size === "xs" ? alpha(theme.mutedForeground, 0.7) : theme.mutedForeground)}
     />
   );
@@ -193,6 +201,7 @@ export function ComposerControlChevron({ size = "sm", color }: { size?: Composer
 
 export function ComposerControlSeparator({ size = "sm" }: { size?: ComposerControlSize }) {
   const theme = useTheme();
+  if (useSmallViewport()) return null;
   return (
     <div
       style={{
