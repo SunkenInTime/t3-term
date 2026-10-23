@@ -1,6 +1,7 @@
 // Launch t3-term under gpuix automation and write PNG screenshots.
 // bun scripts/shot.ts <out-dir> [steps.json]
-// steps: [{click: testId}|{clickText: text}|{press: "ctrl-k"}|{fill:[testId,text]}|{wait: ms}|{shot: name}|{mouse:[x,y]}]
+// steps: [{click: testId}|{clickText: text}|{press: "ctrl-k"}|{fill:[testId,text]}|{wait: ms}|{shot: name}|{mouse:[x,y]}
+//         |{wheel:[testId,dx,dy]}|{drag:[testId,dx,dy]}|{hover: testId}|{rightClick: testId}]
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { launch } from "@gpuix/react/automation";
@@ -22,6 +23,10 @@ try {
     if (step.mouse) await app.mouse.click(step.mouse[0], step.mouse[1]);
     if (step.fill) await app.getByTestId(step.fill[0]).fill(step.fill[1]);
     if (step.press) await app.getByTestId(step.target ?? "composer").press(step.press);
+    if (step.wheel) await app.getByTestId(step.wheel[0]).wheel(step.wheel[1], step.wheel[2]);
+    if (step.drag) await app.getByTestId(step.drag[0]).dragBy(step.drag[1], step.drag[2], { steps: 8 });
+    if (step.hover) await app.getByTestId(step.hover).hover();
+    if (step.rightClick) await app.getByTestId(step.rightClick).click({ button: 2 });
     if (step.shot) {
       const path = join(outDir, `${step.shot}.png`);
       await app.screenshot({ path });
