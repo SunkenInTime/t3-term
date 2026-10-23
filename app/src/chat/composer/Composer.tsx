@@ -19,8 +19,7 @@
 // The caret position is not exposed by gpuix, so trigger detection uses the caret implied
 // by each edit (the end of the inserted text, or the deletion point).
 import { composerInsetAtom, restoredPromptAtom } from "../../state/timeline.ts";
-import { detailsPresentationAtom } from "../../state/git.ts";
-import { resolveChatLane } from "../chatLane.ts";
+import { ChatLane, useDetailsCardInline } from "../chatLane.tsx";
 import { newThreadContextRequestAtom } from "../../state/sidebar.ts";
 import { useAtomValue } from "@effect/atom-react";
 import { useGpuixRequired, type KeyEvent } from "@gpuix/react";
@@ -84,7 +83,7 @@ import {
   serverEnvironment,
   threadEnvironment,
 } from "../../state/environment.ts";
-import { detailsPanelOpenAtom, modelPickerOpenAtom, routeAtom } from "../../state/ui.ts";
+import { modelPickerOpenAtom, routeAtom } from "../../state/ui.ts";
 import { toast } from "../../ui/toast.tsx";
 import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { Text } from "../../ui/primitives.tsx";
@@ -228,10 +227,7 @@ export function Composer({
  * timeline uses so both clear the inline details card.
  */
 function ComposerOverlay({ children }: { children: ReactNode }) {
-  const [width, setWidth] = useState(0);
-  const detailsOpen = useAtomValue(detailsPanelOpenAtom);
-  const detailsInline = useAtomValue(detailsPresentationAtom) === "inline";
-  const lane = resolveChatLane(width, detailsOpen && detailsInline);
+  const cardInline = useDetailsCardInline();
   return (
     <div
       style={{
@@ -239,25 +235,21 @@ function ComposerOverlay({ children }: { children: ReactNode }) {
         left: 0,
         right: 0,
         bottom: 0,
-        display: "flex",
-        flexDirection: "row",
         paddingTop: 8,
-        paddingLeft: width > 0 ? lane.left : LAYOUT.chatLanePadding,
         paddingBottom: 20,
         pointerEvents: "none",
       }}
       onLayout={(event) => {
-        const size = event as { width?: number; height?: number };
-        if (typeof size.width === "number" && Math.abs(size.width - width) > 0.5) setWidth(size.width);
+        const size = event as { height?: number };
         // The timeline pads its end by the overlay's height so the last row clears it.
         if (typeof size.height === "number" && Math.abs(appAtomRegistry.get(composerInsetAtom) - size.height) > 0.5) {
           appAtomRegistry.set(composerInsetAtom, size.height);
         }
       }}
     >
-      <div style={{ display: "flex", flexDirection: "row", justifyContent: "center", width: width > 0 ? lane.width : "100%" }}>
-        {children}
-      </div>
+      <ChatLane cardInline={cardInline}>
+        <div style={{ display: "flex", flexDirection: "row", justifyContent: "center", width: "100%" }}>{children}</div>
+      </ChatLane>
     </div>
   );
 }

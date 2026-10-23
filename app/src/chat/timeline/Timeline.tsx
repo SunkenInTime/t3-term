@@ -46,7 +46,7 @@ import {
   timelineVcs,
   turnDiffRequestAtom,
 } from "../../state/timeline.ts";
-import { detailsPanelOpenAtom, findBarOpenAtom, routeAtom } from "../../state/ui.ts";
+import { findBarOpenAtom, routeAtom } from "../../state/ui.ts";
 import { Dialog } from "../../ui/overlay.tsx";
 import { Button, Text } from "../../ui/primitives.tsx";
 import { LAYOUT, alpha, useTheme } from "../../ui/theme.ts";
@@ -128,8 +128,7 @@ export function Timeline({ environmentId, threadId }: { environmentId: Environme
  * 736px column centered in the canvas with 48px gutters, kept 32px clear of
  * the floating details card.
  */
-export { resolveChatLane } from "../chatLane.ts";
-import { resolveChatLane } from "../chatLane.ts";
+import { ChatLane, useDetailsCardInline } from "../chatLane.tsx";
 
 function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
   const theme = useTheme();
@@ -661,9 +660,7 @@ const TimelineList = memo(function TimelineList({
   const renderer = useGpuixRequired();
   const listRef = useRef<PublicInstance | null>(null);
   const composerInset = useAtomValue(composerInsetAtom);
-  const detailsOpen = useAtomValue(detailsPanelOpenAtom);
-  const [width, setWidth] = useState(0);
-  const lane = resolveChatLane(width, detailsOpen);
+  const cardInline = useDetailsCardInline();
   const [atEnd, setAtEnd] = useState(true);
   const leadingRows = (history ? 1 : 0) + (parentThreadLink ? 1 : 0) + 1;
   const rowCount = leadingRows + rows.length + 2;
@@ -722,9 +719,8 @@ const TimelineList = memo(function TimelineList({
             },
           }
         : {})}
-      style={{ display: "flex", flexDirection: "row", paddingLeft: lane.left }}
     >
-      <div style={{ display: "flex", flexDirection: "column", width: lane.width, minWidth: 0 }}>{children}</div>
+      <ChatLane cardInline={cardInline}>{children}</ChatLane>
     </div>
   );
 
@@ -734,10 +730,6 @@ const TimelineList = memo(function TimelineList({
       style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, position: "relative" }}
       // The list itself takes no onScroll; wheel deltas reach this wrapper.
       onScroll={() => queueMicrotask(checkAtEnd)}
-      onLayout={(event) => {
-        const next = Math.round(event.width ?? 0);
-        if (next > 0 && next !== width) setWidth(next);
-      }}
     >
       <virtual-list
         ref={listRef}
@@ -771,7 +763,7 @@ const TimelineList = memo(function TimelineList({
         {frame("timeline-status", <ThreadStatusFooter threadRef={threadRef} />)}
         <div key="timeline-footer" style={{ height: composerInset + 16 }} />
       </virtual-list>
-      {atEnd ? null : <ScrollToEndButton bottom={composerInset + 4} left={lane.left} width={lane.width} onScrollToEnd={scrollToEnd} />}
+      {atEnd ? null : <ScrollToEndButton bottom={composerInset + 4} cardInline={cardInline} onScrollToEnd={scrollToEnd} />}
     </div>
   );
 });
@@ -812,15 +804,13 @@ function TimelineHistoryControl(props: {
 }
 
 /** TimelineOverlays.tsx ScrollToEndButton: a glass pill 4px above the composer. */
-function ScrollToEndButton({ bottom, left, width, onScrollToEnd }: { bottom: number; left: number; width: number; onScrollToEnd: () => void }) {
+function ScrollToEndButton({ bottom, cardInline, onScrollToEnd }: { bottom: number; cardInline: boolean; onScrollToEnd: () => void }) {
   const theme = useTheme();
   return (
+    <div style={{ position: "absolute", left: 0, right: 0, bottom, pointerEvents: "none" }}>
+    <ChatLane cardInline={cardInline}>
     <div
       style={{
-        position: "absolute",
-        left,
-        width,
-        bottom,
         display: "flex",
         flexDirection: "row",
         justifyContent: "center",
@@ -855,6 +845,8 @@ function ScrollToEndButton({ bottom, left, width, onScrollToEnd }: { bottom: num
           Scroll to end
         </Text>
       </div>
+    </div>
+    </ChatLane>
     </div>
   );
 }
