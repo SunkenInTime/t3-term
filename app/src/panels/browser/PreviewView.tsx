@@ -295,7 +295,6 @@ export function PreviewView({
               bottom: 0,
               display: "flex",
               flexDirection: "column",
-              pointerEvents: showEmptyState || isUnreachable ? "none" : "auto",
             }}
           >
             {viewport._tag !== "fill" && !showEmptyState && !isUnreachable ? (

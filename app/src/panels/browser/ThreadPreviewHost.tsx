@@ -28,6 +28,7 @@ import {
 } from "../../state/preview.ts";
 import { rightPanelActions, rightPanelThreadStateAtom } from "../../state/rightPanel.ts";
 import { rightPanelOpenAtom } from "../../state/ui.ts";
+import { detailsCardRectAtom } from "../../state/git.ts";
 import { useClientSettings } from "../../web/browser/clientSettings.ts";
 import { type BrowserViewportResizeDirection } from "../../web/browser/browserViewportLayout.ts";
 import {
@@ -45,6 +46,8 @@ import { RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { ServerBrowserSurface } from "./ServerBrowserSurface.tsx";
 
 const HANDLE_TAP_SLOP_PX = 6;
+/** Two 24px icon buttons, a 2px gap, 2px padding and a 1px border each side. */
+const PILL_WIDTH = 56;
 
 export function ThreadPreviewHost({ environmentId, threadId }: { environmentId: EnvironmentId; threadId: ThreadId }) {
   const threadRef = threadRefOf(environmentId, threadId);
@@ -124,6 +127,29 @@ const RESIZE_HANDLES: ReadonlyArray<{
   { direction: "southeast", cursor: "nwse-resize", style: (f) => ({ left: f.width - 8, top: f.height - 8, width: 16, height: 16 }) },
 ];
 
+/**
+ * chatCanvasLayout.ts places an unplaced player bottom-right and then narrows the
+ * chat lane so the composer clears it. t3-term's timeline and composer do not move
+ * aside, so the player keeps resolvePreviewMiniPlayerFrame's own default instead:
+ * top-right, under the thread details card. A dragged player stays clear of the card.
+ */
+function miniPlayerFrame(
+  miniPlayer: PreviewMiniPlayerState,
+  source: { width: number; height: number },
+  container: { width: number; height: number },
+  detailsCard: { left: number; right: number; bottom: number } | null,
+): PreviewMiniPlayerFrame {
+  const frame = resolvePreviewMiniPlayerFrame({
+    width: miniPlayer.width,
+    position: miniPlayer.position,
+    source,
+    container,
+    obstacles: { detailsCard, composer: null },
+  });
+  const obstacle = miniPlayer.lastInteraction === "resize" ? null : detailsCard;
+  return { ...frame, ...clampPreviewMiniPlayerPosition(frame, container, frame, { detailsCard: obstacle, composer: null }) };
+}
+
 function BrowserMiniPlayer({ threadRef, miniPlayer }: { threadRef: ScopedThreadRef; miniPlayer: PreviewMiniPlayerState }) {
   const theme = useTheme();
   const tabId = miniPlayer.tabId;
@@ -132,11 +158,36 @@ function BrowserMiniPlayer({ threadRef, miniPlayer }: { threadRef: ScopedThreadR
   const [container, setContainer] = useState<{ width: number; height: number } | null>(null);
   const [streamViewport, setStreamViewport] = useState<PreviewStreamViewport | null>(null);
   const [handleHovered, setHandleHovered] = useState(false);
+  // The pill's buttons cover the handle, and in gpuix covering ends the handle's
+  // hover; handle and buttons share one hover that closes a moment after the last leave.
+  const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hovering = useRef(new Set<string>());
+  const hoverGroup = {
+    enter: (member: string) => {
+      hovering.current.add(member);
+      if (leaveTimer.current !== null) clearTimeout(leaveTimer.current);
+      leaveTimer.current = null;
+      setHandleHovered(true);
+    },
+    // Enter and leave of two members can arrive in either order, so the pill
+    // closes only once no member is hovered.
+    leave: (member: string) => {
+      hovering.current.delete(member);
+      if (hovering.current.size > 0) return;
+      if (leaveTimer.current !== null) clearTimeout(leaveTimer.current);
+      leaveTimer.current = setTimeout(() => {
+        leaveTimer.current = null;
+        if (hovering.current.size === 0 && gestureRef.current === null) setHandleHovered(false);
+      }, 120);
+    },
+  };
+  useEffect(() => () => {
+    if (leaveTimer.current !== null) clearTimeout(leaveTimer.current);
+  }, []);
   const gestureRef = useRef<Gesture | null>(null);
   const sourceSize = streamViewport ?? resolvePreviewMiniPlayerSourceSize(snapshot?.viewport ?? FILL_PREVIEW_VIEWPORT, null, snapshot?.zoomFactor ?? 1);
-  const frame = container
-    ? resolvePreviewMiniPlayerFrame({ width: miniPlayer.width, position: miniPlayer.position, source: sourceSize, container })
-    : null;
+  const detailsCard = useAtomValue(detailsCardRectAtom);
+  const frame = container ? miniPlayerFrame(miniPlayer, sourceSize, container, detailsCard) : null;
   const radius = PREVIEW_MINI_PLAYER_CORNER_RADIUS;
   const pillInset = Math.max(8, Math.round(radius * 0.55));
 
@@ -165,7 +216,7 @@ function BrowserMiniPlayer({ threadRef, miniPlayer }: { threadRef: ScopedThreadR
     gestureRef.current = null;
   };
 
-  return (
+  const probe = (
     <div
       onLayout={(event: EventPayload) => {
         const width = Math.round(event.width ?? 0);
@@ -173,10 +224,17 @@ function BrowserMiniPlayer({ threadRef, miniPlayer }: { threadRef: ScopedThreadR
         if (width > 0 && height > 0) setContainer((current) => (current?.width === width && current.height === height ? current : { width, height }));
       }}
       style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, pointerEvents: "none" }}
-    >
+    />
+  );
+  // gpuix does not let a child re-enable pointer events under a `none` parent, so the
+  // layout probe above and the player are siblings rather than one full-cover layer.
+  return (
+    <>
+      {probe}
       {frame ? (
         <div
           testId="preview-mini-player"
+          // Overlays only take the pointer with pointerEvents "auto" (docs/gpuix-notes.md).
           style={{ position: "absolute", left: frame.x, top: frame.y, width: frame.width, height: frame.height, pointerEvents: "auto" }}
         >
           <div
@@ -206,6 +264,7 @@ function BrowserMiniPlayer({ threadRef, miniPlayer }: { threadRef: ScopedThreadR
               controlPosition="bottom"
               onViewport={setStreamViewport}
               onPopup={(popupTabId) => showPreviewPopup(threadRef, popupTabId, "floating")}
+              pointerBlocked={() => hovering.current.size > 0 || gestureRef.current !== null}
             />
           </div>
           {RESIZE_HANDLES.map(({ direction, style, cursor }) => (
@@ -214,64 +273,98 @@ function BrowserMiniPlayer({ threadRef, miniPlayer }: { threadRef: ScopedThreadR
               onMouseDown={(event: EventPayload) => begin(event, direction)}
               onMouseMove={move}
               onMouseUp={end}
-              style={{ position: "absolute", cursor, ...style(frame) }}
+              onMouseEnter={() => hovering.current.add(direction)}
+              onMouseLeave={() => hovering.current.delete(direction)}
+              style={{ position: "absolute", cursor, pointerEvents: "auto", ...style(frame) }}
             />
           ))}
           {/* Drag handle: a dot that becomes the action pill on hover. */}
           <div
             testId="preview-mini-handle"
-            onMouseEnter={() => setHandleHovered(true)}
-            onMouseLeave={() => setHandleHovered(false)}
+            onMouseEnter={() => hoverGroup.enter("handle")}
+            onMouseLeave={() => hoverGroup.leave("handle")}
             onMouseDown={(event: EventPayload) => begin(event, null)}
             onMouseMove={move}
             onMouseUp={end}
+            // Explicit box: an absolute element sized by its content and placed with
+            // `right` reports its bounds at the origin in gpuix, so it never gets the pointer.
             style={{
               position: "absolute",
               top: pillInset,
-              right: pillInset,
+              left: frame.width - pillInset - (handleHovered ? PILL_WIDTH : 12),
+              width: handleHovered ? PILL_WIDTH : 12,
+              height: handleHovered ? 32 : 12,
               display: "flex",
               flexDirection: "row",
-              justifyContent: "flex-end",
+              alignItems: handleHovered ? "center" : "flex-start",
+              justifyContent: handleHovered ? "flex-start" : "flex-end",
+              gap: 2,
+              padding: handleHovered ? 2 : 0,
               cursor: "grab",
+              pointerEvents: "auto",
+              ...(handleHovered
+                ? {
+                    borderRadius: RADIUS.lg,
+                    borderWidth: 1,
+                    borderColor: alpha(theme.border, 0.8),
+                    backgroundColor: alpha(theme.appearance === "dark" ? "#141414" : "#ffffff", 0.92),
+                  }
+                : {}),
             }}
           >
             {handleHovered ? (
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 2,
-                  height: 32,
-                  padding: 2,
-                  borderRadius: RADIUS.lg,
-                  borderWidth: 1,
-                  borderColor: alpha(theme.border, 0.8),
-                  backgroundColor: alpha(theme.appearance === "dark" ? "#141414" : "#ffffff", 0.92),
-                }}
-              >
-                <PillButton icon="panel-right" label="Open in right panel" onClick={() => returnMiniPlayerToPanel(threadRef, tabId)} testId="preview-mini-open-panel" />
-                <PillButton icon="x" label="Close floating preview" onClick={() => closeMiniPlayer(threadRef)} testId="preview-mini-close" />
-              </div>
+              <>
+                <PillButton
+                  icon="panel-right"
+                  label="Open in right panel"
+                  hoverGroup={hoverGroup}
+                  onClick={() => returnMiniPlayerToPanel(threadRef, tabId)}
+                  testId="preview-mini-open-panel"
+                />
+                <PillButton
+                  icon="x"
+                  label="Close floating preview"
+                  hoverGroup={hoverGroup}
+                  onClick={() => closeMiniPlayer(threadRef)}
+                  testId="preview-mini-close"
+                />
+              </>
             ) : (
-              <div style={{ width: 12, height: 12, display: "flex", justifyContent: "flex-end" }}>
-                <div style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: alpha(theme.foreground, 0.25) }} />
-              </div>
+              // A filled child takes the pointer from its parent in gpuix, hence pointerEvents none.
+              <div style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: alpha(theme.foreground, 0.25), pointerEvents: "none" }} />
             )}
           </div>
         </div>
       ) : null}
-    </div>
+    </>
   );
 }
 
-function PillButton({ icon, label, onClick, testId }: { icon: "panel-right" | "x"; label: string; onClick: () => void; testId: string }) {
+function PillButton({
+  icon,
+  label,
+  onClick,
+  hoverGroup,
+  testId,
+}: {
+  icon: "panel-right" | "x";
+  label: string;
+  onClick: () => void;
+  hoverGroup: { enter: (member: string) => void; leave: (member: string) => void };
+  testId: string;
+}) {
   const theme = useTheme();
   return (
     <Tooltip content={label} side="top">
       <div
         testId={testId}
-        onClick={onClick}
+        // gpuix delivers a press to every element under the pointer, so the handle's
+        // drag listeners capture the release and a click never completes here; act on press.
+        onMouseDown={(event: EventPayload) => {
+          if ((event.button ?? 0) === 0) onClick();
+        }}
+        onMouseEnter={() => hoverGroup.enter(testId)}
+        onMouseLeave={() => hoverGroup.leave(testId)}
         style={{
           display: "flex",
           alignItems: "center",

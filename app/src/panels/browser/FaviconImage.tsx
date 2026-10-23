@@ -46,5 +46,5 @@ export function FaviconImage({ url, size, color }: { url: string | null; size: n
     }
   }, [bytes]);
   if (!bytes) return <Icon name="globe" size={size} color={color ?? theme.mutedForeground} />;
-  return <img ref={imgRef} objectFit="contain" style={{ width: size, height: size, borderRadius: 2, flexShrink: 0 }} />;
+  return <img ref={imgRef} objectFit="contain" style={{ width: size, height: size, borderRadius: 2, flexShrink: 0, pointerEvents: "none" }} />;
 }

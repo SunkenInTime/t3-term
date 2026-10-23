@@ -141,6 +141,12 @@ export function ServerBrowserSurface(props: {
   readonly onControl?: (control: PreviewStreamControl | null) => void;
   readonly onPopup?: (tabId: string) => void;
   readonly handleRef?: Ref<ServerBrowserHandle>;
+  /**
+   * gpuix delivers a press to every element under the pointer, not only the
+   * topmost. A host whose own controls overlap the page (the mini player's drag
+   * handle) reports here when the pointer is on them, so the page gets no click.
+   */
+  readonly pointerBlocked?: () => boolean;
   readonly testId?: string;
 }) {
   const {
@@ -174,6 +180,9 @@ export function ServerBrowserSurface(props: {
   const [accessDenied, setAccessDenied] = useState(false);
   const [hostSetup, setHostSetup] = useState<PreviewStreamHostSetup | null>(null);
   const [cap, setCap] = useState<{ width: number; height: number } | null>(null);
+  // The img takes the box in px: a percentage height resolves against the nearest
+  // definite ancestor, which in the mini player includes the control row.
+  const [box, setBox] = useState<{ width: number; height: number } | null>(null);
   const pendingMoveRef = useRef<MouseInput | null>(null);
   const pendingWheelRef = useRef<WheelInput | null>(null);
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -208,6 +217,7 @@ export function ServerBrowserSurface(props: {
 
   /** web pagePoint: window px → page CSS px through the contained frame rect. */
   const pagePoint = (windowX: number, windowY: number, clamp: boolean): PagePoint | null => {
+    if (hidden) return null;
     const viewport = viewportRef.current;
     const frame = frameSizeRef.current;
     const elementId = surfaceIdRef.current;
@@ -242,6 +252,7 @@ export function ServerBrowserSurface(props: {
     const width = Math.round(event.width ?? 0);
     const height = Math.round(event.height ?? 0);
     if (width < 1 || height < 1) return;
+    setBox((current) => (current?.width === width && current.height === height ? current : { width, height }));
     const measure = () => {
       resizeTimer.current = null;
       const previous = sizeRef.current;
@@ -412,9 +423,10 @@ export function ServerBrowserSurface(props: {
   }
 
   const youControl = control?.controller === "you";
+  const overlayOpen = Boolean(control?.dialog) || (fileChooser !== null && youControl);
 
   const onMouseDown = (event: EventPayload) => {
-    if (controlRef.current?.controller !== "you") return;
+    if (controlRef.current?.controller !== "you" || props.pointerBlocked?.()) return;
     if (surfaceIdRef.current !== null) renderer.focusElement?.(surfaceIdRef.current);
     const point = pagePoint(event.x ?? 0, event.y ?? 0, false);
     if (!point) return;
@@ -580,18 +592,21 @@ export function ServerBrowserSurface(props: {
           testId={props.testId}
           tabIndex={0}
           onLayout={onLayout}
-          onMouseDown={onMouseDown}
-          onMouseUp={onMouseUp}
-          onMouseMove={onMouseMove}
+          // A dialog or file chooser card sits over the page; the page must not
+          // capture presses meant for its buttons (see pointerBlocked).
+          onMouseDown={overlayOpen ? undefined : onMouseDown}
+          onMouseUp={overlayOpen ? undefined : onMouseUp}
+          onMouseMove={overlayOpen ? undefined : onMouseMove}
           onScroll={onScroll}
           onKeyDown={(event) => handleKey("down", event)}
           onKeyUp={(event) => handleKey("up", event)}
-          style={{ position: "relative", flexGrow: 1, minHeight: 0, overflow: "hidden" }}
+          // Hidden under the empty or error state: let clicks reach it (gpuix has no z-index).
+          style={{ position: "relative", flexGrow: 1, minHeight: 0, overflow: "hidden", pointerEvents: hidden ? "none" : "auto" }}
         >
           <img
             ref={imgRef}
             objectFit="contain"
-            style={{ width: "100%", height: "100%", opacity: hasFrame ? 1 : 0, pointerEvents: "none" }}
+            style={{ width: box?.width ?? 0, height: box?.height ?? 0, opacity: hasFrame ? 1 : 0, pointerEvents: "none" }}
           />
           {agentCursor && !youControl && !hidden ? (
             <AgentCursorMark
@@ -755,6 +770,7 @@ function OverlayCard({ children, testId }: { children: React.ReactNode; testId?:
         borderColor: theme.border,
         backgroundColor: theme.background,
         boxShadow: { offsetX: 0, offsetY: 10, blurRadius: 15, spreadRadius: -3, color: "#00000040" },
+        pointerEvents: "auto",
       }}
     >
       {children}
@@ -779,6 +795,7 @@ function FullCover({ children }: { children: React.ReactNode }) {
         gap: 12,
         padding: 16,
         backgroundColor: theme.background,
+        pointerEvents: "auto",
       }}
     >
       {children}
