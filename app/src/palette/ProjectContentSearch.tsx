@@ -289,73 +289,70 @@ function OpenContentSearch({
           </Text>
         </div>
       ) : (
-        <PalettePanel fill>
-          <div style={{ display: "flex", flexDirection: "column", paddingTop: 8, paddingBottom: 8 }}>
-            {groups.map((group) => {
-              const path = splitPath(group.path);
-              return (
-                <div key={group.path} style={{ display: "flex", flexDirection: "column", paddingBottom: 8, flexShrink: 0 }}>
-                  <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, height: 32, paddingLeft: 12, paddingRight: 12 }}>
-                    <Icon name="file" size={14} color={theme.mutedForeground} />
-                    <Text size="xs" weight={500} style={{ flexShrink: 0 }}>
-                      {path.name}
-                    </Text>
-                    {path.directory ? (
-                      <Text size="xs" color={theme.mutedForeground} truncate style={{ flexShrink: 1 }}>
-                        {path.directory}
-                      </Text>
-                    ) : null}
-                    <div style={{ flexGrow: 1 }} />
-                    <div style={{ display: "flex", alignItems: "center", height: 16, paddingLeft: 6, paddingRight: 6, borderRadius: 8, backgroundColor: theme.muted }}>
-                      <Text size="3xs" color={theme.mutedForeground}>
-                        {String(group.matches.length)}
-                      </Text>
-                    </div>
-                  </div>
-                  {group.matches.map((match) => (
-                    <div
-                      key={`${match.path}:${match.lineNumber}:${match.resultIndex}`}
-                      ref={((instance: { scrollIntoView?: () => void } | null) => {
-                        if (instance) rowRefs.current.set(match.resultIndex, instance);
-                        else rowRefs.current.delete(match.resultIndex);
-                      }) as never}
-                      onMouseEnter={() => setSelectedIndex(match.resultIndex)}
-                      onClick={() => openMatch(match)}
-                      style={{
-                        display: "flex",
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: 12,
-                        height: 28,
-                        paddingLeft: 12,
-                        paddingRight: 12,
-                        backgroundColor: match.resultIndex === selectedIndex ? theme.accent : "#00000000",
-                        cursor: canOpenMatches ? "pointer" : "default",
-                        flexShrink: 0,
-                      }}
-                    >
-                      <div style={{ display: "flex", justifyContent: "flex-end", width: 40, flexShrink: 0 }}>
-                        <Text size="xs" mono color={alpha(theme.mutedForeground, 0.7)}>
-                          {String(match.lineNumber)}
-                        </Text>
-                      </div>
-                      <MatchLine match={match} />
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-            {matches.length > visibleCount ? (
-              <div
-                onClick={() => setVisibleCount((count) => count + VISIBLE_MATCH_WINDOW)}
-                style={{ display: "flex", justifyContent: "center", paddingTop: 6, paddingBottom: 6, cursor: "pointer" }}
-              >
-                <Text size="xs" color={theme.mutedForeground}>
-                  Show more results
+        <PalettePanel fill padding={{ y: 8, x: 0 }}>
+          {groups.flatMap((group) => {
+            const path = splitPath(group.path);
+            return [
+              <div key={`header:${group.path}`} style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, height: 32, paddingLeft: 12, paddingRight: 12, flexShrink: 0 }}>
+                <Icon name="file" size={14} color={theme.mutedForeground} />
+                <Text size="xs" weight={500} style={{ flexShrink: 0 }}>
+                  {path.name}
                 </Text>
-              </div>
-            ) : null}
-          </div>
+                {path.directory ? (
+                  <Text size="xs" color={theme.mutedForeground} truncate style={{ flexShrink: 1 }}>
+                    {path.directory}
+                  </Text>
+                ) : null}
+                <div style={{ flexGrow: 1 }} />
+                <div style={{ display: "flex", alignItems: "center", height: 16, paddingLeft: 6, paddingRight: 6, borderRadius: 8, backgroundColor: theme.muted }}>
+                  <Text size="3xs" color={theme.mutedForeground}>
+                    {String(group.matches.length)}
+                  </Text>
+                </div>
+              </div>,
+              ...group.matches.map((match, index) => (
+                <div
+                  key={`${match.path}:${match.lineNumber}:${match.resultIndex}`}
+                  ref={((instance: { scrollIntoView?: () => void } | null) => {
+                    if (instance) rowRefs.current.set(match.resultIndex, instance);
+                    else rowRefs.current.delete(match.resultIndex);
+                  }) as never}
+                  onMouseEnter={() => setSelectedIndex(match.resultIndex)}
+                  onClick={() => openMatch(match)}
+                  style={{
+                    display: "flex",
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 12,
+                    height: 28,
+                    paddingLeft: 12,
+                    paddingRight: 12,
+                    marginBottom: index === group.matches.length - 1 ? 8 : 0,
+                    backgroundColor: match.resultIndex === selectedIndex ? theme.accent : "#00000000",
+                    cursor: canOpenMatches ? "pointer" : "default",
+                    flexShrink: 0,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "flex-end", width: 40, flexShrink: 0 }}>
+                    <Text size="xs" mono color={alpha(theme.mutedForeground, 0.7)}>
+                      {String(match.lineNumber)}
+                    </Text>
+                  </div>
+                  <MatchLine match={match} />
+                </div>
+              )),
+            ];
+          })}
+          {matches.length > visibleCount ? (
+            <div
+              onClick={() => setVisibleCount((count) => count + VISIBLE_MATCH_WINDOW)}
+              style={{ display: "flex", justifyContent: "center", paddingTop: 6, paddingBottom: 6, cursor: "pointer", flexShrink: 0 }}
+            >
+              <Text size="xs" color={theme.mutedForeground}>
+                Show more results
+              </Text>
+            </div>
+          ) : null}
         </PalettePanel>
       )}
       <PaletteFooter actionLabel="Open file" escapeLabel="Back" />

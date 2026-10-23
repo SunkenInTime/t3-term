@@ -273,7 +273,11 @@ export function PaletteFooter({
 }
 
 /** Scrolling results region (CommandPanel + list padding). */
-export function PalettePanel({ children, fill }: { children: ReactNode; fill?: boolean }) {
+/**
+ * Rows must be direct children: gpuix's scrollIntoView scrolls the scroller to
+ * the direct child that contains the target.
+ */
+export function PalettePanel({ children, fill, padding }: { children: ReactNode; fill?: boolean; padding?: { y: number; x: number } }) {
   const theme = useTheme();
   return (
     <div
@@ -281,6 +285,7 @@ export function PalettePanel({ children, fill }: { children: ReactNode; fill?: b
       style={{
         display: "flex",
         flexDirection: "column",
+        ...(padding ? { paddingTop: padding.y, paddingBottom: padding.y, paddingLeft: padding.x, paddingRight: padding.x } : {}),
         flexGrow: fill ? 1 : 0,
         flexShrink: 1,
         minHeight: 0,
@@ -450,9 +455,8 @@ export function PaletteRows({
     return <PaletteEmptyState message={emptyMessage} />;
   }
   return (
-    <PalettePanel>
-      <div style={{ display: "flex", flexDirection: "column", paddingTop: 8, paddingBottom: 8, paddingLeft: 8, paddingRight: 8 }}>
-        {rows.slice(0, limit).map((row) =>
+    <PalettePanel padding={{ y: 8, x: 8 }}>
+      {rows.slice(0, limit).map((row) =>
           row.kind === "label" ? (
             <div key={row.key} style={{ paddingTop: row.first ? 0 : 6, flexShrink: 0 }}>
               <div style={{ paddingTop: 6, paddingBottom: 6, paddingLeft: 8, paddingRight: 8 }}>
@@ -481,7 +485,6 @@ export function PaletteRows({
             />
           ),
         )}
-      </div>
     </PalettePanel>
   );
 }
