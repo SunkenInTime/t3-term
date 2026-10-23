@@ -205,6 +205,7 @@ function PlainSettingsPage({
           style={{
             display: "flex",
             flexDirection: "column",
+            width: "100%",
             flexGrow: 1,
             minHeight: 0,
             ...(scroll ? { overflowY: "scroll" } : { overflow: "hidden" }),
@@ -391,7 +392,7 @@ export function SettingsVirtualPage({
   return (
     <PageScopeSentenceContext.Provider value={showScope}>
       <PageVirtualListContext.Provider value={virtualListRefs}>
-      <div ref={frameRef as never} testId="settings-page-scroll" style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
+      <div ref={frameRef as never} testId="settings-page-scroll" style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0 }}>
         <virtual-list ref={listRef as never} overdraw={900} style={{ flexGrow: 1, minHeight: 0 }}>
           {[
             ...(showScope ? [column("scope", <SettingsScopeSentence />, 24)] : []),
@@ -479,7 +480,7 @@ export function SettingsSection({
   const theme = useTheme();
   const { ref, highlighted } = useSettingsSearchTarget(id);
   return (
-    <div ref={ref as never} testId={id ? `settings-section-${id}` : undefined} style={{ display: "flex", flexDirection: "column", gap: hideTitle ? 0 : 10 }}>
+    <div ref={ref as never} testId={id ? `settings-section-${id}` : undefined} style={{ display: "flex", flexDirection: "column", width: "100%", gap: hideTitle ? 0 : 10 }}>
       {hideTitle ? null : (
         <div
           style={{
@@ -537,6 +538,7 @@ export function SettingsGroup({
         style={{
           display: "flex",
           flexDirection: "column",
+          width: "100%",
           ...(grouped
             ? {
                 borderRadius: RADIUS.xl,
@@ -560,7 +562,7 @@ function dividedChildren(children: ReactNode, divided: boolean, color: string): 
     (child) => child !== null && child !== undefined && child !== false && child !== "",
   );
   return items.map((child, index) => (
-    <div key={(child as { key?: string | null })?.key ?? index} style={{ display: "flex", flexDirection: "column", ...(index > 0 ? { borderTopWidth: 1, paddingTop: 1, borderColor: color } : {}) }}>
+    <div key={(child as { key?: string | null })?.key ?? index} style={{ display: "flex", flexDirection: "column", width: "100%", ...(index > 0 ? { borderTopWidth: 1, paddingTop: 1, borderColor: color } : {}) }}>
       {child as ReactNode}
     </div>
   ));
@@ -728,6 +730,7 @@ export function SettingsRow({
       style={{
         display: "flex",
         flexDirection: "column",
+        width: "100%",
         paddingLeft: 16,
         paddingRight: 16,
         paddingTop: 12,
@@ -795,7 +798,7 @@ export function SettingsRow({
         ) : null}
       </div>
       {children ? (
-        <div style={{ display: "flex", flexDirection: "column", ...(unavailable ? { opacity: 0.5, pointerEvents: "none" } : {}) }}>
+        <div style={{ display: "flex", flexDirection: "column", width: "100%", ...(unavailable ? { opacity: 0.5, pointerEvents: "none" } : {}) }}>
           {children}
         </div>
       ) : null}

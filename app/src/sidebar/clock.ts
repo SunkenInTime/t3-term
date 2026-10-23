@@ -21,7 +21,8 @@ function tickAtom(intervalMs: number) {
 }
 
 const nowMinuteAtom = tickAtom(60_000);
-const nowSecondAtom = tickAtom(1_000);
+/** Exported so other modules can share the tick (the timeline's elapsed labels). */
+export const nowSecondAtom = tickAtom(1_000);
 
 export function useNowMinute(): number {
   return useAtomValue(nowMinuteAtom);

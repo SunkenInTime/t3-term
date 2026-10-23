@@ -540,7 +540,7 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
   const closeRevert = () => appAtomRegistry.set(revertConfirmAtom, null);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, minWidth: 0, position: "relative", backgroundColor: theme.background }}>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, minWidth: 0, position: "relative", backgroundColor: theme.background }}>
       {visibleThreadError ? (
         <ThreadErrorBanner
           error={visibleThreadError}
@@ -831,7 +831,7 @@ const TimelineList = memo(function TimelineList({
   return (
     <div
       testId="timeline-list"
-      style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, position: "relative" }}
+      style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, position: "relative" }}
       // The list itself takes no onScroll; wheel deltas reach this wrapper.
       onScroll={() => queueMicrotask(checkAtEnd)}
       onLayout={(event) => {
@@ -849,7 +849,7 @@ const TimelineList = memo(function TimelineList({
           if (history?.hasMoreHistory && !history.loading && Math.floor(event.startIndex ?? 1) === 0) onLoadEarlier();
           checkAtEnd();
         }}
-        style={{ flexGrow: 1, minHeight: 0, scrollbarColor: theme.scrollbar }}
+        style={{ width: "100%", flexGrow: 1, minHeight: 0, scrollbarColor: theme.scrollbar }}
       >
         {/* web: the titlebar scroll-fade height, 1.5rem */}
         <div

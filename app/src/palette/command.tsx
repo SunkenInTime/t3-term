@@ -4,11 +4,11 @@
 //   input row: py 6 px 8, 36px input, Search icon 16 icon-muted
 //   list: py 8 px 8; heading px 8 py 6 12px medium muted; item min-h 28 py 6 px 8 radius 6, gap 8
 //   footer: bg fg 2.5%, py 10 px 16, 14px medium muted, kbd bg fg 8% fg text
-import { useWindowSize } from "@gpuix/react";
+import { useGpuixRequired, useWindowSize } from "@gpuix/react";
 import * as DialogPrimitive from "@gpuix/react/dialog";
 import type { KeyEvent } from "@gpuix/react";
 import type { ResolvedKeybindingsConfig } from "@t3tools/contracts";
-import { memo, useEffect, useRef, type ReactNode, type RefObject } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { dialogGlassShadow } from "../ui/overlay.tsx";
@@ -432,21 +432,7 @@ const PaletteRowView = memo(function PaletteRowView({
   );
 });
 
-/**
- * CommandPaletteVirtualizedResults: headings and items. Keyboard highlight
- * scrolls its row into view. Rows past `limit` are not built; the palette
- * narrows long lists by typing, like web's virtualized list makes them cheap.
- */
-export function PaletteRows({
-  rows,
-  highlightedValue,
-  keybindings,
-  onExecute,
-  onHighlight,
-  scrollToHighlight,
-  emptyMessage,
-  limit = 300,
-}: {
+type PaletteRowsProps = {
   rows: ReadonlyArray<CommandPaletteRow>;
   highlightedValue: string | null;
   keybindings: ResolvedKeybindingsConfig;
@@ -456,48 +442,175 @@ export function PaletteRows({
   scrollToHighlight: number;
   emptyMessage: string;
   limit?: number;
+};
+
+// Lists up to this long render as plain rows and hug their content; longer ones
+// fill the popup's max height anyway, so they go on a windowed virtual list.
+// gpuix builds every child of a plain scroller each frame: 300 thread rows were
+// about 3,700 elements and 100+ ms per frame while typing a query.
+const PLAIN_ROW_LIMIT = 24;
+const ROW_WINDOW = 48;
+const ITEM_HEIGHT = 32;
+const TWO_LINE_ITEM_HEIGHT = 48;
+
+/**
+ * CommandPaletteVirtualizedResults: headings and items. Keyboard highlight
+ * scrolls its row into view. Rows past `limit` are not built; the palette
+ * narrows long lists by typing, like web's virtualized list makes them cheap.
+ */
+export function PaletteRows(props: PaletteRowsProps) {
+  const rows = props.rows.slice(0, props.limit ?? 300);
+  if (rows.length === 0) return <PaletteEmptyState message={props.emptyMessage} />;
+  return rows.length > PLAIN_ROW_LIMIT ? <VirtualPaletteRows {...props} rows={rows} /> : <PlainPaletteRows {...props} rows={rows} />;
+}
+
+function PaletteRowContent({
+  row,
+  highlightedValue,
+  keybindings,
+  onExecute,
+  onHighlight,
+  rowRef,
+}: Pick<PaletteRowsProps, "highlightedValue" | "keybindings" | "onExecute" | "onHighlight"> & {
+  row: CommandPaletteRow;
+  rowRef?: ((instance: { scrollIntoView?: () => void } | null) => void) | undefined;
 }) {
   const theme = useTheme();
+  return row.kind === "label" ? (
+    <div style={{ paddingTop: row.first ? 0 : 6, flexShrink: 0 }}>
+      <div style={{ paddingTop: 6, paddingBottom: 6, paddingLeft: 8, paddingRight: 8 }}>
+        <Text size="xs" weight={500} color={theme.mutedForeground}>
+          {row.label}
+        </Text>
+      </div>
+    </div>
+  ) : (
+    <PaletteRowView
+      item={row.item}
+      active={row.itemIndex !== null && highlightedValue === row.item.value}
+      disabled={row.itemIndex === null}
+      shortcutLabel={
+        row.itemIndex !== null && row.item.shortcutCommand ? shortcutLabelForCommand(keybindings, row.item.shortcutCommand) : null
+      }
+      onExecute={onExecute}
+      onHover={onHighlight}
+      {...(rowRef ? { rowRef } : {})}
+    />
+  );
+}
+
+function PlainPaletteRows(props: PaletteRowsProps) {
+  const { rows, highlightedValue, scrollToHighlight } = props;
   const rowRefs = useRef(new Map<string, { scrollIntoView?: () => void }>());
   useEffect(() => {
     if (highlightedValue === null) return;
     rowRefs.current.get(highlightedValue)?.scrollIntoView?.();
   }, [scrollToHighlight]);
-  if (rows.length === 0) {
-    return <PaletteEmptyState message={emptyMessage} />;
-  }
   return (
     <PalettePanel padding={{ y: 8, x: 8 }}>
-      {rows.slice(0, limit).map((row) =>
-          row.kind === "label" ? (
-            <div key={row.key} style={{ paddingTop: row.first ? 0 : 6, flexShrink: 0 }}>
-              <div style={{ paddingTop: 6, paddingBottom: 6, paddingLeft: 8, paddingRight: 8 }}>
-                <Text size="xs" weight={500} color={theme.mutedForeground}>
-                  {row.label}
-                </Text>
-              </div>
-            </div>
-          ) : (
-            <PaletteRowView
-              key={row.key}
-              item={row.item}
-              active={row.itemIndex !== null && highlightedValue === row.item.value}
-              disabled={row.itemIndex === null}
-              shortcutLabel={
-                row.itemIndex !== null && row.item.shortcutCommand
-                  ? shortcutLabelForCommand(keybindings, row.item.shortcutCommand)
-                  : null
-              }
-              onExecute={onExecute}
-              onHover={onHighlight}
-              rowRef={(instance) => {
-                if (instance) rowRefs.current.set(row.item.value, instance);
-                else rowRefs.current.delete(row.item.value);
-              }}
-            />
-          ),
-        )}
+      {rows.map((row) => (
+        <PaletteRowContent
+          key={row.key}
+          row={row}
+          highlightedValue={highlightedValue}
+          keybindings={props.keybindings}
+          onExecute={props.onExecute}
+          onHighlight={props.onHighlight}
+          rowRef={
+            row.kind === "label"
+              ? undefined
+              : (instance) => {
+                  if (instance) rowRefs.current.set(row.item.value, instance);
+                  else rowRefs.current.delete(row.item.value);
+                }
+          }
+        />
+      ))}
     </PalettePanel>
+  );
+}
+
+function estimatedRowHeight(row: CommandPaletteRow): number {
+  if (row.kind === "label") return (row.first ? 0 : 6) + 28;
+  return row.item.description !== undefined || row.item.threadContentMatch !== undefined ? TWO_LINE_ITEM_HEIGHT : ITEM_HEIGHT;
+}
+
+/**
+ * The same rows on a windowed virtual list. The list's 8px top and bottom
+ * padding are spacer items so they scroll away like the plain list's padding.
+ * The panel asks for the rows' estimated height and shrinks to the popup's
+ * max height, as the plain scroller does.
+ */
+function VirtualPaletteRows(props: PaletteRowsProps) {
+  const { rows, highlightedValue, scrollToHighlight } = props;
+  const theme = useTheme();
+  const renderer = useGpuixRequired();
+  const listRef = useRef<{ id: number } | null>(null);
+  const visible = useRef({ start: 0, end: 0 });
+  const [windowStart, setWindowStart] = useState(0);
+  // Item 0 is the top spacer; row i is item i + 1.
+  const itemCount = rows.length + 2;
+  useEffect(() => {
+    setWindowStart(0);
+    const id = listRef.current?.id;
+    if (id !== undefined) renderer.scrollToItem?.(id, 0, 0);
+  }, [rows.length, rows[0]?.key, renderer]);
+  useEffect(() => {
+    if (highlightedValue === null) return;
+    const rowIndex = rows.findIndex((row) => row.kind !== "label" && row.item.value === highlightedValue);
+    const id = listRef.current?.id;
+    if (rowIndex < 0 || id === undefined) return;
+    const index = rowIndex + 1;
+    if (index < windowStart || index >= windowStart + ROW_WINDOW) setWindowStart(Math.max(0, index - ROW_WINDOW / 2));
+    // scrollIntoView "nearest": top-align a row above the viewport, bottom-align one below it.
+    if (index <= visible.current.start) {
+      renderer.scrollToItem?.(id, index === 1 ? 0 : index, 0);
+    } else if (index >= visible.current.end - 1) {
+      const viewport = renderer.getListScrollTop?.(id)?.[2] ?? 0;
+      renderer.scrollToItem?.(id, index, -(viewport - estimatedRowHeight(rows[rowIndex]!) - 8));
+    }
+  }, [scrollToHighlight]);
+  const end = Math.min(itemCount, windowStart + ROW_WINDOW);
+  const items: ReactNode[] = [];
+  for (let index = windowStart; index < end; index += 1) {
+    if (index === 0 || index === itemCount - 1) {
+      items.push(<div key={index === 0 ? "palette-top" : "palette-bottom"} style={{ height: 8 }} />);
+      continue;
+    }
+    const row = rows[index - 1]!;
+    items.push(
+      <div key={row.key} style={{ display: "flex", flexDirection: "column", width: "100%", paddingLeft: 8, paddingRight: 8 }}>
+        <PaletteRowContent
+          row={row}
+          highlightedValue={highlightedValue}
+          keybindings={props.keybindings}
+          onExecute={props.onExecute}
+          onHighlight={props.onHighlight}
+        />
+      </div>,
+    );
+  }
+  const estimatedHeight = rows.reduce((sum, row) => sum + estimatedRowHeight(row), 16);
+  return (
+    <div
+      testId="command-palette-results"
+      style={{ display: "flex", flexDirection: "column", width: "100%", height: estimatedHeight, flexShrink: 1, minHeight: 0 }}
+    >
+      <virtual-list
+        ref={listRef as never}
+        itemCount={itemCount}
+        windowStart={windowStart}
+        estimatedItemHeight={ITEM_HEIGHT}
+        onVisibleRange={(event) => {
+          const start = Math.floor(event.startIndex ?? 0);
+          visible.current = { start, end: Math.ceil(event.endIndex ?? start) };
+          if (start < windowStart || start + ROW_WINDOW / 2 > windowStart + ROW_WINDOW) setWindowStart(Math.max(0, start - ROW_WINDOW / 4));
+        }}
+        style={{ width: "100%", flexGrow: 1, minHeight: 0, scrollbarColor: theme.scrollbar, scrollbarWidth: 6 }}
+      >
+        {items}
+      </virtual-list>
+    </div>
   );
 }
 

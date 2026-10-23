@@ -23,7 +23,7 @@ export const AssistantTimelineRow = memo(function AssistantTimelineRow({ row }: 
   const [hovered, hover] = useHover();
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
   return (
-    <div {...hover} style={{ display: "flex", flexDirection: "column", minWidth: 0, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2 }}>
+    <div {...hover} style={{ display: "flex", flexDirection: "column", width: "100%", minWidth: 0, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2 }}>
       {messageText.length > 0 ? (
         <ChatMarkdown text={messageText} tone="assistant" lineBreaks={shouldPreserveAssistantLineBreaks(messageText)} />
       ) : null}
@@ -159,7 +159,7 @@ const AssistantChangedFilesSection = memo(function AssistantChangedFilesSection(
 export function ProposedPlanTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "proposed-plan" }> }) {
   const ctx = use(TimelineRowCtx);
   return (
-    <div style={{ display: "flex", flexDirection: "column", minWidth: 0, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2 }}>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", minWidth: 0, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2 }}>
       <ProposedPlanCard planMarkdown={row.proposedPlan.planMarkdown} environmentId={ctx.activeThreadEnvironmentId} workspaceRoot={ctx.workspaceRoot} />
     </div>
   );

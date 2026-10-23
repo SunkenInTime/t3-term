@@ -5,9 +5,13 @@
 //         |{wheel:[x,y,dy]}|{wheelXY:[x,y,dx,dy]}|{mouseMods:[x,y,"shift"]}|{dblclick:[x,y]}|{dblclickText: text}
 //         |{wheelTestId:[testId,dx,dy]}|{dragTestId:[testId,dx,dy]}|{rightClickTestId: testId}|{tryClick: testId}
 //         |{keys: "g p u"} (key-downs to whatever has focus, without focusing a target first)
-//         |{keyUp: "backspace"} (a key release; `keys` sends none)]
+//         |{keyUp: "backspace"} (a key release; `keys` sends none)
+//         |{tree: name} (writes the retained element tree to <out-dir>/<name>.tree.json)
+//         |{perf: "label"} / {perfEnd: true} (phase markers for T3TERM_PERF=<dir>, see src/dev/perfProbe.ts)
+//         |{repeat: n, every: ms, steps: [...]} (runs steps n times, `every` ms apart; `$i` in strings is the index, "=expr" strings evaluate to numbers)]
 import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync, readFileSync } from "node:fs";
+import { createWriteStream, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { constants, setPriority } from "node:os";
 import { join } from "node:path";
 import { connectStdio } from "@gpuix/react/automation";
 
@@ -28,6 +32,8 @@ const child = spawn(command!, commandArgs, {
   stdio: ["pipe", "pipe", "pipe"],
 });
 child.stderr.pipe(createWriteStream(join(outDir, "app-stderr.log")));
+// T3TERM_PRIORITY=above keeps perf numbers comparable while other work loads the machine.
+if (process.env.T3TERM_PRIORITY === "above" && child.pid) setPriority(child.pid, constants.priority.PRIORITY_ABOVE_NORMAL);
 const app = await connectStdio({
   write: (chunk) => {
     child.stdin.write(chunk);
@@ -39,8 +45,46 @@ const app = await connectStdio({
     child.kill();
   },
 });
-try {
-  for (const step of steps) {
+const perfDir = process.env.T3TERM_PERF?.trim();
+let perfSeq = 0;
+// Wall-clock send time of every input step in the current perf phase; the
+// probe measures latency from these.
+let perfSends: number[] = [];
+const nonInputSteps = new Set(["wait", "shot", "tree", "perf", "perfEnd", "repeat", "every", "steps", "target"]);
+const perfCommand = async (command: string) => {
+  if (!perfDir) return;
+  if (command === "end") writeFileSync(join(perfDir, "sends.json"), JSON.stringify(perfSends));
+  else perfSends = [];
+  writeFileSync(join(perfDir, "ctl.txt"), `${++perfSeq} ${command}
+`);
+  // The probe polls every 20 ms.
+  await Bun.sleep(80);
+};
+const substitute = (value: unknown, index: number): unknown =>
+  typeof value === "string"
+    ? value.startsWith("=")
+      ? // "=200+$i*20": arithmetic on the index, for sweeps
+        Number(new Function(`return (${value.slice(1).replaceAll("$i", String(index))})`)())
+      : value.replaceAll("$i", String(index))
+    : Array.isArray(value)
+      ? value.map((item) => substitute(item, index))
+      : value && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, substitute(item, index)]))
+        : value;
+async function runSteps(list: any[]) {
+  for (const step of list) {
+    if (step.perf) await perfCommand(`phase ${step.perf}`);
+    if (step.layout) await perfCommand(`layout ${step.layout}`);
+    if (step.perfEnd) await perfCommand("end");
+    if (Object.keys(step).some((key) => !nonInputSteps.has(key))) perfSends.push(performance.timeOrigin + performance.now());
+    if (step.repeat) {
+      for (let index = 0; index < step.repeat; index++) {
+        const started = performance.now();
+        await runSteps(substitute(step.steps, index) as any[]);
+        const left = (step.every ?? 0) - (performance.now() - started);
+        if (left > 0) await Bun.sleep(left);
+      }
+    }
     if (step.wait) await Bun.sleep(step.wait);
     if (step.click) await app.getByTestId(step.click).click();
     // Clicks only if present: for prompts that may or may not appear (approvals).
@@ -72,12 +116,19 @@ try {
     if (step.wheelTestId) await app.getByTestId(step.wheelTestId[0]).wheel(step.wheelTestId[1], step.wheelTestId[2]);
     if (step.dragTestId) await app.getByTestId(step.dragTestId[0]).dragBy(step.dragTestId[1], step.dragTestId[2], { steps: 8 });
     if (step.rightClickTestId) await app.getByTestId(step.rightClickTestId).click({ button: 2 });
+    if (step.tree) {
+      const { tree } = await (app as unknown as { call: (method: string, params: object) => Promise<{ tree: unknown }> }).call("getTree", {});
+      writeFileSync(join(outDir, `${step.tree}.tree.json`), JSON.stringify(tree));
+    }
     if (step.shot) {
       const path = join(outDir, `${step.shot}.png`);
       await app.screenshot({ path });
       console.log("shot", path);
     }
   }
+}
+try {
+  await runSteps(steps);
 } finally {
   await app.close();
 }

@@ -8,7 +8,7 @@ import type { EnvironmentId, ProjectEntry, VcsListRefsResult, VcsRef } from "@t3
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
 import { projectEnvironment } from "./environment.ts";
@@ -165,11 +165,14 @@ const COMPOSER_PATH_SEARCH_LIMIT = 80;
 const EMPTY_PROJECT_ENTRIES: ReadonlyArray<ProjectEntry> = [];
 
 export function useComposerPathSearch(target: ComposerPathSearchTarget) {
-  const normalizedTarget = {
-    environmentId: target.environmentId,
-    cwd: target.cwd,
-    query: target.query == null ? null : target.query.trim(),
-  };
+  const query = target.query == null ? null : target.query.trim();
+  // The debounce compares by identity. A fresh object each render restarted it
+  // forever: every 120 ms it set state, re-rendered the composer and scheduled
+  // the next one, even with no @ menu open.
+  const normalizedTarget = useMemo(
+    () => ({ environmentId: target.environmentId, cwd: target.cwd, query }),
+    [target.environmentId, target.cwd, query],
+  );
   const debouncedTarget = useDebouncedValue(normalizedTarget, PROJECT_PATH_SEARCH_DEBOUNCE_MS);
   const searchTarget =
     debouncedTarget.environmentId !== null &&

@@ -15,7 +15,7 @@ import { makeThreadSearchKey, threadSearchMatchKey } from "@t3tools/client-runti
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { THREAD_JUMP_KEYBINDING_COMMANDS, type ProjectId, type ScopedThreadRef } from "@t3tools/contracts";
 import { startNewThread } from "../palette/actions.ts";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactElement, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { environmentServerConfigsAtom } from "../state/environment.ts";
@@ -301,7 +301,7 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
     (draft) => scopedProjectKeys === null || scopedProjectKeys.has(`${draft.environmentId}:${draft.projectId}`),
   ).length;
 
-  const listItems: ReactNode[] = [];
+  const listItems: ReactElement[] = [];
   if (!isSearchingThreads) {
     listItems.push(<SidebarDraftBlock key="draft-sessions" scopedProjectKeys={scopedProjectKeys} />);
     let rowIndex = 0;
@@ -312,7 +312,7 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
       pushRows(list.pinnedThreads, "pinned");
       pushRows(list.activeThreads, "active");
       // The first shelf header takes `mt-auto`: shelves sit at the bottom of the list.
-      listItems.push(<div key="shelf-spacer" style={{ flexGrow: 1, minHeight: 0 }} />);
+      listItems.push(<div key={SHELF_SPACER_KEY} style={{ flexGrow: 1, minHeight: 0 }} />);
       if (list.workingThreads.length > 0) {
         listItems.push(
           <SidebarSectionHeader
@@ -411,7 +411,7 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
       <ScrollFadeRegion>
         {isSearchingThreads ? (
           threadSearchResults.length > 0 ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+            <div style={{ display: "flex", flexDirection: "column", width: "100%", gap: 1 }}>
               {threadSearchResults.map((thread, index) => {
                 const key = threadShellKey(thread);
                 const projectKey = `${thread.environmentId}:${thread.projectId}`;
@@ -442,8 +442,8 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
             </div>
           )
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 1, ...(totalThreads > 0 ? { flexGrow: 1 } : {}) }}>
-            {listItems}
+          <div style={{ display: "flex", flexDirection: "column", width: "100%", gap: 1, ...(totalThreads > 0 ? { flexGrow: 1 } : {}) }}>
+            <CulledListItems items={listItems} gap={1} />
           </div>
         )}
         {!isSearchingThreads && visibleDraftCount === 0 && totalThreads === 0 ? (
@@ -458,6 +458,52 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
 }
 
 const FADE_SIZE = 12;
+const SHELF_SPACER_KEY = "shelf-spacer";
+
+/** The thread list's visible window in content pixels, from ScrollFadeRegion. */
+const ListViewportContext = createContext<{ top: number; height: number } | null>(null);
+
+/**
+ * The list's items, with those more than a viewport above or below the visible
+ * window replaced by an empty box of their last measured height. GPUI builds
+ * every child of a plain scroller each frame (about 0.25 ms per thread row), so
+ * without this every frame of the window grew with the thread count: 100 rows
+ * put typing in the composer at ~30 ms per frame. Items are measured with
+ * onLayout, which fires only when a size changes; an item is culled only once
+ * its height is known. The flex-grow shelf spacer stays as it is.
+ */
+function CulledListItems({ items, gap }: { items: ReadonlyArray<ReactElement>; gap: number }) {
+  const viewport = useContext(ListViewportContext);
+  const heights = useRef(new Map<string, number>());
+  const [, remeasured] = useReducer((count: number) => count + 1, 0);
+  let offset = 0;
+  return items.map((item) => {
+    const key = String(item.key);
+    if (key === SHELF_SPACER_KEY) return item;
+    const height = heights.current.get(key);
+    const top = offset;
+    offset += (height ?? 0) + gap;
+    const culled =
+      height !== undefined &&
+      viewport !== null &&
+      viewport.height > 0 &&
+      (top + height < viewport.top - viewport.height || top > viewport.top + 2 * viewport.height);
+    return (
+      <div
+        key={key}
+        onLayout={(event) => {
+          const next = Math.round(event.height ?? 0);
+          if (culled || heights.current.get(key) === next) return;
+          heights.current.set(key, next);
+          remeasured();
+        }}
+        style={{ display: "flex", flexDirection: "column", width: "100%", flexShrink: 0, ...(culled ? { height } : {}) }}
+      >
+        {culled ? null : item}
+      </div>
+    );
+  });
+}
 
 /**
  * SidebarContent's ScrollArea with `scrollFade`: the list scrolls under a
@@ -490,19 +536,20 @@ function ScrollFadeRegion({ children }: { children: ReactNode }) {
       }}
     />
   );
+  const listWindow = useMemo(() => ({ top: -scrollY, height: viewportHeight }), [scrollY, viewportHeight]);
   return (
-    <div style={{ position: "relative", display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
+    <div style={{ position: "relative", display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0 }}>
       <div
         testId="sidebar-thread-list"
         onLayout={(event) => setViewportHeight(event.height ?? 0)}
         onScrollChange={(event) => setScrollY(event.scrollY ?? 0)}
-        style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, overflowY: "scroll" }}
+        style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, overflowY: "scroll" }}
       >
         <div
           onLayout={(event) => setContentHeight(event.height ?? 0)}
-          style={{ display: "flex", flexDirection: "column", flexGrow: 1, flexShrink: 0, paddingLeft: 8, paddingRight: 8, paddingBottom: 8 }}
+          style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, flexShrink: 0, paddingLeft: 8, paddingRight: 8, paddingBottom: 8 }}
         >
-          {children}
+          <ListViewportContext.Provider value={listWindow}>{children}</ListViewportContext.Provider>
         </div>
       </div>
       {scrollY < -0.5 ? fade("top") : null}

@@ -50,10 +50,10 @@ export function StackedRow({
   return (
     <div
       testId={testId}
-      style={{ display: "flex", flexDirection: "column", paddingLeft: 16, paddingRight: 16, paddingTop: 12, paddingBottom: children ? 4 : 12 }}
+      style={{ display: "flex", flexDirection: "column", width: "100%", paddingLeft: 16, paddingRight: 16, paddingTop: 12, paddingBottom: children ? 4 : 12 }}
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+      <div style={{ display: "flex", flexDirection: "column", width: "100%", gap: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", width: "100%", gap: 4, minWidth: 0 }}>
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minHeight: 20 }}>
             {typeof title === "string" ? <Text weight={500}>{title}</Text> : title}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, flexShrink: 0 }}>{titleTail}</div>
@@ -67,7 +67,7 @@ export function StackedRow({
               description
             )
           ) : null}
-          {status ? <div style={{ display: "flex", flexDirection: "column", paddingTop: 2 }}>{status}</div> : null}
+          {status ? <div style={{ display: "flex", flexDirection: "column", width: "100%", paddingTop: 2 }}>{status}</div> : null}
         </div>
         {control ? <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, width: "100%", minWidth: 0 }}>{control}</div> : null}
       </div>
@@ -105,6 +105,7 @@ export function PaneCard({ position, divided = true, children, style }: { positi
       style={{
         display: "flex",
         flexDirection: "column",
+        width: "100%",
         borderLeftWidth: 1,
         borderRightWidth: 1,
         borderTopWidth: top || divided ? 1 : 0,
