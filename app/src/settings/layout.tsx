@@ -13,7 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as Equal from "effect/Equal";
 import { Atom } from "effect/reactivity";
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, createContext, isValidElement, useContext, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 
 import {
   useEnvironments,
@@ -120,6 +120,7 @@ export function SettingsPageContainer({
   maxWidth = 896,
   gap = 32,
   scroll = true,
+  virtual = false,
 }: {
   children: ReactNode;
   showScope?: boolean;
@@ -127,6 +128,31 @@ export function SettingsPageContainer({
   gap?: number;
   /** Pages with their own inner scroller (Providers) turn the page scroll off. */
   scroll?: boolean;
+  /**
+   * Lay the page out as a <virtual-list>: every SettingsSection child becomes a
+   * title item plus one item per row, so a frame only builds the rows on screen.
+   * gpuix rebuilds the whole tree each frame, and a 45-row plain page (General)
+   * cost about 400ms per frame. Row components that hold a search target declare
+   * it with a static `searchIds` so a search jump can bring them into the list.
+   */
+  virtual?: boolean;
+}) {
+  if (virtual) return <SettingsVirtualPage items={sectionsToVirtualItems(children)} showScope={showScope} maxWidth={maxWidth} />;
+  return <PlainSettingsPage showScope={showScope} maxWidth={maxWidth} gap={gap} scroll={scroll}>{children}</PlainSettingsPage>;
+}
+
+function PlainSettingsPage({
+  children,
+  showScope,
+  maxWidth,
+  gap,
+  scroll,
+}: {
+  children: ReactNode;
+  showScope: boolean;
+  maxWidth: number;
+  gap: number;
+  scroll: boolean;
 }) {
   const theme = useTheme();
   const scrollerRef = useRef<{ id: number } | null>(null);
@@ -174,6 +200,8 @@ export function SettingsPageContainer({
 export interface SettingsVirtualItem {
   readonly key: string;
   readonly node: ReactNode;
+  /** Settings search ids inside this item, so a search jump can scroll to it before it mounts. */
+  readonly targetIds?: ReadonlyArray<string>;
   /** Space above this item (the page's 32px section gap, 10px under a section title). */
   readonly gapBefore?: number;
 }
@@ -184,6 +212,113 @@ export interface SettingsVirtualItem {
  * (Keybindings, Diagnostics) must virtualize: only visible items are built.
  * Items are centered in the same 896px column as SettingsPageContainer.
  */
+type AnyElement = ReactElement<Record<string, unknown>>;
+
+/** Element children with fragments, arrays and empty slots flattened away. */
+function flattenElements(children: ReactNode): AnyElement[] {
+  const out: AnyElement[] = [];
+  const visit = (node: ReactNode) => {
+    if (node === null || node === undefined || node === false || node === true || node === "") return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (isValidElement(node) && node.type === Fragment) {
+      visit((node.props as { children?: ReactNode }).children);
+      return;
+    }
+    if (isValidElement(node)) out.push(node as AnyElement);
+  };
+  visit(children);
+  return out;
+}
+
+function elementSearchIds(element: AnyElement): string[] {
+  const ids: string[] = [];
+  if (typeof element.props.id === "string") ids.push(element.props.id);
+  const declared = (element.type as { searchIds?: ReadonlyArray<string> }).searchIds;
+  if (declared) ids.push(...declared);
+  return ids;
+}
+
+/** SettingsPageContainer `virtual`: sections become a header item and one item per row. */
+function sectionsToVirtualItems(children: ReactNode): SettingsVirtualItem[] {
+  const items: SettingsVirtualItem[] = [];
+  flattenElements(children).forEach((child, childIndex) => {
+    const key = String(child.key ?? `child-${childIndex}`);
+    if (child.type !== SettingsSection) {
+      items.push({ key, node: child, targetIds: elementSearchIds(child) });
+      return;
+    }
+    const props = child.props as Parameters<typeof SettingsSection>[0];
+    const sectionKey = props.id ?? `section-${childIndex}`;
+    const rows = flattenElements(props.children);
+    const grouped = (props.variant ?? "grouped") === "grouped";
+    if (!props.hideTitle) {
+      items.push({
+        key: sectionKey,
+        node: <SettingsSectionHeader id={props.id} title={props.title} icon={props.icon} titleAction={props.titleAction} headerAction={props.headerAction} />,
+        ...(props.id ? { targetIds: [props.id] } : {}),
+      });
+    }
+    rows.forEach((row, index) => {
+      const position = rows.length === 1 ? "single" : index === 0 ? "first" : index === rows.length - 1 ? "last" : "middle";
+      items.push({
+        key: `${sectionKey}:${String(row.key ?? index)}`,
+        node: grouped ? <GroupedItem position={position}>{row}</GroupedItem> : row,
+        targetIds: elementSearchIds(row),
+        gapBefore: index === 0 ? (props.hideTitle ? 32 : 10) : grouped ? 0 : 4,
+      });
+    });
+  });
+  return items;
+}
+
+/** SettingsSection's title row on its own, for virtual pages. */
+function SettingsSectionHeader({
+  id,
+  title,
+  icon,
+  titleAction,
+  headerAction,
+}: {
+  id?: string;
+  title: string;
+  icon?: ReactNode;
+  titleAction?: ReactNode;
+  headerAction?: ReactNode;
+}) {
+  const theme = useTheme();
+  const { ref, highlighted } = useSettingsSearchTarget(id);
+  return (
+    <div
+      ref={ref as never}
+      testId={id ? `settings-section-${id}` : undefined}
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "flex-start",
+        justifyContent: "space-between",
+        gap: 16,
+        minHeight: 28,
+        paddingLeft: 16,
+        paddingRight: 16,
+        borderRadius: RADIUS.md,
+        backgroundColor: highlighted ? alpha(theme.primary, 0.12) : "#00000000",
+      }}
+    >
+      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, minWidth: 0 }}>
+        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, minHeight: 28 }}>
+          {icon}
+          <Text color={alpha(theme.foreground, 0.7)}>{title}</Text>
+        </div>
+        {titleAction}
+      </div>
+      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "flex-end", minHeight: 28, minWidth: 28, gap: 4 }}>{headerAction}</div>
+    </div>
+  );
+}
+
 export function SettingsVirtualPage({
   items,
   showScope = true,
@@ -193,6 +328,16 @@ export function SettingsVirtualPage({
   showScope?: boolean;
   maxWidth?: number;
 }) {
+  const renderer = useGpuixRequired();
+  const listRef = useRef<{ id: number } | null>(null);
+  const [target] = useAtom(settingsSearchTargetAtom);
+  // A virtual list mounts only rows near the viewport, so a row below the fold never
+  // runs its own search-target hook. Bring its item in; the row then highlights itself.
+  const targetIndex = target ? items.findIndex((item) => item.key === target.id || item.targetIds?.includes(target.id)) : -1;
+  useEffect(() => {
+    if (targetIndex < 0 || !listRef.current) return;
+    renderer.scrollToItem?.(listRef.current.id, targetIndex + (showScope ? 1 : 0), -240);
+  }, [targetIndex, target?.nonce, showScope, renderer]);
   const column = (key: string, node: ReactNode, paddingTop: number, paddingBottom = 0) => (
     <div key={key} style={{ display: "flex", flexDirection: "row", justifyContent: "center", width: "100%" }}>
       <div style={{ display: "flex", flexDirection: "column", width: "100%", maxWidth, paddingLeft: 24, paddingRight: 24, paddingTop, paddingBottom }}>
@@ -203,7 +348,7 @@ export function SettingsVirtualPage({
   return (
     <PageScopeSentenceContext.Provider value={showScope}>
       <div testId="settings-page-scroll" style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-        <virtual-list overdraw={900} style={{ flexGrow: 1, minHeight: 0 }}>
+        <virtual-list ref={listRef as never} overdraw={900} style={{ flexGrow: 1, minHeight: 0 }}>
           {[
             ...(showScope ? [column("scope", <SettingsScopeSentence />, 24)] : []),
             ...items.map((item, index) =>

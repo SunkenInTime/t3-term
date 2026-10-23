@@ -491,7 +491,7 @@ export function StorageSettings() {
     );
   }
   return (
-    <SettingsPageContainer>
+    <SettingsPageContainer virtual>
       {!isProjectScope ? (
         <DatabaseStorageNotice
           environments={connectedEnvironments.filter((environment) => environment.serverConfig?.environment.capabilities.databaseStorage === true)}

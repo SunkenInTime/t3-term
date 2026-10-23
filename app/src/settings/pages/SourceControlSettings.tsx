@@ -362,7 +362,7 @@ export function SourceControlSettings() {
   );
 
   return (
-    <SettingsPageContainer>
+    <SettingsPageContainer virtual>
       <ProjectDefaultsSettings category="source-control" />
       {environmentId === null ? (
         <SettingsSection id={searchableSetting("source-control").id} title="Server environment">

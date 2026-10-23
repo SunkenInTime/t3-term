@@ -700,6 +700,16 @@ function LegacyFeaturesSection() {
   );
 }
 
+// Search ids each row component holds, for the virtual page (SettingsPageContainer `virtual`).
+Object.assign(NotificationSettings, { searchIds: ["thread-notifications"] });
+Object.assign(BackgroundActivitySettingsRow, { searchIds: ["background-activity"] });
+Object.assign(ThreadTitleInstructionsSettings, { searchIds: ["thread-title-instructions"] });
+Object.assign(MobileAppSettingsRow, { searchIds: ["mobile-app"] });
+Object.assign(LegacyFeaturesSection, { searchIds: ["legacy-features", "legacy-context-window-indicator", "legacy-plan-mode", "legacy-sidebar"] });
+Object.assign(ProjectDefaultsSettings, {
+  searchIds: ["new-threads", "default-permissions", "worktree-submodules", "pull-request-merge-method", "remove-agent-credits-on-merge"],
+});
+
 export function GeneralSettingsPanel() {
   const theme = useTheme();
   const modifierLabel = isMacPlatform(PLATFORM) ? "⌘" : "Ctrl";
@@ -757,7 +767,7 @@ export function GeneralSettingsPanel() {
   const d = DEFAULT_UNIFIED_SETTINGS;
 
   return (
-    <SettingsPageContainer>
+    <SettingsPageContainer virtual>
       <ProjectDefaultsSettings category="general" />
       <SettingsSection id="organization" title="Organization">
         <SettingsRow

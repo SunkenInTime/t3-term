@@ -495,7 +495,7 @@ function DeviceIntegrationControls({ environmentId, enabled, agentAccessEnabled 
 
 export function IntegrationsSettings() {
   return (
-    <SettingsPageContainer>
+    <SettingsPageContainer virtual>
       <SettingsSection id="browser" title="Browser">
         <AgentBrowserAccessSetting />
         <SettingsUnavailableGroup message="Only available in the desktop app.">

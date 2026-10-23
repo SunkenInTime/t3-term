@@ -172,7 +172,7 @@ export function AppearanceSettings() {
   const showEnvironmentIdentification = useShowEnvironmentIdentification();
 
   return (
-    <SettingsPageContainer showScope={false}>
+    <SettingsPageContainer showScope={false} virtual>
       <SettingsSection id="appearance" title="Colors & themes" variant="plain" hideTitle>
         <ThemeLibrary />
       </SettingsSection>
