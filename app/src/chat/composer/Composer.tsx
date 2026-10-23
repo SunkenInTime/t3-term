@@ -101,6 +101,7 @@ import {
   deriveLockedProvider,
   formatOutgoingPrompt,
   getAntigravitySendBlockReason,
+  getStartedThreadModelChangeBlockReason,
   makeModelDisabledReason,
   resolveComposerInteractionMode,
   shouldShowPlanFollowUpPrompt,
@@ -444,7 +445,9 @@ function ComposerBody({
       threadModelSelection?.instanceId,
       projectModelSelection?.instanceId,
     ],
-    lockedProvider,
+    // web ChatView hands ChatComposer `modelPickerLockedProvider`: a thread that can hand
+    // off its context resolves the composer across every provider, not just its own.
+    lockedProvider: modelPickerLockedProvider,
     lockedInstanceId: shell?.runtime?.providerInstanceId ?? shell?.modelSelection.instanceId,
   });
   const {
@@ -902,19 +905,51 @@ function ComposerBody({
         }
       : null,
   );
+  // web useComposerSelection.onProviderModelSelect.
   const onProviderModelSelect = (instanceId: ProviderInstanceId, model: string) => {
+    setModelPickerOpen(false);
     const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-    if (!supportsProviderSwitchingViaHandoff && lockedProvider !== null && entry && entry.driver !== lockedProvider) return;
+    if (!supportsProviderSwitchingViaHandoff && lockedProvider !== null && entry && entry.driver !== lockedProvider) {
+      focusEditor();
+      return;
+    }
+    if (!supportsProviderSwitchingViaHandoff && lockedProvider !== null && runtime?.providerInstanceId) {
+      const currentEntry = providerStatuses.find((snapshot) => snapshot.instanceId === runtime.providerInstanceId);
+      if (
+        currentEntry?.continuation?.groupKey &&
+        entry?.continuation?.groupKey &&
+        currentEntry.continuation.groupKey !== entry.continuation.groupKey
+      ) {
+        focusEditor();
+        return;
+      }
+    }
     const resolved = resolveAppModelSelectionForInstance(instanceId, settings, providerStatuses, model);
-    if (!resolved) return;
+    if (!resolved) {
+      focusEditor();
+      return;
+    }
     const remembered = sticky.modelSelectionByProvider[instanceId];
-    setComposerModelSelection(
-      draftKey,
+    const nextModelSelection: ModelSelection =
       remembered && remembered.model === resolved && remembered.options
         ? { instanceId, model: resolved, options: remembered.options }
-        : { instanceId, model: resolved },
-    );
-    setModelPickerOpen(false);
+        : { instanceId, model: resolved };
+    if (shell) {
+      const blockReason = getStartedThreadModelChangeBlockReason({
+        providers: providerStatuses,
+        hasStartedSession: runtime !== null,
+        supportsProviderSwitchingViaHandoff,
+        currentModelSelection: shell.modelSelection,
+        currentProviderInstanceId: runtime?.providerInstanceId ?? null,
+        nextModelSelection,
+      });
+      if (blockReason) {
+        toast({ type: "warning", title: blockReason.title, description: blockReason.description });
+        focusEditor();
+        return;
+      }
+    }
+    setComposerModelSelection(draftKey, nextModelSelection, { explicit: true, replaceOptions: true });
     focusEditor();
   };
 

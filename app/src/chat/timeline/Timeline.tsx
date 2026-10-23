@@ -72,6 +72,7 @@ import { TimelineMinimap } from "./TimelineMinimap.tsx";
 import { ThreadErrorBanner } from "./ThreadErrorBanner.tsx";
 import { findHighlightColors, ThreadFindBar, type ThreadFindState } from "./ThreadFindBar.tsx";
 import { ThreadStatusFooter } from "./ThreadStatusLine.tsx";
+import { PendingHandoffRow } from "./PendingHandoffRow.tsx";
 import { TimelineRowContent } from "./TimelineRows.tsx";
 import { TimelineSystemDivider } from "./parts.tsx";
 import {
@@ -872,7 +873,13 @@ const TimelineList = memo(function TimelineList({
             )
           : null}
         {rows.map((row, index) => frame(row.id, <TimelineRowContent row={row} />, index))}
-        {frame("timeline-status", <ThreadStatusFooter threadRef={threadRef} />)}
+        {frame(
+          "timeline-status",
+          <>
+            <PendingHandoffRow threadRef={threadRef} />
+            <ThreadStatusFooter threadRef={threadRef} />
+          </>,
+        )}
         <div key="timeline-footer" style={{ height: footerHeight + topFill }} />
       </virtual-list>
       <TimelineMinimap
