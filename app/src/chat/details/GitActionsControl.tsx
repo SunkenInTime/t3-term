@@ -51,6 +51,7 @@ import {
 } from "../../web/components/GitActionsControl.logic.ts";
 import { useEnvironmentQuery } from "../../web/state/query.ts";
 import { readEnvironmentScope, useEnvironmentScope } from "../../web/state/session.ts";
+import { useNowEverySecond } from "../timeline/parts.tsx";
 import { DetailsIcon, DetailsLabel, DetailsRow, DetailsSplit } from "./detailsControls.tsx";
 import { Checkbox, TextAreaField } from "./formControls.tsx";
 import { PublishRepositoryDialog } from "./PublishRepositoryDialog.tsx";
@@ -137,12 +138,7 @@ function errorMessage(error: unknown): string {
 /** Re-renders every second while an action runs: the elapsed counter web shows next to progress. */
 function Elapsed({ startedAtMs }: { startedAtMs: number | null }) {
   const theme = useTheme();
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (startedAtMs === null) return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [startedAtMs]);
+  const now = useNowEverySecond(startedAtMs !== null);
   const label = formatGitActionElapsed(startedAtMs, now);
   if (!label) return null;
   return (

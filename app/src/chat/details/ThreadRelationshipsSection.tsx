@@ -39,7 +39,7 @@ import {
 import { deriveSubagentElapsedMs } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
 import { Atom } from "effect/reactivity";
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
 import {
@@ -53,6 +53,7 @@ import { Icon, type IconName } from "../../ui/Icon.tsx";
 import { Menu, MenuItem, Tooltip } from "../../ui/overlay.tsx";
 import { toast } from "../../ui/toast.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
+import { useNowEverySecond } from "../timeline/parts.tsx";
 import { GrowTooltip } from "./detailsTooltip.tsx";
 import {
   DetailsIconAction,
@@ -165,12 +166,7 @@ function AgentElapsed({
 }) {
   const theme = useTheme();
   const live = isOrchestrationV2WorkActive(agent.status);
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!live || !agent.startedAt) return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [live, agent.startedAt]);
+  const now = useNowEverySecond(live && agent.startedAt !== null);
   if (!agent.startedAt) return null;
   const elapsedMs = deriveSubagentElapsedMs(
     { status: agent.status, startedAt: agent.startedAt, completedAt: agent.completedAt },
