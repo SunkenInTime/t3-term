@@ -362,12 +362,11 @@ function ProjectDetail({ group, hasOtherMembers }: { group: SidebarProjectSnapsh
             control={
               <Button
                 size="sm"
-                variant="outline"
+                variant="destructive-outline"
                 icon="trash-2"
                 testId="project-remove"
                 disabled={!canEditGroup}
                 onClick={() => askRemoval(group.memberProjects)}
-                style={{ borderColor: alpha(theme.error, 0.32) }}
               >
                 {hasOtherMembers ? "Remove checkout" : group.memberProjects.length > 1 ? "Remove all entries" : "Remove project"}
               </Button>

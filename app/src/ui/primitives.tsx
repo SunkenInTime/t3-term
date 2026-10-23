@@ -70,7 +70,7 @@ export function Spacer() {
   return <div style={{ flexGrow: 1, minWidth: 0 }} />;
 }
 
-export type ButtonVariant = "default" | "ghost" | "ghost-muted" | "outline" | "destructive";
+export type ButtonVariant = "default" | "ghost" | "ghost-muted" | "outline" | "destructive" | "destructive-outline";
 export type ButtonSize = "default" | "sm" | "xs";
 
 const BUTTON_SIZES = {
@@ -118,13 +118,20 @@ export function Button({
         paddingLeft: dims.paddingX,
         paddingRight: dims.paddingX,
         borderRadius: RADIUS.md,
-        borderWidth: variant === "outline" ? 1 : 0,
+        borderWidth: variant === "outline" || variant === "destructive-outline" ? 1 : 0,
         borderColor: theme.input,
         backgroundColor: palette.bg,
         opacity: disabled ? 0.64 : 1,
         cursor: disabled ? "default" : "pointer",
         flexShrink: 0,
-        ...(disabled ? {} : { hover: { backgroundColor: palette.hover } }),
+        ...(disabled
+          ? {}
+          : {
+              hover: {
+                backgroundColor: palette.hover,
+                ...(variant === "destructive-outline" ? { borderColor: alpha(theme.error, 0.32) } : {}),
+              },
+            }),
         ...style,
       }}
     >
@@ -151,6 +158,14 @@ function buttonPalette(theme: ReturnType<typeof useTheme>, variant: ButtonVarian
         hover: theme.appearance === "dark" ? alpha("#ffffff", 0.05) : theme.accent,
         fg: theme.foreground,
         icon: theme.mutedForeground,
+      };
+    case "destructive-outline":
+      // Outline surface with destructive-foreground text and icon; hover tints destructive/4.
+      return {
+        bg: theme.appearance === "dark" ? alpha("#ffffff", 0.026) : theme.popover,
+        hover: alpha(theme.error, 0.04),
+        fg: theme.errorForeground,
+        icon: theme.errorForeground,
       };
     case "ghost-muted":
       return { bg: "#00000000", hover: theme.accent, fg: theme.mutedForeground, icon: theme.mutedForeground };
