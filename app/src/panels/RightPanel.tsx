@@ -32,7 +32,7 @@ import {
   type RightPanelSurface,
 } from "../state/rightPanel.ts";
 import { selectThreadSessions, useEnvironmentScope, useTerminalMetadata, useThreadTerminalContext } from "../state/terminal.ts";
-import { rightPanelMaximizedAtom, rightPanelSurfaceAtom, sidebarOpenAtom } from "../state/ui.ts";
+import { rightPanelMaximizedAtom, rightPanelSurfaceAtom, rightPanelSurfaceRequestAtom, sidebarOpenAtom } from "../state/ui.ts";
 import { selectedPullRequestAtom } from "../state/gitPullRequests.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { Icon, type IconName } from "../ui/Icon.tsx";
@@ -78,6 +78,9 @@ interface SurfaceAction {
 
 /** Room for the pinned titlebar controls: three 28px toggles, gaps and the 12px inset. */
 const TITLEBAR_CONTROLS_INSET = 140;
+
+/** The last surface request the panel acted on; module scope, since a request can open (mount) the panel. */
+const handledRequest = { current: 0 };
 
 const STRETCH = { display: "flex", flexDirection: "column", alignItems: "stretch", alignSelf: "stretch" } as const;
 
@@ -137,6 +140,7 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
   const maximized = useAtomValue(rightPanelMaximizedAtom);
   const selectedPullRequest = useAtomValue(selectedPullRequestAtom(threadKey));
   const requestedKind = useAtomValue(rightPanelSurfaceAtom);
+  const requestCount = useAtomValue(rightPanelSurfaceRequestAtom);
   const sidebarOpen = useAtomValue(sidebarOpenAtom);
   const shell = useAtomValue(environmentThreadShells.threadShellAtom({ environmentId, threadId } as never));
   const terminalContext = useThreadTerminalContext(environmentId, threadId);
@@ -169,7 +173,9 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
 
   // Requests other areas write to the shared kind atom ("Open diff", a PR link).
   useEffect(() => {
-    if (requestedKind === lastSyncedSharedKind.current) return;
+    const fresh = handledRequest.current !== requestCount;
+    handledRequest.current = requestCount;
+    if (!fresh && requestedKind === lastSyncedSharedKind.current) return;
     lastSyncedSharedKind.current = requestedKind;
     const active = state.surfaces.find((surface) => surface.id === state.activeSurfaceId) ?? null;
     if (sharedKindOf(active) === requestedKind) return;
@@ -182,7 +188,7 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
     } else if (requestedKind === "pull-request") {
       openSelectedPullRequest();
     }
-  }, [requestedKind]);
+  }, [requestedKind, requestCount]);
 
   // openPullRequestSurface names the PR in selectedPullRequestAtom; it gets its own "#N" tab.
   function openSelectedPullRequest() {
