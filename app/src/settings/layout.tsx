@@ -65,6 +65,11 @@ interface ScrollHandle {
 
 /** The page scroller, so a search target can center itself in it. */
 const PageScrollerContext = createContext<{ current: { id: number } | null } | null>(null);
+/** A virtual page's list, and the frame around it (gpuix reports no bounds for a virtual-list). */
+const PageVirtualListContext = createContext<{
+  readonly list: { current: { id: number } | null };
+  readonly frame: { current: { id: number } | null };
+} | null>(null);
 
 /**
  * Returns a ref and a highlight flag for an element with a settings search id.
@@ -75,6 +80,7 @@ export function useSettingsSearchTarget(id: string | undefined) {
   const [target, setTarget] = useAtom(settingsSearchTargetAtom);
   const ref = useRef<ScrollHandle | null>(null);
   const scroller = useContext(PageScrollerContext);
+  const virtualList = useContext(PageVirtualListContext);
   const renderer = useGpuixRequired();
   const [highlighted, setHighlighted] = useState(false);
   const isTarget = id !== undefined && target?.id === id;
@@ -89,10 +95,19 @@ export function useSettingsSearchTarget(id: string | undefined) {
       const scrollerBounds = scrollerId === undefined ? null : renderer.getElementBounds?.(scrollerId);
       const targetBounds = targetId === undefined ? null : renderer.getElementBounds?.(targetId);
       const offset = scrollerId === undefined ? null : renderer.getScrollOffset?.(scrollerId);
+      // web scrollIntoView({ block: "center" }).
+      const listId = virtualList?.list.current?.id;
+      const frameId = virtualList?.frame.current?.id;
+      const listBounds = frameId === undefined ? null : renderer.getElementBounds?.(frameId);
+      const listTop = listId === undefined ? null : renderer.getListScrollTop?.(listId);
       if (scrollerId !== undefined && scrollerBounds && targetBounds && offset) {
         const contentTop = targetBounds.y - scrollerBounds.y - (offset[1] ?? 0);
         const top = Math.max(0, contentTop - (scrollerBounds.height - targetBounds.height) / 2);
         renderer.scrollTo?.(scrollerId, 0, -top);
+      } else if (listId !== undefined && listBounds && targetBounds && listTop && listTop.length >= 2) {
+        // Keep the list's anchor item and move it by how far the row sits below center.
+        const centeredY = listBounds.y + Math.max(0, (listBounds.height - targetBounds.height) / 2);
+        renderer.scrollToItem?.(listId, listTop[0] ?? 0, (listTop[1] ?? 0) + targetBounds.y - centeredY);
       } else {
         ref.current?.scrollIntoView?.({ block: "center" });
       }
@@ -100,13 +115,38 @@ export function useSettingsSearchTarget(id: string | undefined) {
       setTarget(null);
     }, 60);
     return () => clearTimeout(timer);
-  }, [isTarget, target?.nonce, setTarget, scroller, renderer]);
+  }, [isTarget, target?.nonce, setTarget, scroller, virtualList, renderer]);
   useEffect(() => {
     if (!highlighted) return;
-    const timer = setTimeout(() => setHighlighted(false), 1600);
+    // settings-search-target-pulse runs 650ms twice.
+    const timer = setTimeout(() => setHighlighted(false), 1300);
     return () => clearTimeout(timer);
   }, [highlighted]);
   return { ref, highlighted };
+}
+
+/**
+ * index.css settings-search-target-pulse: an inset 2px primary/70% ring,
+ * radius 12, pulsed twice. GPUI can't animate a color, so the ring holds
+ * steady for the pulse's duration instead.
+ */
+function SearchTargetRing() {
+  const theme = useTheme();
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        borderWidth: 2,
+        borderColor: alpha(theme.primary, 0.7),
+        borderRadius: 12,
+        pointerEvents: "none",
+      }}
+    />
+  );
 }
 
 // ── Page container ──────────────────────────────────────────────────────
@@ -304,9 +344,10 @@ function SettingsSectionHeader({
         paddingLeft: 16,
         paddingRight: 16,
         borderRadius: RADIUS.md,
-        backgroundColor: highlighted ? alpha(theme.primary, 0.12) : "#00000000",
+        position: "relative",
       }}
     >
+      {highlighted ? <SearchTargetRing /> : null}
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, minWidth: 0 }}>
         <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, minHeight: 28 }}>
           {icon}
@@ -330,6 +371,8 @@ export function SettingsVirtualPage({
 }) {
   const renderer = useGpuixRequired();
   const listRef = useRef<{ id: number } | null>(null);
+  const frameRef = useRef<{ id: number } | null>(null);
+  const [virtualListRefs] = useState(() => ({ list: listRef, frame: frameRef }));
   const [target] = useAtom(settingsSearchTargetAtom);
   // A virtual list mounts only rows near the viewport, so a row below the fold never
   // runs its own search-target hook. Bring its item in; the row then highlights itself.
@@ -347,7 +390,8 @@ export function SettingsVirtualPage({
   );
   return (
     <PageScopeSentenceContext.Provider value={showScope}>
-      <div testId="settings-page-scroll" style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
+      <PageVirtualListContext.Provider value={virtualListRefs}>
+      <div ref={frameRef as never} testId="settings-page-scroll" style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
         <virtual-list ref={listRef as never} overdraw={900} style={{ flexGrow: 1, minHeight: 0 }}>
           {[
             ...(showScope ? [column("scope", <SettingsScopeSentence />, 24)] : []),
@@ -362,6 +406,7 @@ export function SettingsVirtualPage({
           ]}
         </virtual-list>
       </div>
+      </PageVirtualListContext.Provider>
     </PageScopeSentenceContext.Provider>
   );
 }
@@ -447,9 +492,10 @@ export function SettingsSection({
             paddingLeft: 16,
             paddingRight: 16,
             borderRadius: RADIUS.md,
-            backgroundColor: highlighted ? alpha(theme.primary, 0.12) : "#00000000",
+            position: "relative",
           }}
         >
+          {highlighted ? <SearchTargetRing /> : null}
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, minWidth: 0 }}>
             <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, minHeight: 28 }}>
               {icon}
@@ -687,9 +733,10 @@ export function SettingsRow({
         paddingTop: 12,
         paddingBottom: children ? 4 : 12,
         opacity: disabled ? 0.64 : 1,
-        backgroundColor: highlighted ? alpha(theme.primary, 0.1) : "#00000000",
+        position: "relative",
       }}
     >
+      {highlighted ? <SearchTargetRing /> : null}
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 32 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 4, flexGrow: 1, flexShrink: 1, minWidth: 0 }}>
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minHeight: 20 }}>

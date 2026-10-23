@@ -30,6 +30,7 @@ import { TypographySection } from "../appearance/TypographySettings.tsx";
 import { fieldBackground, SettingsSelect, Slider } from "../controls.tsx";
 import { SettingResetButton, SettingsPageContainer, SettingsRow, SettingsSection } from "../layout.tsx";
 import { useScopedSettings, useUpdateScopedSettings } from "../scope.tsx";
+import { resolveStageLabel } from "../../sidebar/StageBackdrop.tsx";
 
 const ENVIRONMENT_IDENTIFICATION_LABELS: Record<EnvironmentIdentificationMode, string> = {
   artwork: "Artwork",
@@ -43,22 +44,16 @@ const CHAT_WIDTH_LABELS: Record<ChatWidth, string> = {
   full: "Full",
 };
 
-// apps/web/src/branding.logic.ts
-const NIGHTLY_SERVER_VERSION_PATTERN = /^[^-+]+-(?:nightly|preview)\.\d{8}\.\d+$/;
 /**
- * APP_STAGE_LABEL's fallback. The web build is "Dev" under Vite dev and
- * "Beta" otherwise; t3-term is not a staged build of the web app, so only a
- * nightly server makes the environment-identification row meaningful.
+ * SidebarStageBackdrop.tsx useEnvironmentStageLabel + resolveEnvironmentIdentificationPillLabel.
+ * The stage label is the one the sidebar artwork uses (Dev from source, Nightly
+ * for a nightly server), so the row shows exactly when there is artwork to choose.
  */
-const APP_STAGE_LABEL = "Beta";
-
-/** SidebarStageBackdrop.tsx useEnvironmentStageLabel + resolveEnvironmentIdentificationPillLabel. */
 function useShowEnvironmentIdentification(): boolean {
   const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
   const environment = useEnvironment(primaryEnvironmentId);
   const version = environment?.serverConfig?.environment.serverVersion ?? null;
-  const stage = version && NIGHTLY_SERVER_VERSION_PATTERN.test(version) ? "Nightly" : APP_STAGE_LABEL;
-  const normalized = stage.trim().toLowerCase();
+  const normalized = resolveStageLabel(version).trim().toLowerCase();
   return normalized === "dev" || normalized === "nightly";
 }
 

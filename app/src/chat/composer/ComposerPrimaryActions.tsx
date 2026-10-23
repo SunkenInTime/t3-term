@@ -15,6 +15,8 @@ import { Icon, type IconName } from "../../ui/Icon.tsx";
 import { Menu, MenuItem, Tooltip } from "../../ui/overlay.tsx";
 import { Button } from "../../ui/primitives.tsx";
 import { FONTS, alpha, useTheme } from "../../ui/theme.ts";
+import { useStageIdentification } from "../../sidebar/SidebarChrome.tsx";
+import { stageArtSource } from "../../sidebar/StageBackdrop.tsx";
 
 export interface PendingActionState {
   readonly questionIndex: number;
@@ -74,6 +76,8 @@ export function ComposerPrimaryActions(props: {
   onImplementPlanInNewThread: () => void;
 }) {
   const theme = useTheme();
+  // environmentIdentificationMode "artwork" on a Dev or Nightly build paints the send button with the stage art.
+  const stageBackdropVariant = useStageIdentification().backdropVariant;
   const isSendDisabled = !props.canOperateThread || props.sendDisabledReason !== null;
   const dispatchMode = resolveComposerDispatchMode({
     running: props.isRunning,
@@ -202,6 +206,8 @@ export function ComposerPrimaryActions(props: {
         size={32}
         background={theme.messageAction}
         hoverBackground={alpha(theme.messageAction, 0.9)}
+        art={stageBackdropVariant ? stageArtSource(stageBackdropVariant, theme, "button") : undefined}
+        shadowColor={stageBackdropVariant ? "#0000003d" : alpha(theme.messageAction, 0.24)}
         disabled={disabled}
         onClick={(event) => {
           if (showResume) {
@@ -240,6 +246,8 @@ function CircleButton({
   size,
   background,
   hoverBackground,
+  art,
+  shadowColor,
   disabled,
   onClick,
   testId,
@@ -249,17 +257,25 @@ function CircleButton({
   size: number;
   background: string;
   hoverBackground: string;
+  /** StageBackdropButtonArt: the environment artwork fills the button instead of message-action. */
+  art?: string;
+  /** shadow-xs in this color while enabled. */
+  shadowColor?: string;
   disabled?: boolean;
   onClick?: (event?: EventPayload) => void;
   testId?: string;
   [key: string]: unknown;
 }) {
+  const [hovered, setHovered] = useState(false);
   return (
     <div
       {...rest}
       testId={testId}
       onClick={disabled ? undefined : (event: EventPayload) => onClick?.(event)}
+      onMouseEnter={art ? () => setHovered(true) : undefined}
+      onMouseLeave={art ? () => setHovered(false) : undefined}
       style={{
+        position: "relative",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -267,12 +283,36 @@ function CircleButton({
         height: size,
         borderRadius: size / 2,
         flexShrink: 0,
-        backgroundColor: background,
+        backgroundColor: art ? "#00000000" : background,
         opacity: disabled ? 0.64 : 1,
         cursor: disabled ? "default" : "pointer",
-        ...(disabled ? {} : { hover: { backgroundColor: hoverBackground } }),
+        ...(disabled || art ? {} : { hover: { backgroundColor: hoverBackground } }),
+        // shadow-xs (0 1px 2px); GPUI's blur spreads about twice as far as CSS.
+        ...(shadowColor && !disabled ? { boxShadow: { offsetX: 0, offsetY: 1, blurRadius: 1, spreadRadius: 0, color: shadowColor } } : {}),
       }}
     >
+      {art ? (
+        <img
+          src={art}
+          objectFit="fill"
+          style={{ position: "absolute", top: 0, left: 0, width: size, height: size, borderRadius: size / 2, pointerEvents: "none" }}
+        />
+      ) : null}
+      {art && hovered && !disabled ? (
+        // enabled:hover:brightness-110; GPUI has no filters, so a faint white wash stands in.
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            backgroundColor: "#ffffff1a",
+            pointerEvents: "none",
+          }}
+        />
+      ) : null}
       {children}
     </div>
   );

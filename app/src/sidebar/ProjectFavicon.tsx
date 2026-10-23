@@ -12,6 +12,7 @@ import { Icon, type IconName } from "../ui/Icon.tsx";
 import { LUCIDE } from "../ui/lucide.gen.ts";
 import { FONTS, alpha, useTheme } from "../ui/theme.ts";
 import { deriveProjectIdentity } from "../web/projectIdentity.ts";
+import { useGrayscaleImageSource } from "./grayscaleImage.ts";
 
 export type ProjectFaviconProject = Pick<
   EnvironmentProject,
@@ -115,8 +116,8 @@ export function ProjectFavicon({
   size?: number;
   opacity?: number;
   /**
-   * Web's receded rows use `grayscale`. gpuix has no image filters, so a
-   * server favicon is dimmed further instead; generated icons turn grey.
+   * Web's receded rows use `grayscale`. A server favicon gets a grayscale copy
+   * (grayscaleImage.ts); generated icons take a grey colour.
    */
   grayscale?: boolean;
 }) {
@@ -128,6 +129,8 @@ export function ProjectFavicon({
       faviconPath: project.faviconPath,
     }),
   );
+  const imageSrc = src && !isProjectFaviconFallbackUrl(src) && !project.projectIcon ? src : null;
+  const grayscaleSrc = useGrayscaleImageSource(imageSrc, grayscale, size);
   const wrap = (child: React.ReactNode) =>
     opacity === undefined ? (
       child
@@ -171,10 +174,10 @@ export function ProjectFavicon({
     }
     return wrap(<Icon name="folder-code" size={size} color={theme.mutedForeground} />);
   }
-  // gpuix images take no CSS filter, so a receded server favicon cannot turn grey.
-  // Dimming it a further quarter takes the colour down about as far as web's
+  // Until its grayscale copy is ready (or when the format can't be converted),
+  // a receded favicon is dimmed a further quarter, about as far as web's
   // grayscale + 40% opacity reads at 16px.
-  const imageOpacity = grayscale && opacity !== undefined ? opacity * 0.75 : opacity;
+  const imageOpacity = grayscale && grayscaleSrc === null && opacity !== undefined ? opacity * 0.75 : opacity;
   const wrapImage = (child: React.ReactNode) =>
     imageOpacity === undefined ? (
       child
@@ -183,7 +186,7 @@ export function ProjectFavicon({
     );
   return wrapImage(
     <img
-      src={src}
+      src={grayscaleSrc ?? src}
       objectFit="contain"
       style={{ width: size, height: size, borderRadius: size / 4, flexShrink: 0, pointerEvents: "none" }}
     />,

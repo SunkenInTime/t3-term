@@ -75,3 +75,4 @@ Bundled highlight languages: Rust, TS, TSX, JS, JSX, Python, Go, JSON, Bash, TOM
 - A child cannot re-enable pointer events under a `pointerEvents: "none"` parent. Keep a full-cover `none` layout probe as a sibling of interactive overlays, not their parent.
 - `<img style={{ height: "100%" }}>` resolved against an outer definite ancestor rather than its flex parent; size live images in px from `onLayout`.
 - `renderer.focusElement(inputId)` focuses an `<input>` without firing its `onFocus`; check `renderer.getFocusedElementId()` and set any focused state yourself.
+- Negative margins on a row's children (web's `-mx-0.5` on a leading icon) collapsed a content-sized floating menu to its `minWidth` and truncated its text. Give the icon a narrower fixed-width slot and let it overflow centered instead.

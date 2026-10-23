@@ -11,6 +11,7 @@ import type { ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import { memo, useEffect, useRef, type ReactNode, type RefObject } from "react";
 
 import { Icon, type IconName } from "../ui/Icon.tsx";
+import { dialogGlassShadow } from "../ui/overlay.tsx";
 import { Text } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme, type Palette } from "../ui/theme.ts";
 import type {
@@ -74,9 +75,7 @@ export function PaletteFrame({
             borderWidth: 1,
             borderColor: surface.border,
             backgroundColor: surface.background,
-            boxShadow: [
-              { offsetX: 0, offsetY: 24, blurRadius: 64, spreadRadius: -24, color: "#000000a6" },
-            ],
+            boxShadow: dialogGlassShadow(theme),
             overflow: "hidden",
           }}
         >

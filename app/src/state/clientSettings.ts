@@ -266,7 +266,7 @@ export function resolvePalette(state: ThemeState, systemDark: boolean): Palette 
   if (!palette) {
     const definition = BUILT_IN_THEME_DEFINITIONS.find((candidate) => candidate.id === themeId);
     const colors = definition ? getThemeColorsForMode(definition, appearance) : null;
-    palette = colors ? paletteFromThemeColors(colors, appearance) : appearance === "dark" ? DARK : LIGHT;
+    palette = colors ? paletteFromThemeColors(colors, appearance, themeId) : appearance === "dark" ? DARK : LIGHT;
     paletteCache.set(key, palette);
   }
   return palette;

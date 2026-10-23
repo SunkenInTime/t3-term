@@ -394,15 +394,37 @@ function readDismissed(): string[] {
   }
 }
 
-/** DatabaseStorageNotice: suggests `t3 doctor` where a database holds at least 1 GiB of freed pages. */
-function DatabaseStorageNotice({ environments }: { environments: ReadonlyArray<{ readonly environmentId: EnvironmentId; readonly label: string }> }) {
-  const theme = useTheme();
+type DatabaseNoticeEnvironment = { readonly environmentId: EnvironmentId; readonly label: string };
+
+/**
+ * The databases DatabaseStorageNotice lists, minus dismissed ones. Resolved by
+ * the page, not the notice: a virtual page spaces every child it is given, so
+ * a notice that renders nothing would still leave a 32px gap above Worktrees.
+ */
+function useDatabaseStorageNotice(environments: ReadonlyArray<DatabaseNoticeEnvironment>) {
   const recommendations = useAtomValue(
     serverEnvironment.databaseCompactionRecommendations(JSON.stringify(environments.map((environment) => environment.environmentId))),
   );
   const [dismissed, setDismissed] = useState(readDismissed);
-  const visible = recommendations.filter((recommendation) => !dismissed.includes(recommendation.environmentId));
-  if (visible.length === 0) return null;
+  return {
+    visible: recommendations.filter((recommendation) => !dismissed.includes(recommendation.environmentId)),
+    dismiss: (environmentId: EnvironmentId) => {
+      const next = [...dismissed, environmentId];
+      localStore.setItem(DISMISSED_KEY, JSON.stringify(next));
+      setDismissed(next);
+    },
+  };
+}
+
+/** DatabaseStorageNotice: suggests `t3 doctor` where a database holds at least 1 GiB of freed pages. */
+function DatabaseStorageNotice({
+  environments,
+  notice: { visible, dismiss },
+}: {
+  environments: ReadonlyArray<DatabaseNoticeEnvironment>;
+  notice: ReturnType<typeof useDatabaseStorageNotice>;
+}) {
+  const theme = useTheme();
   return (
     <SettingsSection id="storage-database" title="Database">
       <SettingsRow
@@ -435,11 +457,7 @@ function DatabaseStorageNotice({ environments }: { environments: ReadonlyArray<{
               <Button
                 variant="ghost"
                 size="xs"
-                onClick={() => {
-                  const next = [...dismissed, environmentId];
-                  localStore.setItem(DISMISSED_KEY, JSON.stringify(next));
-                  setDismissed(next);
-                }}
+                onClick={() => dismiss(environmentId)}
               >
                 Dismiss
               </Button>
@@ -471,6 +489,10 @@ export function StorageSettings() {
   const update = (patch: Partial<StorageCleanupSettings>) => updateSettings({ storageCleanup: patch });
   const updateWorktree = (patch: Partial<WorktreeCleanupRules>) =>
     isProjectScope ? updateSettings({ worktreeCleanup: { mode: "custom", rules: patch } }) : update(patch);
+  const databaseEnvironments = connectedEnvironments.filter(
+    (environment) => environment.serverConfig?.environment.capabilities.databaseStorage === true,
+  );
+  const databaseNotice = useDatabaseStorageNotice(databaseEnvironments);
   if (isProjectScope && connectedEnvironments.some((environment) => environment.serverConfig?.environment.capabilities.projectWorktreeCleanup !== true)) {
     return (
       <SettingsPageContainer>
@@ -492,10 +514,8 @@ export function StorageSettings() {
   }
   return (
     <SettingsPageContainer virtual>
-      {!isProjectScope ? (
-        <DatabaseStorageNotice
-          environments={connectedEnvironments.filter((environment) => environment.serverConfig?.environment.capabilities.databaseStorage === true)}
-        />
+      {!isProjectScope && databaseNotice.visible.length > 0 ? (
+        <DatabaseStorageNotice environments={databaseEnvironments} notice={databaseNotice} />
       ) : null}
       <SettingsSection id="storage-worktrees" title="Worktrees">
         {!isProjectScope ? <WorktreesDirectoryRow /> : null}

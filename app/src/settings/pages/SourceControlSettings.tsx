@@ -90,11 +90,12 @@ function ItemMark({ item }: { item: DiscoveryItem }) {
       <div
         style={{
           position: "absolute",
-          left: -2,
-          top: -2,
-          width: 8,
-          height: 8,
-          borderRadius: 4,
+          // size-2 at -0.5 plus ring-2 outside it: the ring adds to the 8px dot.
+          left: -4,
+          top: -4,
+          width: 12,
+          height: 12,
+          borderRadius: 6,
           borderWidth: 2,
           borderColor: theme.background,
           backgroundColor: statusDotColor(item, theme),
