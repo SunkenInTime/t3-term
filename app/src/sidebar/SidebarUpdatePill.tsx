@@ -13,7 +13,7 @@ import { useEnvironments } from "../state/settings.ts";
 import { DEV_FAKE_UPDATE_RUN } from "../state/updates.ts";
 import { Icon } from "../ui/Icon.tsx";
 import { Tooltip } from "../ui/overlay.tsx";
-import { useTheme } from "../ui/theme.ts";
+import { alpha, useTheme, type Palette } from "../ui/theme.ts";
 import { toast } from "../ui/toast.tsx";
 import { SidebarUpdateCapsule } from "./SidebarUpdateCapsule.tsx";
 import { seedDevUpdateRun, useUpdateEverythingRun } from "./updateEverythingRun.ts";
@@ -95,7 +95,7 @@ export function SidebarUpdatePill() {
             flexShrink: 0,
             borderRadius: 9999,
             cursor: isInteractionDisabled ? "not-allowed" : "pointer",
-            backgroundColor: hovered && !isInteractionDisabled ? theme.sidebar.rowHover : theme.sidebar.accent,
+            backgroundColor: hovered && !isInteractionDisabled ? theme.sidebar.rowHover : sidebarControlSurface(theme),
           }}
         >
           {statusIcon}
@@ -116,4 +116,14 @@ function useDevFakeUpdateRun() {
     seeded.current = true;
     seedDevUpdateRun(DEV_FAKE_UPDATE_RUN, connected);
   }, [connected.length]);
+}
+
+/**
+ * bg-sidebar-control-surface. The default dark theme sets it to --muted, white
+ * at 3% (measured on the web pill: #0a0a0a over the sidebar), which is dimmer
+ * than the palette's sidebar accent; built-in themes and light mode carry it
+ * as the sidebar accent.
+ */
+export function sidebarControlSurface(theme: Palette): string {
+  return theme.themeId === null && theme.appearance === "dark" ? alpha("#ffffff", 0.03) : theme.sidebar.accent;
 }

@@ -20,6 +20,7 @@ import {
   type UpdateRunMachineView,
 } from "../web/components/sidebar/updateEverything.logic.ts";
 import { useServerUpdate } from "./serverUpdates.ts";
+import { sidebarControlSurface } from "./SidebarUpdatePill.tsx";
 import { dismissSettledUpdateRunMachines, retryFailedUpdateRunServers } from "./updateEverythingRun.ts";
 
 /** Wall time rounded down to `intervalMs`, ticking only while an interval is set. */
@@ -93,7 +94,7 @@ export function SidebarUpdateCapsule({
         flexGrow: 1,
         minWidth: 0,
         borderRadius: 9999,
-        backgroundColor: hovered ? theme.sidebar.rowHover : theme.sidebar.accent,
+        backgroundColor: hovered ? theme.sidebar.rowHover : sidebarControlSurface(theme),
         ...(ringColor ? { borderWidth: 1, borderColor: ringColor } : {}),
       }}
     >
@@ -114,7 +115,8 @@ export function SidebarUpdateCapsule({
           paddingLeft: ringColor ? 11 : 12,
         }}
       >
-        <div style={{ display: "flex", flexDirection: "row", flexGrow: 1, minWidth: 0, overflow: "hidden", pointerEvents: "none" }}>
+        {/* Web's `truncate` span holds both parts; here the label alone gives way. */}
+        <div style={{ display: "flex", flexDirection: "row", flexGrow: 1, minWidth: 0, pointerEvents: "none" }}>
           <text
             style={{
               ...textXs,
@@ -129,7 +131,9 @@ export function SidebarUpdateCapsule({
             {view.label}
           </text>
           {view.slow ? (
-            <text style={{ ...textXs, color: theme.warning, whiteSpace: "nowrap", flexShrink: 0 }}>{` ${view.slow.elapsed}`}</text>
+            <text style={{ ...textXs, color: theme.warning, whiteSpace: "nowrap", flexShrink: 0, paddingLeft: 3 }}>
+              {view.slow.elapsed}
+            </text>
           ) : null}
         </div>
         {view.action === null ? (
