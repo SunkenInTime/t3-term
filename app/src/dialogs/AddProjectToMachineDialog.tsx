@@ -1,7 +1,7 @@
 // Port of apps/web/src/components/AddProjectToMachineDialog.tsx with
 // apps/web/src/hooks/useAddProjectTargets.ts and the project-environment list
-// from apps/web/src/hooks/useLogicalProjectEnvironments.ts (default repository
-// grouping; t3-term has no client grouping settings yet). The clone itself is
+// from apps/web/src/hooks/useLogicalProjectEnvironments.ts (grouping from the
+// client settings store). The clone itself is
 // app/src/web/lib/addProjectToMachine.ts.
 import { useAtomValue } from "@effect/atom-react";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
@@ -11,7 +11,7 @@ import {
   getCloneDestinationPath,
   getCloneDirectoryName,
 } from "@t3tools/client-runtime/operations/projects";
-import { deriveLogicalProjectKeyFromSettings } from "@t3tools/client-runtime/state/project-grouping";
+import { deriveLogicalProjectKeyFromSettings, selectProjectGroupingSettings } from "@t3tools/client-runtime/state/project-grouping";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   AuthSourceControlWriteScope,
@@ -29,6 +29,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
+import { clientSettingsAtom } from "../state/clientSettings.ts";
 import { useEnvironmentsWithScope } from "../state/dialogs.ts";
 import { environmentProjects, projectEnvironment } from "../state/environment.ts";
 import { environmentPresentations } from "../state/navigation.ts";
@@ -99,10 +100,6 @@ interface AddProjectTarget {
 const EMPTY_FILES_ATOM = Atom.make(
   AsyncResult.initial<{ readonly files: ReadonlyArray<ProjectIgnoredFile>; readonly truncated: boolean }, never>(false),
 );
-const DEFAULT_GROUPING = {
-  sidebarProjectGroupingMode: "repository",
-  sidebarProjectGroupingOverrides: {},
-} as const;
 
 /** The machines that already hold this project (useLogicalProjectEnvironments). */
 function projectEnvironmentIds(
@@ -110,10 +107,11 @@ function projectEnvironmentIds(
   projects: ReadonlyArray<EnvironmentProject>,
 ): ReadonlySet<EnvironmentId> {
   if (!project) return new Set();
-  const key = deriveLogicalProjectKeyFromSettings(project, DEFAULT_GROUPING);
+  const grouping = selectProjectGroupingSettings(appAtomRegistry.get(clientSettingsAtom));
+  const key = deriveLogicalProjectKeyFromSettings(project, grouping);
   return new Set(
     projects
-      .filter((candidate) => deriveLogicalProjectKeyFromSettings(candidate, DEFAULT_GROUPING) === key)
+      .filter((candidate) => deriveLogicalProjectKeyFromSettings(candidate, grouping) === key)
       .map((candidate) => candidate.environmentId),
   );
 }

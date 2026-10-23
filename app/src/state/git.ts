@@ -18,6 +18,7 @@ import type { EditorId, RunId, ScopedThreadRef } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
+import { clientSettingAtom, updateClientSettings } from "./clientSettings.ts";
 import { composerDraftAtom, setDraftWorkspace } from "./composer.ts";
 import { termHome } from "../runtime/paths.ts";
 import { rightPanelOpenAtom, rightPanelSurfaceAtom, rightPanelSurfaceRequestAtom, type RightPanelSurface } from "./ui.ts";
@@ -37,8 +38,6 @@ interface GitPrefs {
   preferredEditor?: EditorId | null;
   lastInvokedScriptByProjectId?: Record<string, string>;
   diffFileTreeOpen?: boolean;
-  diffIgnoreWhitespace?: boolean;
-  diffFilesCollapsed?: boolean;
 }
 
 const prefsPath = () => NodePath.join(termHome(), "git-prefs.json");
@@ -76,8 +75,16 @@ function persistedAtom<K extends keyof GitPrefs>(key: K, fallback: NonNullable<G
 export const preferredEditorPref = persistedAtom("preferredEditor", "" as EditorId);
 export const lastInvokedScriptPref = persistedAtom("lastInvokedScriptByProjectId", {});
 export const diffFileTreeOpenPref = persistedAtom("diffFileTreeOpen", false);
-export const diffIgnoreWhitespacePref = persistedAtom("diffIgnoreWhitespace", false);
-export const diffFilesCollapsedPref = persistedAtom("diffFilesCollapsed", false);
+// Web keeps these two in client settings (General: Hide whitespace changes,
+// Default diff file state), so they read and write the client settings store.
+function clientSettingPref<K extends "diffIgnoreWhitespace" | "diffFilesCollapsed">(key: K) {
+  return {
+    atom: clientSettingAtom(key),
+    set: (value: boolean) => updateClientSettings({ [key]: value }),
+  };
+}
+export const diffIgnoreWhitespacePref = clientSettingPref("diffIgnoreWhitespace");
+export const diffFilesCollapsedPref = clientSettingPref("diffFilesCollapsed");
 
 // ── Diff panel selection (apps/web/src/diffPanelStore.ts) ─────────────────
 
