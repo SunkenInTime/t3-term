@@ -1,8 +1,9 @@
 // The right panel's Diff surface: port of apps/web/src/components/DiffPanel.tsx
 // (+ DiffPanelShell.tsx, diffPanelStore.ts, lib/diffCollapse.ts). Scopes: the
 // branch's changes against its base (with a base-ref picker), uncommitted
-// changes, the latest turn or any earlier turn. One native <diff> renders the
-// patch with its own virtualized scroll, so nothing nests a vertical scroller.
+// changes, the latest turn or any earlier turn. DiffView paints the patch the
+// way @pierre/diffs does on the web (stacked/split, wrap) in one windowed
+// virtual list, so nothing nests a vertical scroller.
 import { useAtomValue } from "@effect/atom-react";
 import type { EventPayload } from "@gpuix/native";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
@@ -22,7 +23,7 @@ import {
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
 import {
@@ -46,6 +47,8 @@ import {
   selectDiffTurn,
   vcsEnvironment,
 } from "../../state/git.ts";
+import { rightPanelActions } from "../../state/rightPanel.ts";
+import { diffLayoutPref, wordWrapPref } from "../../state/codeView.ts";
 import { ActionMenu } from "../../chat/header/ActionMenu.tsx";
 import { copyTextToClipboard } from "../../chat/header/osActions.ts";
 import { Icon, type IconName } from "../../ui/Icon.tsx";
@@ -57,11 +60,15 @@ import { areAllDiffFilesCollapsed, toggleAllDiffFiles } from "../../web/lib/diff
 import { buildBaseRefChoices } from "../../web/lib/baseRefChoices.ts";
 import { useEnvironmentQuery } from "../../web/state/query.ts";
 import { readEnvironmentScope, useEnvironmentScope } from "../../web/state/session.ts";
-import { splitPatch, type PatchFile } from "./patchFiles.ts";
+import { resolveDiffPathForWorkspace } from "../../web/diffFileActions.ts";
+import { parseDiffFiles } from "./diffModel.ts";
+import { DiffView } from "./DiffView.tsx";
+import type { PatchFile } from "./patchFiles.ts";
 
 const AUTOMATIC_BASE_REF = "__automatic_base_ref__";
 const LAZY_FILE_BATCH = 20;
 const EMPTY_SET: ReadonlySet<string> = new Set();
+const FILE_PATH_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 function shortTime(iso: string): string {
   const date = new Date(iso);
@@ -230,6 +237,9 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
   const ignoreWhitespace = useAtomValue(diffIgnoreWhitespacePref.atom);
   const fileTreeOpen = useAtomValue(diffFileTreeOpenPref.atom);
   const filesCollapsedByDefault = useAtomValue(diffFilesCollapsedPref.atom);
+  const diffLayout = useAtomValue(diffLayoutPref.atom);
+  // DiffPanel: wrap starts from the wordWrap setting and stays local to the panel.
+  const [wordWrap, setWordWrap] = useState(() => appAtomRegistry.get(wordWrapPref.atom));
   const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
   const [baseMenuOpen, setBaseMenuOpen] = useState(false);
   const [lazyLimit, setLazyLimit] = useState(LAZY_FILE_BATCH);
@@ -300,7 +310,7 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
   );
   const lazySource = !selectedTurn && gitSource?.truncated && gitSource.files ? gitSource : null;
   const lazyKey = lazySource ? `${lazySource.diffHash}:${ignoreWhitespace}` : "";
-  const lazyFiles = lazySource?.files?.slice(0, lazyLimit) ?? [];
+  const lazyFiles = lazySource?.files?.toSorted((left, right) => FILE_PATH_COLLATOR.compare(left.path, right.path)).slice(0, lazyLimit) ?? [];
   const lazyMap = lazyPatches.key === lazyKey ? lazyPatches.byPath : new Map<string, string | null>();
 
   const rawPatch = selectedTurn
@@ -309,9 +319,15 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
       ? lazyFiles
           .map((file) => lazyMap.get(file.path))
           .filter((patch): patch is string => typeof patch === "string")
+          // A truncated file patch can end mid-line; the next file must start on its own line.
+          .map((patch) => (patch.length === 0 || patch.endsWith("\n") ? patch : `${patch}\n`))
           .join("")
       : (gitSource?.diff ?? null);
-  const files = splitPatch(rawPatch);
+  // useReviewFilePatches: files in path order (numeric, case-insensitive).
+  const files = useMemo(
+    () => parseDiffFiles(rawPatch).toSorted((left, right) => FILE_PATH_COLLATOR.compare(left.path, right.path)),
+    [rawPatch],
+  );
   const patchQuery = selectedTurn ? checkpointDiff : preview;
   const isLoading = patchQuery.isPending && patchQuery.data === null;
   const patchError = selectedTurn ? checkpointDiff.error : preview.error;
@@ -330,7 +346,10 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
   const allCollapsed = areAllDiffFilesCollapsed(fileKeys, collapsed);
   const focused = useAtomValue(diffFocusedFileAtom(scopeKey));
   const focusedFile = focused ? files.find((file) => file.path === focused) : undefined;
-  const shownPatch = focusedFile ? focusedFile.patch : rawPatch;
+  const shownFiles = useMemo(() => (focusedFile ? [focusedFile] : files), [files, focusedFile]);
+  // A fresh Set each render (default-collapsed case) must not rebuild every row.
+  const collapsedKey = [...collapsed].join("\n");
+  const collapsedSet = useMemo(() => collapsed, [collapsedKey]);
 
   const updateCollapsed = (update: (current: ReadonlySet<string>) => ReadonlySet<string>) =>
     appAtomRegistry.set(diffCollapsedFilesAtom(scopeKey), update(collapsed));
@@ -404,12 +423,13 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
         alignItems: "center",
         justifyContent: "space-between",
         gap: 8,
-        height: 40,
+        // In the right panel (data-preview-panel-mode=inline) the row is h-7 with
+        // mb-3 and a transparent border.
+        height: 28,
+        marginBottom: 12,
         flexShrink: 0,
         paddingLeft: 8,
         paddingRight: 8,
-        borderBottomWidth: 1,
-        borderColor: alpha(theme.border, 0.6),
         backgroundColor: theme.background,
       }}
     >
@@ -527,6 +547,14 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
             onClick={() => updateCollapsed((current) => toggleAllDiffFiles(fileKeys, current))}
           />
         ) : null}
+        <LayoutToggle value={diffLayout} onChange={(next) => diffLayoutPref.set(next)} />
+        <HeaderIconButton
+          icon="text-wrap"
+          testId="diff-wrap"
+          pressed={wordWrap}
+          tooltip={wordWrap ? "Disable line wrapping" : "Enable line wrapping"}
+          onClick={() => setWordWrap(!wordWrap)}
+        />
         <HeaderIconButton
           icon="pilcrow"
           testId="diff-whitespace"
@@ -586,27 +614,21 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
               </div>
             </div>
           ) : null}
-          <diff
-            testId="diff-view"
-            patch={shownPatch ?? ""}
-            wordDiff
-            scroll
-            collapsedPaths={[...collapsed]}
-            onToggleFile={(event: EventPayload) => {
-              if (typeof event.value === "string") toggleFile(event.value);
+          <DiffView
+            files={shownFiles}
+            layout={diffLayout}
+            wrap={wordWrap}
+            collapsed={collapsedSet}
+            resetKey={`${scopeKey}:${focusedFile?.path ?? ""}`}
+            onToggleFile={toggleFile}
+            onOpenFile={(path) => {
+              const relative = resolveDiffPathForWorkspace({
+                filePath: path,
+                workspaceRoot: activeCwd ?? undefined,
+                repositoryRoot: thread?.worktreePath ? undefined : (project?.repositoryIdentity?.rootPath ?? undefined),
+              });
+              if (relative) rightPanelActions.openFile(threadKey, relative);
             }}
-            theme={{
-              appearance: theme.appearance,
-              bg: theme.background,
-              text: theme.foreground,
-              textMuted: theme.mutedForeground,
-              diffAdd: theme.diffAdd,
-              diffDel: theme.diffDel,
-              fontSans: FONTS.sans,
-              fontMono: FONTS.mono,
-              metrics: { diffTextSize: 12, diffLineHeight: 20, diffFileHeaderHeight: 32, diffHunkHeaderHeight: 24 },
-            }}
-            style={{ flexGrow: 1, minHeight: 0, width: "100%", scrollbarColor: theme.scrollbar }}
           />
           {lazySource && (lazySource.files?.length ?? 0) > lazyLimit ? (
             <div
@@ -655,6 +677,52 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
             />
           ))
         : null}
+    </div>
+  );
+}
+
+/** ToggleGroup variant="segmented": Stacked (Rows3) / Split (Columns2). */
+function LayoutToggle({ value, onChange }: { value: "stacked" | "split"; onChange: (next: "stacked" | "split") => void }) {
+  const theme = useTheme();
+  const item = (id: "stacked" | "split", icon: IconName, label: string) => {
+    const pressed = value === id;
+    return (
+      <Tooltip content={label}>
+        <div
+          testId={`diff-layout-${id}`}
+          onClick={() => onChange(id)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 31,
+            height: 24,
+            borderRadius: 6,
+            cursor: "pointer",
+            backgroundColor: pressed ? alpha(theme.foreground, 0.09) : "#00000000",
+            ...(pressed ? {} : { hover: { backgroundColor: alpha(theme.foreground, 0.05) } }),
+          }}
+        >
+          <Icon name={icon} size={14} color={pressed ? theme.foreground : theme.mutedForeground} />
+        </div>
+      </Tooltip>
+    );
+  };
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 2,
+        padding: 2,
+        borderRadius: RADIUS.lg,
+        flexShrink: 0,
+        backgroundColor: alpha(theme.foreground, 0.032),
+      }}
+    >
+      {item("stacked", "rows-3", "Stacked diff view")}
+      {item("split", "columns-2", "Split diff view")}
     </div>
   );
 }

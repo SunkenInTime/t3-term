@@ -2,12 +2,10 @@
 //
 // Not ported, by design or by platform:
 // - Editing, saving and line comments (the web preview is a @pierre/diffs editor).
-// - Word wrap: gpuix <code> never wraps, so the wrap toggle is absent.
 // - Rendered HTML/PDF (sandboxed iframes), video and audio players: there is no
 //   browser surface here. HTML shows its source; the others show a notice.
-// - The OpenInPicker ("Open in editor") control and chat attachments.
-import { useAtom } from "@effect/atom-react";
-import { useGpuixRequired, type PublicInstance } from "@gpuix/react";
+// - Chat attachments.
+import { useAtom, useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import {
@@ -16,9 +14,11 @@ import {
   isWorkspaceVideoPreviewPath,
 } from "@t3tools/shared/filePreview";
 import { isHostPath } from "@t3tools/shared/path";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useState } from "react";
 
+import { wordWrapPref } from "../../state/codeView.ts";
 import { persistedAtom } from "../../state/persistedAtom.ts";
+import { SourceView } from "../code/SourceView.tsx";
 import { Text } from "../../ui/primitives.tsx";
 import { FONTS, alpha, useTheme, type Palette } from "../../ui/theme.ts";
 import { breadcrumbPathOf, retainedBreadcrumbTrail, trailChildOf } from "../../web/components/files/filePath.ts";
@@ -32,6 +32,7 @@ import {
 import { useProjectFileQuery } from "../../web/components/files/projectFilesQueryState.ts";
 import { useAssetUrlState } from "./fileAssets.ts";
 import FileBrowserPanel from "./FileBrowserPanel.tsx";
+import { OpenInEditorButton } from "./OpenInEditorButton.tsx";
 import { FileBreadcrumbs } from "./FileBreadcrumbs.tsx";
 import {
   FileSurfaceAction,
@@ -42,11 +43,6 @@ import {
 } from "./fileSurfaceChrome.tsx";
 import { useWorkspaceMutationRefresh } from "./workspaceMutation.ts";
 
-const CODE_LINE_HEIGHT = 20;
-const CODE_PADDING_Y = 8;
-/** pierre-diffs pads its number column on the left as well. */
-const CODE_GUTTER_INSET = 6;
-
 function decodeBoolean(fallback: boolean) {
   return (raw: unknown) => (typeof raw === "boolean" ? raw : fallback);
 }
@@ -55,69 +51,6 @@ function decodeBoolean(fallback: boolean) {
 const fileExplorerOpenAtom = persistedAtom("file-explorer-open", true, decodeBoolean(true));
 /** web: localStorage `t3code.renderMarkdown`, default source. */
 const renderMarkdownAtom = persistedAtom("file-render-markdown", false, decodeBoolean(false));
-
-/** pierre-dark / pierre-light, the web file preview's Shiki themes (resolveDiffThemeName). */
-export function codeTheme(theme: Palette) {
-  const dark = theme.appearance === "dark";
-  return {
-    appearance: theme.appearance,
-    bg: theme.background,
-    text: dark ? "#fafafa" : "#0a0a0a",
-    // Line numbers: pierre-diffs' number column reads lighter than Shiki's comment grey.
-    textMuted: dark ? "#a3a3a3" : "#737373",
-    textFaint: dark ? "#a3a3a3" : "#737373",
-    fontSans: FONTS.sans,
-    fontMono: FONTS.mono,
-    syntax: dark
-      ? {
-          comment: "#737373",
-          keyword: "#ff678d",
-          string: "#5ecc71",
-          stringSpecial: "#64d1db",
-          escape: "#61d5c0",
-          number: "#68cdf2",
-          boolean: "#68cdf2",
-          typeName: "#d568ea",
-          typeBuiltin: "#d568ea",
-          constructor: "#d568ea",
-          function: "#9d6afb",
-          functionBuiltin: "#9d6afb",
-          property: "#ffa359",
-          constant: "#ffd452",
-          variable: "#ffa359",
-          variableSpecial: "#ffab16",
-          parameter: "#a3a3a3",
-          operator: "#08c0ef",
-          punctuation: "#636363",
-          tag: "#ff855e",
-          attribute: "#60d199",
-        }
-      : {
-          comment: "#737373",
-          keyword: "#d32a61",
-          string: "#199f43",
-          stringSpecial: "#17a5af",
-          escape: "#16a994",
-          number: "#1ca1c7",
-          boolean: "#1ca1c7",
-          typeName: "#a631be",
-          typeBuiltin: "#a631be",
-          constructor: "#a631be",
-          function: "#693acf",
-          functionBuiltin: "#693acf",
-          property: "#d47628",
-          constant: "#d5a910",
-          variable: "#d47628",
-          variableSpecial: "#d5901c",
-          parameter: "#636363",
-          operator: "#0b9ec4",
-          punctuation: "#636363",
-          tag: "#d5512f",
-          attribute: "#18a46c",
-        },
-    metrics: { codeTextSize: 13, codeLineHeight: CODE_LINE_HEIGHT, codeGutterPaddingRight: 18 },
-  };
-}
 
 function markdownTheme(theme: Palette) {
   return {
@@ -129,87 +62,6 @@ function markdownTheme(theme: Palette) {
     fontMono: FONTS.mono,
     metrics: { mdTextSize: 14, mdLineHeight: 23, mdBlockGap: 10, mdHeadingSizes: [20, 18, 16, 14] },
   };
-}
-
-function clampFileLine(contents: string, requestedLine: number): number {
-  let lineCount = 1;
-  for (let index = 0; index < contents.length; index += 1) {
-    const character = contents.charCodeAt(index);
-    if (character === 10) {
-      lineCount += 1;
-    } else if (character === 13) {
-      lineCount += 1;
-      if (contents.charCodeAt(index + 1) === 10) index += 1;
-    }
-  }
-  return Math.min(Math.max(1, requestedLine), lineCount);
-}
-
-/** ReadOnlySourcePreview: the file's text, highlighted by path, with the revealed line tinted and centered. */
-function SourcePreview(props: {
-  readonly name: string;
-  readonly text: string;
-  readonly revealLine: number | null;
-  readonly revealRequestId: number;
-}) {
-  const theme = useTheme();
-  const renderer = useGpuixRequired();
-  const scrollRef = useRef<PublicInstance | null>(null);
-  const viewportRef = useRef(0);
-  const handledRef = useRef<string | null>(null);
-  const line = props.revealLine === null ? null : clampFileLine(props.text, props.revealLine);
-
-  useLayoutEffect(() => {
-    if (line === null || scrollRef.current === null) return;
-    const key = `${props.name}:${props.revealRequestId}:${line}`;
-    if (handledRef.current === key) return;
-    handledRef.current = key;
-    const top = CODE_PADDING_Y + (line - 1) * CODE_LINE_HEIGHT;
-    const target = Math.max(0, top - Math.max(0, viewportRef.current / 2 - CODE_LINE_HEIGHT / 2));
-    renderer.scrollTo?.(scrollRef.current.id, 0, -target);
-  }, [line, props.name, props.revealRequestId, renderer]);
-
-  return (
-    <div
-      ref={scrollRef}
-      testId="files-source"
-      onLayout={(event) => {
-        viewportRef.current = Number(event.height ?? 0);
-      }}
-      style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, minWidth: 0, overflowY: "scroll" }}
-    >
-      <div
-        style={{
-          position: "relative",
-          flexShrink: 0,
-          paddingTop: CODE_PADDING_Y,
-          paddingBottom: CODE_PADDING_Y,
-          backgroundColor: theme.codeBackground,
-        }}
-      >
-        {line !== null ? (
-          <div
-            style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              top: CODE_PADDING_Y + (line - 1) * CODE_LINE_HEIGHT,
-              height: CODE_LINE_HEIGHT,
-              backgroundColor: alpha(theme.primary, 0.18),
-              pointerEvents: "none",
-            }}
-          />
-        ) : null}
-        <code
-          code={props.text}
-          path={props.name}
-          showLineNumbers
-          theme={codeTheme(theme)}
-          style={{ paddingLeft: CODE_GUTTER_INSET }}
-        />
-      </div>
-    </div>
-  );
 }
 
 function RenderedMarkdown(props: { readonly text: string }) {
@@ -381,6 +233,7 @@ export default function FilePreviewPanel({
   const previewPath = isFolder ? null : relativePath;
   const [explorerOpen, setExplorerOpen] = useAtom(fileExplorerOpenAtom);
   const [renderMarkdownPreferred, setRenderMarkdownPreferred] = useAtom(renderMarkdownAtom);
+  const wordWrap = useAtomValue(wordWrapPref.atom);
   const showExplorer = shouldShowFileExplorer({ relativePath: previewPath, explorerOpen, attachmentOpen: false });
   // Paired with the path on purpose: each file surface counts its reveals from
   // one, so a bare id would let a dismissed reveal on one file swallow the first
@@ -405,6 +258,10 @@ export default function FilePreviewPanel({
     refresh: file.refresh,
     resourceKey: `file:${environmentId}:${cwd}:${relativePath ?? ""}`,
   });
+
+  // web `showsRawText`: the wrap toggle exists while source text is on screen.
+  const showsRawText =
+    previewPath !== null && !isMedia && !isPdf && !(isMarkdown && renderMarkdown) && !(file.error && file.data === null);
 
   const content = (() => {
     if (isFolder || !relativePath) return null;
@@ -436,12 +293,15 @@ export default function FilePreviewPanel({
     if (file.data === null) return <FileSurfaceLoading />;
     if (isMarkdown && renderMarkdown) return <RenderedMarkdown key={relativePath} text={file.data.contents} />;
     return (
-      <SourcePreview
+      <SourceView
         key={relativePath}
-        name={relativePath}
+        testId="files-source"
+        path={relativePath}
         text={file.data.contents}
+        wrap={wordWrap}
         revealLine={revealLine}
-        revealRequestId={revealRequestId}
+        // Paired with the path: each file surface counts its reveals from one.
+        revealKey={`${relativePath}:${revealRequestId}:${revealLine ?? ""}`}
       />
     );
   })();
@@ -484,6 +344,7 @@ export default function FilePreviewPanel({
               />
             </div>
           </div>
+          {absolutePath && !isFolder ? <OpenInEditorButton environmentId={environmentId} absolutePath={absolutePath} /> : null}
           {previewPath !== null && isMarkdown ? (
             <FileSurfaceAction
               testId="files-toggle-rendered"
@@ -495,6 +356,15 @@ export default function FilePreviewPanel({
                 setRenderMarkdownPreferred(pressed);
                 setHandledReveal(pressed && relativePath !== null ? { path: relativePath, requestId: revealRequestId } : null);
               }}
+            />
+          ) : null}
+          {showsRawText ? (
+            <FileSurfaceAction
+              testId="files-toggle-wrap"
+              label={wordWrap ? "Disable word wrap" : "Enable word wrap"}
+              icon="wrap-text"
+              pressed={wordWrap}
+              onPress={() => wordWrapPref.set(!wordWrap)}
             />
           ) : null}
           {!isHostFile && previewPath !== null ? (

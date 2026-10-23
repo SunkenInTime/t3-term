@@ -1,6 +1,5 @@
 // Splits a unified git patch into per-file chunks with their paths and line
-// stats. The native <diff> element parses the whole patch itself; the panel only
-// needs this for its file list, the stat label and "focus one file".
+// stats. diffModel.ts parses each chunk's hunks for DiffView.
 
 export interface PatchFile {
   readonly path: string;
