@@ -1,6 +1,7 @@
 // Port of apps/web/src/components/files/ProjectFilePicker.tsx with the command palette
 // chrome it renders through (CommandPaletteContent, CommandPaletteResults, ui/command.tsx
 // and the CommandDialog popup). Metrics follow docs/web-ui-spec.md "Command palette".
+import { dialogGlassShadow } from "../../ui/overlay.tsx";
 import { useAtomValue } from "@effect/atom-react";
 import { useGpuixRequired, useWindowSize, type KeyEvent, type PublicInstance } from "@gpuix/react";
 import * as DialogPrimitive from "@gpuix/react/dialog";
@@ -398,7 +399,7 @@ export function ProjectFilePicker(props: { open: boolean; onOpenChange: (open: b
             borderWidth: 1,
             borderColor: theme.appearance === "dark" ? alpha("#ffffff", 0.08) : alpha(theme.foreground, 0.1),
             backgroundColor: theme.background,
-            boxShadow: { offsetX: 0, offsetY: 24, blurRadius: 72, spreadRadius: -20, color: "#000000e6" },
+            boxShadow: dialogGlassShadow(theme),
             overflow: "hidden",
           }}
         >

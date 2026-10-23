@@ -23,7 +23,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { serverEnvironment } from "../../state/environment.ts";
 import { EMPTY_SERVER_PROVIDERS, readEnvironmentScope, useAtomCommand, useEnvironmentScope } from "../../state/settings.ts";
 import { Icon } from "../../ui/Icon.tsx";
-import { Tooltip } from "../../ui/overlay.tsx";
+import { Tooltip, dialogGlassShadow } from "../../ui/overlay.tsx";
 import { Button, IconButton, Text } from "../../ui/primitives.tsx";
 import { toast } from "../../ui/toast.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
@@ -504,7 +504,7 @@ function WizardDialog({
             borderWidth: 1,
             borderColor: dark ? alpha("#ffffff", 0.08) : alpha(theme.foreground, 0.1),
             backgroundColor: dark ? theme.background : "#ffffff",
-            boxShadow: { offsetX: 0, offsetY: 24, blurRadius: 72, spreadRadius: -20, color: "#000000e6" },
+            boxShadow: dialogGlassShadow(theme),
             overflow: "hidden",
             position: "relative",
           }}

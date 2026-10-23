@@ -3,6 +3,7 @@
 // The ui kit's Dialog fixes header/footer layout and has no close button or
 // initial-focus target, which these dialogs need, so they compose the gpuix
 // primitive directly with the same surface styles.
+import { dialogGlassShadow } from "../ui/overlay.tsx";
 import * as DialogPrimitive from "@gpuix/react/dialog";
 import type { PublicInstance } from "@gpuix/react";
 import { useState, type ReactNode, type RefObject } from "react";
@@ -59,7 +60,7 @@ export function DialogShell({
             borderWidth: 1,
             borderColor: dark ? alpha("#ffffff", 0.08) : alpha(theme.foreground, 0.1),
             backgroundColor: dark ? "#0f0f0f" : "#ffffff",
-            boxShadow: { offsetX: 0, offsetY: 24, blurRadius: 72, spreadRadius: -20, color: "#000000e6" },
+            boxShadow: dialogGlassShadow(theme),
             overflow: "hidden",
           }}
         >

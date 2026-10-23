@@ -2,6 +2,7 @@
 // (title + description, optional leading icon), close button at the top right,
 // a scrolling panel, and a bare footer. The kit Dialog in ui/overlay.tsx has a
 // string-only header and a bordered footer, so these dialogs build their own shell.
+import { dialogGlassShadow } from "../ui/overlay.tsx";
 import { useWindowSize } from "@gpuix/react";
 import * as DialogPrimitive from "@gpuix/react/dialog";
 import type { ReactNode } from "react";
@@ -52,7 +53,7 @@ export function UsageDialog({
             borderWidth: 1,
             borderColor: theme.appearance === "dark" ? alpha("#ffffff", 0.08) : alpha(theme.foreground, 0.1),
             backgroundColor: theme.appearance === "dark" ? "#0f0f0f" : "#ffffff",
-            boxShadow: { offsetX: 0, offsetY: 24, blurRadius: 72, spreadRadius: -20, color: "#000000e6" },
+            boxShadow: dialogGlassShadow(theme),
             overflow: "hidden",
           }}
         >
