@@ -760,6 +760,7 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
             flexDirection: "row",
             alignItems: "center",
             gap: 10,
+            width: "100%",
             height: 36,
             paddingLeft: 10,
             paddingRight: 10,
@@ -825,7 +826,7 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
 
   const isRemoteMachine = props.isRemote;
   return (
-    <div style={{ paddingTop: 2, paddingBottom: 2, flexShrink: 0 }}>
+    <div style={{ width: "100%", paddingTop: 2, paddingBottom: 2, flexShrink: 0 }}>
       <HoverCard disabled={snoozeMenuOpen || isRenaming} card={hoverCard}>
         <div
           testId={`sidebar-row-card-${thread.id}`}
@@ -837,6 +838,7 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
             position: "relative",
             display: "flex",
             flexDirection: "column",
+            width: "100%",
             height: 78,
             paddingTop: 8,
             paddingBottom: 8,
@@ -849,7 +851,7 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
             ...(workingRecede ? { opacity: 0.7 } : {}),
           }}
         >
-          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, height: 20, minWidth: 0 }}>
+          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, width: "100%", height: 20, minWidth: 0 }}>
             {draftIndicator}
             {props.project ? <ProjectFavicon project={props.project} size={16} /> : null}
             {pinIndicator}
@@ -910,8 +912,8 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
               )}
             </div>
           </div>
-          <div style={{ display: "flex", flexDirection: "row", marginTop: 4, minWidth: 0 }}>{title}</div>
-          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2, minWidth: 0, height: 16 }}>
+          <div style={{ display: "flex", flexDirection: "row", width: "100%", marginTop: 4, minWidth: 0 }}>{title}</div>
+          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, width: "100%", marginTop: 2, minWidth: 0, height: 16 }}>
             {thread.branch ? (
               <>
                 {thread.worktreePath?.trim() ? (

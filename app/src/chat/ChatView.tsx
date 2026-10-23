@@ -17,29 +17,38 @@ import { composerTargetKey } from "../state/composer.ts";
 import { ThreadDetailsCard } from "./details/ThreadDetailsCard.tsx";
 import { ChatHeader } from "./header/ChatHeader.tsx";
 import { Timeline } from "./timeline/Timeline.tsx";
+import { PerfRegion } from "../dev/PerfRegion.tsx";
 
 export function ChatView({ environmentId, threadId }: { environmentId: EnvironmentId; threadId: ThreadId }) {
   const detailsOpen = useAtomValue(detailsPanelOpenAtom);
   const terminalOpen = useAtomValue(terminalOpenAtom);
   const rightOpen = useAtomValue(rightPanelOpenAtom);
   return (
-    <div style={{ display: "flex", flexDirection: "row", flexGrow: 1, minHeight: 0, minWidth: 0 }}>
+    <div style={{ display: "flex", flexDirection: "row", width: "100%", flexGrow: 1, minHeight: 0, minWidth: 0 }}>
       <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
-        <ChatHeader environmentId={environmentId} threadId={threadId} />
+        <PerfRegion id="header">
+          <ChatHeader environmentId={environmentId} threadId={threadId} />
+        </PerfRegion>
         <div
-          style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, position: "relative" }}
+          style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, position: "relative" }}
           onScroll={(event) => reportTimelineWheel(composerTargetKey({ kind: "thread", environmentId, threadId }), event.deltaY ?? 0)}
         >
-          <Timeline environmentId={environmentId} threadId={threadId} />
-          <Composer target={{ kind: "thread", environmentId, threadId }} />
-          {detailsOpen ? <ThreadDetailsCard environmentId={environmentId} threadId={threadId} /> : null}
+          <PerfRegion id="timeline">
+            <Timeline environmentId={environmentId} threadId={threadId} />
+          </PerfRegion>
+          <PerfRegion id="composer">
+            <Composer target={{ kind: "thread", environmentId, threadId }} />
+          </PerfRegion>
+          <PerfRegion id="details">
+            {detailsOpen ? <ThreadDetailsCard environmentId={environmentId} threadId={threadId} /> : null}
+          </PerfRegion>
           <ThreadPreviewHost environmentId={environmentId} threadId={threadId} />
           <DeviceThreadHost environmentId={environmentId} threadId={threadId} />
           <DeviceMiniPlayerHost environmentId={environmentId} threadId={threadId} />
         </div>
         {terminalOpen ? <TerminalDrawer environmentId={environmentId} threadId={threadId} /> : null}
       </div>
-      {rightOpen ? <RightPanel environmentId={environmentId} threadId={threadId} /> : null}
+      <PerfRegion id="right">{rightOpen ? <RightPanel environmentId={environmentId} threadId={threadId} /> : null}</PerfRegion>
     </div>
   );
 }

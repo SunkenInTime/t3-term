@@ -152,7 +152,7 @@ function DetailsCardFrame({
             ...cardSurfaceStyle(theme),
           }}
         >
-          <div style={{ display: "flex", flexDirection: "column", overflowY: "scroll", scrollbarColor: theme.scrollbar, minHeight: 0 }}>
+          <div style={{ display: "flex", flexDirection: "column", width: "100%", overflowY: "scroll", scrollbarColor: theme.scrollbar, minHeight: 0 }}>
             <div
               onLayout={(event: EventPayload) => {
                 if (density === "essential") return;
@@ -162,7 +162,7 @@ function DetailsCardFrame({
                   return base[density] === height ? current : { ...base, key, [density]: height };
                 });
               }}
-              style={{ display: "flex", flexDirection: "column" }}
+              style={{ display: "flex", flexDirection: "column", width: "100%" }}
             >
               {children(density)}
             </div>

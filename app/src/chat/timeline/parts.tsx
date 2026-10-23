@@ -1,5 +1,7 @@
 // Small pieces shared by timeline rows: TimelineRowParts.tsx, TimelineSystemDivider.tsx,
 // DiffStatLabel.tsx and MessageCopyButton.tsx from apps/web/src/components/chat.
+import { useAtomValue } from "@effect/atom-react";
+import { Atom } from "effect/reactivity";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -9,6 +11,7 @@ import { Text } from "../../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { toast } from "../../ui/toast.tsx";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../web/timestampFormat.ts";
+import { nowSecondAtom } from "../../sidebar/clock.ts";
 import { copyTextToClipboard } from "./system.ts";
 
 /**
@@ -264,13 +267,15 @@ export const MessageCopyButton = memo(function MessageCopyButton({
   );
 });
 
-/** Ticks once a second while mounted; elapsed-time labels read the returned clock. */
+/**
+ * Ticks once a second while active; elapsed-time labels read the returned clock.
+ * Every label shares the sidebar's second tick, aligned to the wall clock, so a
+ * working thread repaints once a second instead of once per label timer.
+ */
 export function useNowEverySecond(active = true): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [active]);
-  return now;
+  const [mountedAt] = useState(() => Date.now());
+  const now = useAtomValue(active ? nowSecondAtom : IDLE_CLOCK_ATOM);
+  return active ? now : mountedAt;
 }
+
+const IDLE_CLOCK_ATOM = Atom.make(0);

@@ -65,6 +65,10 @@ try {
     entrypoints: [join(root, "src/entry.ts"), join(root, "src/panels/code/highlightWorker.ts")],
     compile: { outfile },
     minify: true,
+    // React picks its development or production build from NODE_ENV. Without
+    // this the binary shipped React's development build: every render also
+    // records the debug info DevTools reads, about twice the JS work per commit.
+    define: { "process.env.NODE_ENV": JSON.stringify("production") },
   });
   if (!result.success) {
     for (const log of result.logs) console.error(log);

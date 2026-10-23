@@ -15,6 +15,7 @@ import { useTheme } from "../ui/theme.ts";
 import { AppThemeProvider } from "../state/clientSettings.ts";
 import { TooltipProvider } from "../ui/overlay.tsx";
 import { ToastHost } from "../ui/toast.tsx";
+import { PerfRegion } from "../dev/PerfRegion.tsx";
 
 export function App({ boot }: { boot: Boot }) {
   return (
@@ -56,8 +57,10 @@ function Shell({ boot }: { boot: Boot }) {
         backgroundColor: theme.background,
       }}
     >
-      {sidebarOpen ? route.kind === "settings" ? <SettingsSidebar /> : <Sidebar /> : null}
-      <MainView />
+      <PerfRegion id="sidebar">{sidebarOpen ? route.kind === "settings" ? <SettingsSidebar /> : <Sidebar /> : null}</PerfRegion>
+      <PerfRegion id="main">
+        <MainView />
+      </PerfRegion>
     </div>
   );
 }

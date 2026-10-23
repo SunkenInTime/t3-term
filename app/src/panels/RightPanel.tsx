@@ -457,7 +457,7 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
           </Menu>
         </div>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
+      <div style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0 }}>
         {active === null ? (
           <SurfaceLauncher actions={actions} />
         ) : (

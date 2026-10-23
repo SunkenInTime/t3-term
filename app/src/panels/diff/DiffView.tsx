@@ -167,7 +167,7 @@ export function DiffView(props: DiffViewProps) {
         if (deltaX === 0) return;
         setScrollX((current) => Math.max(0, Math.min(maxScrollX, current - deltaX)));
       }}
-      style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, minWidth: 0, position: "relative", backgroundColor: palette.bg }}
+      style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, minWidth: 0, position: "relative", backgroundColor: palette.bg }}
     >
       {probe}
       {width > 0 ? (
@@ -185,7 +185,7 @@ export function DiffView(props: DiffViewProps) {
             setVisible((current) => (current.start === first && current.end === last ? current : { start: first, end: last }));
             onVisibleRange(reportedFirst, reportedLast);
           }}
-          style={{ flexGrow: 1, minHeight: 0, scrollbarColor: theme.scrollbar }}
+          style={{ width: "100%", flexGrow: 1, minHeight: 0, scrollbarColor: theme.scrollbar }}
         >
           {rows.slice(start, end).map((row) => (
             <DiffRowView

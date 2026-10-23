@@ -44,7 +44,7 @@ export const TimelineRowContent = memo(function TimelineRowContent({ row }: { ro
   const isExpandedToolGroupHeader =
     (row.kind === "work-toggle" || row.kind === "work-live" || row.kind === "thinking") && row.expanded === true;
   return (
-    <div style={{ display: "flex", flexDirection: "column", paddingBottom: rowPaddingBottom(row), minWidth: 0 }}>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", paddingBottom: rowPaddingBottom(row), minWidth: 0 }}>
       {isWorkLogRow ? (
         <WorkLogBlock
           continues={row.continuesWorkLog}

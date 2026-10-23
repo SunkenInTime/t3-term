@@ -494,8 +494,8 @@ function EnvironmentProviderSettings({
   const healthCheck = searchableSetting("provider-health-check-interval");
   const providersSection = searchableSetting("providers");
   return (
-    <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, gap: 32 }}>
-      <div testId={`settings-section-${providersSection.id}`} style={{ display: "flex", flexDirection: "column", gap: 10, flexGrow: 1, flexShrink: 1, minHeight: CARD_MIN_HEIGHT + 38, maxHeight: CARD_MAX_HEIGHT + 38 }}>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, gap: 32 }}>
+      <div testId={`settings-section-${providersSection.id}`} style={{ display: "flex", flexDirection: "column", width: "100%", gap: 10, flexGrow: 1, flexShrink: 1, minHeight: CARD_MIN_HEIGHT + 38, maxHeight: CARD_MAX_HEIGHT + 38 }}>
         <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 16, minHeight: 28, paddingLeft: 16, paddingRight: 16 }}>
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>
             <Text color={alpha(theme.foreground, 0.7)}>{providersSection.title}</Text>
@@ -546,6 +546,7 @@ function EnvironmentProviderSettings({
           style={{
             display: "flex",
             flexDirection: "row",
+            width: "100%",
             flexGrow: 1,
             minHeight: 0,
             borderRadius: RADIUS.xl,
@@ -783,8 +784,8 @@ function ProviderEditorPane(
 /** The detail pane's one scroller: a virtual list, so long model lists build only what is visible. */
 function PaneList({ items }: { items: ReadonlyArray<PaneItem> }) {
   return (
-    <div testId="provider-detail-scroll" style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-      <virtual-list overdraw={600} style={{ flexGrow: 1, minHeight: 0 }}>
+    <div testId="provider-detail-scroll" style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0 }}>
+      <virtual-list overdraw={600} style={{ width: "100%", flexGrow: 1, minHeight: 0 }}>
         {items.map((item, index) => (
           <div
             key={item.key}
