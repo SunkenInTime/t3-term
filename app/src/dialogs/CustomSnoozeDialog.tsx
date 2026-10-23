@@ -8,7 +8,8 @@ import {
   type CustomSnoozeInput,
 } from "@t3tools/client-runtime/state/thread-settled";
 import { Atom } from "effect/reactivity";
-import { useEffect, useState } from "react";
+import { useGpuixRequired, type PublicInstance } from "@gpuix/react";
+import { useEffect, useRef, useState } from "react";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { Icon } from "../ui/Icon.tsx";
@@ -249,6 +250,8 @@ function NumberField({
 }) {
   const theme = useTheme();
   const [focused, setFocused] = useState(false);
+  const renderer = useGpuixRequired();
+  const inputRef = useRef<PublicInstance | null>(null);
   const stepButton = (icon: "minus" | "plus", delta: number, side: "left" | "right") => (
     <div
       testId={icon === "minus" ? "snooze-amount-decrement" : "snooze-amount-increment"}
@@ -273,23 +276,41 @@ function NumberField({
   return (
     <FieldFrame focused={focused}>
       {stepButton("minus", -1, "left")}
-      <input
-        testId="snooze-amount"
-        value={value}
-        theme={{ caret: theme.foreground }}
-        onChange={(event) => onChange(String(event.value ?? "").replace(/[^\d.]/g, ""))}
-        onSubmit={() => onSubmit()}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
+      {/* A gpuix input cannot center its text, so the input is sized to its
+          digits and centered in the slot; a click on the slot focuses it. */}
+      <div
+        onClick={() => {
+          if (inputRef.current) renderer.focusElement?.(inputRef.current.id);
+        }}
         style={{
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+          alignSelf: "stretch",
           flexGrow: 1,
           minWidth: 0,
-          height: 24,
-          fontSize: 14,
-          textAlign: "center",
-          color: theme.foreground,
+          cursor: "text",
         }}
-      />
+      >
+        <input
+          ref={inputRef}
+          testId="snooze-amount"
+          value={value}
+          theme={{ caret: theme.foreground }}
+          onChange={(event) => onChange(String(event.value ?? "").replace(/[^\d.]/g, ""))}
+          onSubmit={() => onSubmit()}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          style={{
+            width: Math.max(10, value.length * 8 + 2),
+            maxWidth: "100%",
+            height: 24,
+            fontSize: 14,
+            color: theme.foreground,
+          }}
+        />
+      </div>
       {stepButton("plus", 1, "right")}
     </FieldFrame>
   );

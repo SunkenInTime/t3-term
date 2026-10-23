@@ -324,7 +324,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <FieldLabel>Clone over</FieldLabel>
           {sshUrl && httpsUrl ? (
-            <div style={{ paddingTop: 2 }}>
+            <div style={{ display: "flex", flexDirection: "row" }}>
               <SegmentedToggle
                 testId="clone-protocol"
                 value={protocol}
