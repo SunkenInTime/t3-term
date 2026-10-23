@@ -15,6 +15,7 @@ import { makeThreadSearchKey, threadSearchMatchKey } from "@t3tools/client-runti
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { THREAD_JUMP_KEYBINDING_COMMANDS, type ProjectId, type ScopedThreadRef } from "@t3tools/contracts";
 import { startNewThread } from "../palette/actions.ts";
+import { useGpuixRequired } from "@gpuix/react";
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactElement, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
@@ -52,6 +53,7 @@ import {
   updateSidebarPersistedState,
   type SidebarProjectGroup,
   type SidebarProviderEntry,
+  type SidebarThreadList,
 } from "../state/sidebar.ts";
 import { commandPaletteOpenAtom, routeAtom, sidebarSearchAtom } from "../state/ui.ts";
 import { Icon } from "../ui/Icon.tsx";
@@ -65,13 +67,23 @@ import {
   type DraftActionMenuId,
   type ThreadActionMenuId,
 } from "../web/components/threadActionMenu.logic.ts";
-import { searchSidebarThreads, shouldCreateNewThreadInCurrentProject } from "../web/components/Sidebar.logic.ts";
+import {
+  resolveSidebarDropVerb,
+  searchSidebarThreads,
+  shouldCreateNewThreadInCurrentProject,
+  sidebarListItemId,
+  type SidebarListItem,
+  type SidebarListMarker,
+  type SidebarSection,
+} from "../web/components/Sidebar.logic.ts";
+import type { SidebarRect } from "../web/components/Sidebar.drag.ts";
 import { resolveSnoozePresets, snoozeWakeLabel } from "../web/components/Sidebar.snooze.ts";
 import { ContextMenu } from "./ContextMenu.tsx";
 import { requestCustomSnooze } from "../dialogs/CustomSnoozeDialog.tsx";
 import { SidebarChromeFooter, SidebarChromeHeader, useStageIdentification } from "./SidebarChrome.tsx";
 import { SidebarDraftBlock } from "./SidebarDraftBlock.tsx";
-import { SidebarSectionHeader } from "./SidebarListMarkers.tsx";
+import { SidebarDragBoundary, SidebarSectionHeader, SidebarSectionPlaceholder } from "./SidebarListMarkers.tsx";
+import { useSidebarThreadDrag, type SidebarScrollMetrics } from "./useSidebarThreadDrag.ts";
 import { SidebarThreadHeader } from "./SidebarThreadHeader.tsx";
 import { SidebarSearchResultRow, SidebarThreadRow, type SidebarSweepAction } from "./SidebarThreadRow.tsx";
 import { StageBackdrop } from "./StageBackdrop.tsx";
@@ -263,14 +275,47 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
     : new Set(scope.memberProjectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`));
 
   // ── Rows ──
-  const renderThreadRow = (thread: EnvironmentThreadShell, section: "pinned" | "active" | "working" | "snoozed" | "settled", index: number) => {
+  const renameState = useAtomValue(sidebarRenameAtom);
+  const listHeights = useRef(new Map<string, number>());
+  const scrollMetrics = useRef<SidebarScrollMetrics>({
+    x: 0,
+    y: 0,
+    width: sidebarWidth,
+    height: 0,
+    scrollTop: 0,
+    contentHeight: 0,
+    elementId: null,
+  });
+  const renderer = useGpuixRequired();
+  // Web's sidebarListItems: the sortable rows and the zero-height drag markers, in render order.
+  const sidebarListItems = useSidebarListItems(list);
+  const { dragView, sweep } = useSidebarThreadDrag({
+    list,
+    items: sidebarListItems,
+    measure: () => measureListItems(sidebarListItems, listHeights.current, scrollMetrics.current.width),
+    metrics: scrollMetrics,
+    renamingThreadKey: renameState?.threadKey ?? null,
+    routeRowThreadKey,
+    // GPUI scroll offsets grow negative as content moves up.
+    scrollTo: (elementId, top) => renderer.scrollTo?.(elementId, 0, -top),
+  });
+  const dragFrom = dragView?.activeSection ?? null;
+  const dragTargetSection = dragView?.targetSection ?? null;
+  const jumpIndexByKey = new Map(list.orderedThreadKeys.map((key, index) => [key, index] as const));
+
+  const renderThreadRow = (
+    thread: EnvironmentThreadShell,
+    section: SidebarSection,
+    drag?: { readonly ghost: true },
+  ) => {
     const key = threadShellKey(thread);
     const capabilities = serverConfigs.get(thread.environmentId)?.environment.capabilities;
     const variantAction: SidebarSweepAction = section === "snoozed" ? "unsnooze" : section === "settled" ? "unsettle" : "settle";
     const projectKey = `${thread.environmentId}:${thread.projectId}`;
+    const jumpIndex = jumpIndexByKey.get(key);
     return (
       <SidebarThreadRow
-        key={key}
+        key={drag ? "drag-ghost" : key}
         thread={thread}
         variant={section === "active" || section === "pinned" || section === "working" ? "card" : "slim"}
         variantAction={variantAction}
@@ -285,11 +330,19 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
         wokeAt={threadWokeAt(thread, { now: list.snoozeNow })}
         isActive={routeRowThreadKey === key}
         isRouteThread={routeThreadKey === key}
-        jumpLabel={jumpHintsVisible ? (jumpHintLabels[index] ?? null) : null}
+        jumpLabel={jumpHintsVisible && jumpIndex !== undefined ? (jumpHintLabels[jumpIndex] ?? null) : null}
         isRemote={primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId}
         project={projectByKey.get(projectKey) ?? null}
         projectDisplayName={projectDisplayNameByKey.get(projectKey) ?? null}
         providerEntryByInstanceId={providerEntriesByEnvironment.get(thread.environmentId) ?? EMPTY_PROVIDER_ENTRIES}
+        sweepAction={sweep?.keys.has(key) ? sweep.action : null}
+        {...(drag
+          ? {
+              dragGhost: true,
+              dropVerb: dragView ? resolveSidebarDropVerb(dragView.activeSection, dragTargetSection) : null,
+              dragOverPinned: dragTargetSection === "pinned",
+            }
+          : {})}
       />
     );
   };
@@ -304,57 +357,50 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
     (draft) => scopedProjectKeys === null || scopedProjectKeys.has(`${draft.environmentId}:${draft.projectId}`),
   ).length;
 
-  const listItems: ReactElement[] = [];
+  const listEntries: ListEntry[] = [];
   if (!isSearchingThreads) {
-    listItems.push(<SidebarDraftBlock key="draft-sessions" scopedProjectKeys={scopedProjectKeys} />);
-    let rowIndex = 0;
-    const pushRows = (threads: ReadonlyArray<EnvironmentThreadShell>, section: Parameters<typeof renderThreadRow>[1]) => {
-      for (const thread of threads) listItems.push(renderThreadRow(thread, section, rowIndex++));
-    };
-    if (totalThreads > 0) {
-      pushRows(list.pinnedThreads, "pinned");
-      pushRows(list.activeThreads, "active");
+    listEntries.push({ key: "draft-sessions", kind: "other", element: <SidebarDraftBlock scopedProjectKeys={scopedProjectKeys} /> });
+    let shelfSpacerPlaced = false;
+    for (const item of sidebarListItems) {
+      const key = sidebarListItemId(item);
+      if (item.kind === "thread") {
+        const thread = list.threadByKey.get(item.key);
+        if (thread) listEntries.push({ key, kind: "row", element: renderThreadRow(thread, item.section) });
+        continue;
+      }
       // The first shelf header takes `mt-auto`: shelves sit at the bottom of the list.
-      listItems.push(<div key={SHELF_SPACER_KEY} style={{ flexGrow: 1, minHeight: 0 }} />);
-      if (list.workingThreads.length > 0) {
-        listItems.push(
-          <SidebarSectionHeader
-            key="working-shelf-header"
-            shelf="working"
-            label={list.workingExpanded ? "Working" : `Working (${list.workingThreads.length})`}
-            expanded={list.workingExpanded}
-            onToggle={() => updateSidebarPersistedState({ workingExpanded: !list.workingExpanded })}
-          />,
-        );
-        pushRows(list.visibleWorkingThreads, "working");
+      if (!shelfSpacerPlaced && SHELF_MARKERS.has(item.marker)) {
+        shelfSpacerPlaced = true;
+        listEntries.push({ key: SHELF_SPACER_KEY, kind: "spacer", element: null });
       }
-      if (list.snoozedThreads.length > 0) {
-        listItems.push(
-          <SidebarSectionHeader
-            key="snoozed-shelf-header"
-            shelf="snoozed"
-            label={list.snoozedExpanded ? "Snoozed" : `Snoozed (${list.snoozedThreads.length})`}
-            expanded={list.snoozedExpanded}
-            onToggle={() => updateSidebarPersistedState({ snoozedExpanded: !list.snoozedExpanded })}
-          />,
-        );
-        pushRows(list.visibleSnoozedThreads, "snoozed");
-      }
-      listItems.push(
-        <SidebarSectionHeader
-          key="settled-shelf-header"
-          shelf="settled"
-          label={list.settledExpanded ? "Settled" : `Settled (${list.settledThreads.length})`}
-          expanded={list.settledExpanded}
-          onToggle={() => updateSidebarPersistedState({ settledExpanded: !list.settledExpanded })}
-        />,
-      );
-      pushRows(list.renderedSettledThreads, "settled");
-      if (list.settledExpanded && list.hiddenSettledCount > 0) {
-        listItems.push(<ShowMoreSettled key="show-more" count={Math.min(list.hiddenSettledCount, SETTLED_TAIL_PAGE_COUNT)} />);
-      }
+      listEntries.push({
+        key,
+        kind: SHELF_MARKERS.has(item.marker) ? "other" : "marker",
+        element: renderListMarker(item.marker, {
+          list,
+          dragFrom,
+          dragTargetSection,
+        }),
+      });
+    }
+    if (list.settledExpanded && list.hiddenSettledCount > 0) {
+      listEntries.push({
+        key: "show-more",
+        kind: "other",
+        element: <ShowMoreSettled count={Math.min(list.hiddenSettledCount, SETTLED_TAIL_PAGE_COUNT)} />,
+      });
     }
   }
+  const draggedThread = dragView ? list.threadByKey.get(dragView.activeKey) : undefined;
+  const dragGhost =
+    dragView && draggedThread ? (
+      <div
+        key="drag-ghost"
+        style={{ position: "absolute", left: 0, right: 0, top: dragView.ghostTop, pointerEvents: "none" }}
+      >
+        {renderThreadRow(draggedThread, dragView.activeSection, { ghost: true })}
+      </div>
+    ) : null;
 
   return (
     <div
@@ -412,7 +458,7 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
           onOpenProjectSettings={(project) => openProjectSettings(project)}
         />
       </div>
-      <ScrollFadeRegion>
+      <ScrollFadeRegion metrics={scrollMetrics}>
         {isSearchingThreads ? (
           threadSearchResults.length > 0 ? (
             <div style={{ display: "flex", flexDirection: "column", width: "100%", gap: 1 }}>
@@ -446,8 +492,14 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
             </div>
           )
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", width: "100%", gap: 1, ...(totalThreads > 0 ? { flexGrow: 1 } : {}) }}>
-            <CulledListItems items={listItems} gap={1} />
+          <div style={{ position: "relative", display: "flex", flexDirection: "column", width: "100%", gap: LIST_GAP, userSelect: "none", ...(totalThreads > 0 ? { flexGrow: 1 } : {}) }}>
+            <CulledListItems
+              entries={listEntries}
+              heights={listHeights.current}
+              offsets={dragView?.offsets ?? null}
+              liftedKey={dragView?.activeKey ?? null}
+              overlay={dragGhost}
+            />
           </div>
         )}
         {!isSearchingThreads && visibleDraftCount === 0 && totalThreads === 0 ? (
@@ -463,6 +515,169 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
 
 const FADE_SIZE = 12;
 const SHELF_SPACER_KEY = "shelf-spacer";
+/** The list's `gap-px`. */
+const LIST_GAP = 1;
+const SHELF_MARKERS: ReadonlySet<SidebarListMarker> = new Set(["working-header", "snoozed-header", "settled-header"]);
+
+/**
+ * One child of the thread list. Markers are zero-height `-mb-px` items: they
+ * take no room until a drag projects space for them. The spacer is the first
+ * shelf header's `mt-auto`.
+ */
+interface ListEntry {
+  readonly key: string;
+  readonly kind: "row" | "marker" | "spacer" | "other";
+  readonly element: ReactElement | null;
+}
+
+/** Heights before an item is measured: card rows, slim rows, shelf headers. */
+function estimatedHeight(item: SidebarListItem): number {
+  if (item.kind === "marker") return SHELF_MARKERS.has(item.marker) ? 32 : 0;
+  return item.section === "pinned" || item.section === "active" || item.section === "working" ? 82 : 36;
+}
+
+/**
+ * Each sortable item's box in list-content pixels, walked from the measured
+ * heights exactly as the flex column lays them out (what dnd-kit measures from
+ * the DOM). The list starts at the content's top; the content has 8px sides.
+ */
+function measureListItems(
+  items: ReadonlyArray<SidebarListItem>,
+  heights: ReadonlyMap<string, number>,
+  width: number,
+): SidebarRect[] {
+  const rects: SidebarRect[] = [];
+  let top = (heights.get("draft-sessions") ?? 0) + LIST_GAP;
+  let spacerPlaced = false;
+  for (const item of items) {
+    if (!spacerPlaced && item.kind === "marker" && SHELF_MARKERS.has(item.marker)) {
+      spacerPlaced = true;
+      top += heights.get(SHELF_SPACER_KEY) ?? 0;
+    }
+    const key = sidebarListItemId(item);
+    const height = heights.get(key) ?? estimatedHeight(item);
+    rects.push({ top, bottom: top + height, left: 8, right: width - 8, width: width - 16, height });
+    top += height + (item.kind === "marker" && !SHELF_MARKERS.has(item.marker) ? 0 : LIST_GAP);
+  }
+  return rects;
+}
+
+/** Sidebar.tsx sidebarListItemsFresh, kept by identity until the order or a section changes. */
+function useSidebarListItems(list: SidebarThreadList): ReadonlyArray<SidebarListItem> {
+  const fresh = ((): SidebarListItem[] => {
+    const rowsOf = (threads: ReadonlyArray<EnvironmentThreadShell>, section: SidebarSection): SidebarListItem[] =>
+      threads.map((thread) => ({ kind: "thread", key: threadShellKey(thread), section }));
+    if (
+      list.pinnedThreads.length +
+        list.activeThreads.length +
+        list.workingThreads.length +
+        list.snoozedThreads.length +
+        list.settledThreads.length ===
+      0
+    ) {
+      return [];
+    }
+    const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
+    items.push(...rowsOf(list.pinnedThreads, "pinned"));
+    items.push({ kind: "marker", marker: "pinned-divider" });
+    items.push({ kind: "marker", marker: "active-placeholder" });
+    items.push(...rowsOf(list.activeThreads, "active"));
+    if (list.workingThreads.length > 0) {
+      items.push({ kind: "marker", marker: "working-header" });
+      items.push(...rowsOf(list.visibleWorkingThreads, "working"));
+    }
+    if (list.snoozedThreads.length > 0) {
+      items.push({ kind: "marker", marker: "snoozed-header" });
+      items.push(...rowsOf(list.visibleSnoozedThreads, "snoozed"));
+    }
+    items.push({ kind: "marker", marker: "settled-header" });
+    items.push({ kind: "marker", marker: "settled-placeholder" });
+    items.push(...rowsOf(list.renderedSettledThreads, "settled"));
+    return items;
+  })();
+  const key = fresh.map((item) => (item.kind === "thread" ? `${item.section}:${item.key}` : item.marker)).join(" ");
+  const kept = useRef({ key, items: fresh as ReadonlyArray<SidebarListItem> });
+  if (kept.current.key !== key) kept.current = { key, items: fresh };
+  return kept.current.items;
+}
+
+function renderListMarker(
+  marker: SidebarListMarker,
+  context: {
+    readonly list: SidebarThreadList;
+    readonly dragFrom: SidebarSection | null;
+    readonly dragTargetSection: SidebarSection | null;
+  },
+): ReactElement {
+  const { list, dragFrom: from, dragTargetSection } = context;
+  switch (marker) {
+    case "pinned-header":
+      return <SidebarDragBoundary marker="pinned-header" label="Pinned" visible={from !== null} isDropTarget={dragTargetSection === "pinned"} />;
+    case "pinned-divider":
+      return <SidebarDragBoundary marker="pinned-divider" label="Active" visible={from !== null} isDropTarget={dragTargetSection === "active"} />;
+    case "active-placeholder":
+      return (
+        <SidebarSectionPlaceholder
+          marker="active-placeholder"
+          label="Active"
+          showHint={
+            from !== null &&
+            (list.activeThreads.length === 0 ||
+              (from === "active" &&
+                list.activeThreads.length === 1 &&
+                dragTargetSection !== null &&
+                dragTargetSection !== "active"))
+          }
+          isDropTarget={dragTargetSection === "active"}
+        />
+      );
+    case "settled-placeholder":
+      return (
+        <SidebarSectionPlaceholder
+          marker="settled-placeholder"
+          label="Settled"
+          showHint={
+            from !== null &&
+            (list.renderedSettledThreads.length === 0 ||
+              (from === "settled" &&
+                list.renderedSettledThreads.length === 1 &&
+                dragTargetSection !== null &&
+                dragTargetSection !== "settled"))
+          }
+          isDropTarget={dragTargetSection === "settled"}
+        />
+      );
+    case "working-header":
+      return (
+        <SidebarSectionHeader
+          shelf="working"
+          label={list.workingExpanded ? "Working" : `Working (${list.workingThreads.length})`}
+          expanded={list.workingExpanded}
+          onToggle={() => updateSidebarPersistedState({ workingExpanded: !list.workingExpanded })}
+        />
+      );
+    case "snoozed-header":
+      return (
+        <SidebarSectionHeader
+          shelf="snoozed"
+          label={list.snoozedExpanded ? "Snoozed" : `Snoozed (${list.snoozedThreads.length})`}
+          expanded={list.snoozedExpanded}
+          onToggle={() => updateSidebarPersistedState({ snoozedExpanded: !list.snoozedExpanded })}
+        />
+      );
+    case "settled-header":
+      return (
+        <SidebarSectionHeader
+          shelf="settled"
+          label={list.settledExpanded ? "Settled" : `Settled (${list.settledThreads.length})`}
+          expanded={list.settledExpanded}
+          onToggle={() => updateSidebarPersistedState({ settledExpanded: !list.settledExpanded })}
+          dragging={from !== null}
+          isDropTarget={dragTargetSection === "settled"}
+        />
+      );
+  }
+}
 
 /** The thread list's visible window in content pixels, from ScrollFadeRegion. */
 const ListViewportContext = createContext<{ top: number; height: number } | null>(null);
@@ -474,47 +689,94 @@ const ListViewportContext = createContext<{ top: number; height: number } | null
  * without this every frame of the window grew with the thread count: 100 rows
  * put typing in the composer at ~30 ms per frame. Items are measured with
  * onLayout, which fires only when a size changes; an item is culled only once
- * its height is known. The flex-grow shelf spacer stays as it is.
+ * its height is known.
+ *
+ * During a drag every item shifts to its projected slot (`position: relative`
+ * offsets, which leave layout alone, like dnd-kit's transforms). The dragged
+ * row stays mounted in place but invisible, because it holds the pointer
+ * capture; `overlay` paints its lifted copy last, so above every other row.
  */
-function CulledListItems({ items, gap }: { items: ReadonlyArray<ReactElement>; gap: number }) {
+function CulledListItems({
+  entries,
+  heights,
+  offsets,
+  liftedKey,
+  overlay,
+}: {
+  entries: ReadonlyArray<ListEntry>;
+  heights: Map<string, number>;
+  offsets: ReadonlyMap<string, number | null> | null;
+  liftedKey: string | null;
+  overlay: ReactElement | null;
+}) {
   const viewport = useContext(ListViewportContext);
-  const heights = useRef(new Map<string, number>());
   const [, remeasured] = useReducer((count: number) => count + 1, 0);
   let offset = 0;
-  return items.map((item) => {
-    const key = String(item.key);
-    if (key === SHELF_SPACER_KEY) return item;
-    const height = heights.current.get(key);
+  const children = entries.map((entry) => {
+    const key = entry.key;
+    const measure = (event: { height?: number }) => {
+      const next = Math.round(event.height ?? 0);
+      if (heights.get(key) === next) return;
+      heights.set(key, next);
+      remeasured();
+    };
+    if (entry.kind === "spacer") {
+      offset += heights.get(key) ?? 0;
+      return <div key={key} onLayout={measure} style={{ flexGrow: 1, minHeight: 0, marginBottom: -LIST_GAP }} />;
+    }
+    const height = heights.get(key);
     const top = offset;
-    offset += (height ?? 0) + gap;
+    offset += (height ?? 0) + (entry.kind === "marker" ? 0 : LIST_GAP);
     const culled =
+      key !== liftedKey &&
       height !== undefined &&
       viewport !== null &&
       viewport.height > 0 &&
       (top + height < viewport.top - viewport.height || top > viewport.top + 2 * viewport.height);
+    const shift = offsets?.get(key);
     return (
       <div
         key={key}
         onLayout={(event) => {
-          const next = Math.round(event.height ?? 0);
-          if (culled || heights.current.get(key) === next) return;
-          heights.current.set(key, next);
-          remeasured();
+          if (!culled) measure(event);
         }}
-        style={{ display: "flex", flexDirection: "column", width: "100%", flexShrink: 0, ...(culled ? { height } : {}) }}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          width: "100%",
+          flexShrink: 0,
+          ...(entry.kind === "marker" ? { height: 0, marginBottom: -LIST_GAP } : {}),
+          ...(culled ? { height } : {}),
+          ...(shift !== undefined && shift !== null && shift !== 0 ? { position: "relative" as const, top: shift } : {}),
+          // scaleY 0: a projected-away item keeps its box but does not paint.
+          ...(shift === null || key === liftedKey ? { opacity: 0 } : {}),
+        }}
       >
-        {culled ? null : item}
+        {culled ? null : entry.element}
       </div>
     );
   });
+  return (
+    <>
+      {children}
+      {overlay}
+    </>
+  );
 }
 
 /**
  * SidebarContent's ScrollArea with `scrollFade`: the list scrolls under a
  * 12px fade at whichever edge has more content. Web masks the viewport; over
- * the black sidebar a gradient overlay looks the same.
+ * the black sidebar a gradient overlay looks the same. `metrics` follows the
+ * scroller's window position and offset for the drag.
  */
-function ScrollFadeRegion({ children }: { children: ReactNode }) {
+function ScrollFadeRegion({
+  children,
+  metrics,
+}: {
+  children: ReactNode;
+  metrics: { current: SidebarScrollMetrics };
+}) {
   const theme = useTheme();
   const [viewportHeight, setViewportHeight] = useState(0);
   const [contentHeight, setContentHeight] = useState(0);
@@ -545,12 +807,27 @@ function ScrollFadeRegion({ children }: { children: ReactNode }) {
     <div style={{ position: "relative", display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0 }}>
       <div
         testId="sidebar-thread-list"
-        onLayout={(event) => setViewportHeight(event.height ?? 0)}
-        onScrollChange={(event) => setScrollY(event.scrollY ?? 0)}
+        ref={(instance: { id: number } | null) => {
+          metrics.current.elementId = instance?.id ?? null;
+        }}
+        onLayout={(event) => {
+          metrics.current.x = event.x ?? metrics.current.x;
+          metrics.current.y = event.y ?? metrics.current.y;
+          metrics.current.width = event.width ?? metrics.current.width;
+          metrics.current.height = event.height ?? 0;
+          setViewportHeight(event.height ?? 0);
+        }}
+        onScrollChange={(event) => {
+          metrics.current.scrollTop = -(event.scrollY ?? 0);
+          setScrollY(event.scrollY ?? 0);
+        }}
         style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, overflowY: "scroll" }}
       >
         <div
-          onLayout={(event) => setContentHeight(event.height ?? 0)}
+          onLayout={(event) => {
+            metrics.current.contentHeight = event.height ?? 0;
+            setContentHeight(event.height ?? 0);
+          }}
           style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, flexShrink: 0, paddingLeft: 8, paddingRight: 8, paddingBottom: 8 }}
         >
           <ListViewportContext.Provider value={listWindow}>{children}</ListViewportContext.Provider>

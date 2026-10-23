@@ -75,6 +75,7 @@ function capability(
     | "threadSnooze"
     | "threadPinning"
     | "threadPinReorder"
+    | "threadActiveReorder"
     | "threadAutoSettleOptOut"
     | "threadVisitedTracking"
     | "threadTitleRegeneration",
@@ -276,6 +277,21 @@ export async function pinThread(
     threadId: target.threadId,
     ...(orderKey !== undefined ? { orderKey } : {}),
   });
+}
+
+export async function reorderPinnedThread(target: ScopedThreadRef, orderKey: string): Promise<Result> {
+  if (!capability(target.environmentId, "threadPinReorder")) {
+    return failure("This environment's server does not support reordering pins yet. Update the server to reorder.");
+  }
+  ThreadUndo.invalidate("pin", scopedThreadKey(target));
+  return run(threadEnvironment.reorderPin, target.environmentId, { threadId: target.threadId, orderKey });
+}
+
+export async function reorderActiveThread(target: ScopedThreadRef, orderKey: string): Promise<Result> {
+  if (!capability(target.environmentId, "threadActiveReorder")) {
+    return failure("This environment's server does not support reordering threads yet. Update the server to reorder.");
+  }
+  return run(threadEnvironment.reorderActive, target.environmentId, { threadId: target.threadId, orderKey });
 }
 
 export async function unpinThread(target: ScopedThreadRef): Promise<Result> {
@@ -523,11 +539,21 @@ export async function copyToClipboard(
 const settlingThreadKeys = new Set<string>();
 const snoozingThreadKeys = new Set<string>();
 
+/** A settle in flight (button, drop, or sweep): a second one for the same row is dropped. */
+export function isThreadSettling(threadKey: string): boolean {
+  return settlingThreadKeys.has(threadKey);
+}
+
+export function markThreadSettling(threadKey: string, settling: boolean): void {
+  if (settling) settlingThreadKeys.add(threadKey);
+  else settlingThreadKeys.delete(threadKey);
+}
+
 /**
  * Callers snapshot the plan BEFORE the command mutates the partition;
  * background parks never navigate (null plan).
  */
-function planForwardNavigation(
+export function planForwardNavigation(
   threadKey: string,
   coParkingKeys?: ReadonlySet<string>,
 ): (() => void) | null {

@@ -55,9 +55,11 @@ import {
 } from "./environment.ts";
 import { routeAtom } from "./ui.ts";
 import {
+  applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
   firstValidTimestampMs,
   isSidebarThreadWorking,
+  orderItemsByPreferredIds,
   resolveSidebarRowThreadId,
   resolveSidebarThreadSection,
   sortInboxThreadsByReturn,
@@ -399,6 +401,26 @@ export function threadShellKey(thread: Pick<EnvironmentThreadShell, "environment
 }
 
 const inboxReturns = createInboxReturnTracker();
+/** The active shelf's return order, for the drag preview of a time-ordered drop. */
+export const sidebarInboxReturns = inboxReturns;
+
+/**
+ * Web Sidebar's SidebarOptimisticDrop: a dropped row held at its destination
+ * while the server applies the lifecycle command and order-key writes. The
+ * partition releases it once the server state catches up.
+ */
+export type SidebarOptimisticDrop = {
+  readonly key: string;
+  readonly sourceSection: SidebarSection;
+  readonly section: "pinned" | "active" | "settled";
+  readonly occurredAt: string;
+  readonly clearsSnooze: boolean;
+  readonly order: readonly string[] | null;
+  readonly keysAtDrop: ReadonlyMap<string, string | null>;
+  readonly assignedKeys: ReadonlyMap<string, string>;
+};
+
+export const sidebarOptimisticDropAtom = Atom.make<SidebarOptimisticDrop | null>(null).pipe(Atom.keepAlive);
 
 export interface SidebarPartition {
   readonly pinnedThreads: ReadonlyArray<EnvironmentThreadShell>;
@@ -406,20 +428,23 @@ export interface SidebarPartition {
   readonly workingThreads: ReadonlyArray<EnvironmentThreadShell>;
   readonly snoozedThreads: ReadonlyArray<EnvironmentThreadShell>;
   readonly settledThreads: ReadonlyArray<EnvironmentThreadShell>;
+  /** Rows on servers that can reorder pins (threadPinning + threadPinReorder): the draggable rows. */
+  readonly draggableThreadKeys: ReadonlySet<string>;
+  /** Rows on servers with threadActiveReorder: their active order keys are writable. */
+  readonly activeReorderableThreadKeys: ReadonlySet<string>;
   readonly snoozeNow: string;
   readonly workingShelfEnabled: boolean;
 }
 
-export const sidebarPartitionAtom = Atom.make((get): SidebarPartition => {
-  get(sidebarClockAtom);
-  const threads = get(environmentThreadShells.quietThreadShellsAtom);
-  const scope = get(sidebarProjectScopeAtom);
-  const scopedProjectKeys =
-    scope === null
-      ? null
-      : new Set(scope.memberProjectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`));
-  const serverConfigs = get(environmentServerConfigsAtom);
-  const workingShelfEnabled = get(sidebarClientSettingsAtom).sidebarWorkingShelfEnabled;
+/** Web Sidebar.tsx partitionSidebarThreads. */
+function partitionSidebarThreads(input: {
+  readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+  readonly scopedProjectKeys: ReadonlySet<string> | null;
+  readonly serverConfigs: ReadonlyMap<EnvironmentId, ServerConfig>;
+  readonly optimisticDrop: SidebarOptimisticDrop | null;
+  readonly workingShelfEnabled: boolean;
+}): SidebarPartition {
+  const { threads, scopedProjectKeys, serverConfigs, optimisticDrop, workingShelfEnabled } = input;
   const preciseNow = new Date().toISOString();
   const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys);
   inboxReturns.observe(workingShelfEnabled ? threads : null);
@@ -428,10 +453,34 @@ export const sidebarPartitionAtom = Atom.make((get): SidebarPartition => {
   const working: EnvironmentThreadShell[] = [];
   const snoozed: EnvironmentThreadShell[] = [];
   const settled: EnvironmentThreadShell[] = [];
+  const draggable = new Set<string>();
+  const activeReorderable = new Set<string>();
   const inbox = (thread: EnvironmentThreadShell) =>
     workingShelfEnabled && isSidebarThreadWorking(thread) ? working : active;
   for (const thread of visible) {
     const capabilities = serverConfigs.get(thread.environmentId)?.environment.capabilities;
+    const threadKey = threadShellKey(thread);
+    if (capabilities?.threadActiveReorder === true) activeReorderable.add(threadKey);
+    if (capabilities?.threadPinning === true && capabilities.threadPinReorder === true) draggable.add(threadKey);
+    if (optimisticDrop?.key === threadKey) {
+      const projected = applySidebarThreadDrop(
+        thread,
+        optimisticDrop.section,
+        optimisticDrop.occurredAt,
+        optimisticDrop.assignedKeys.get(threadKey),
+      );
+      (optimisticDrop.section === "pinned"
+        ? pinned
+        : optimisticDrop.section === "settled"
+          ? settled
+          : inbox(projected)
+      ).push(
+        optimisticDrop.clearsSnooze
+          ? projected
+          : { ...projected, snoozedAt: thread.snoozedAt, snoozedUntil: thread.snoozedUntil },
+      );
+      continue;
+    }
     const section = resolveSidebarThreadSection({
       snoozed: capabilities?.threadSnooze === true && effectiveSnoozed(thread, { now: preciseNow }),
       settled: capabilities?.threadSettlement === true && thread.settledOverride === "settled",
@@ -446,11 +495,20 @@ export const sidebarPartitionAtom = Atom.make((get): SidebarPartition => {
           : inbox(thread)
     ).push(thread);
   }
+  // Server capability only gates dragging; it must not influence the sort.
+  const sortedPinned = sortPinnedThreadsForSidebar(pinned);
+  const sortedActive = workingShelfEnabled
+    ? sortInboxThreadsByReturn(active, inboxReturns.returnedAt)
+    : sortThreadsForSidebar(active);
   return {
-    pinnedThreads: sortPinnedThreadsForSidebar(pinned),
-    activeThreads: workingShelfEnabled
-      ? sortInboxThreadsByReturn(active, inboxReturns.returnedAt)
-      : sortThreadsForSidebar(active),
+    pinnedThreads:
+      optimisticDrop?.section !== "pinned" || optimisticDrop.order === null
+        ? sortedPinned
+        : orderItemsByPreferredIds({ items: sortedPinned, preferredIds: optimisticDrop.order, getId: threadShellKey }),
+    activeThreads:
+      optimisticDrop?.section !== "active" || optimisticDrop.order === null
+        ? sortedActive
+        : orderItemsByPreferredIds({ items: sortedActive, preferredIds: optimisticDrop.order, getId: threadShellKey }),
     workingThreads: sortWorkingThreadsBySend(working),
     snoozedThreads: snoozed.toSorted(
       (left, right) =>
@@ -458,9 +516,110 @@ export const sidebarPartitionAtom = Atom.make((get): SidebarPartition => {
         firstValidTimestampMs(right.snoozedUntil ?? null),
     ),
     settledThreads: sortSettledThreads(settled),
+    draggableThreadKeys: draggable,
+    activeReorderableThreadKeys: activeReorderable,
     snoozeNow: preciseNow,
     workingShelfEnabled,
   };
+}
+
+/** Web Sidebar.tsx isOptimisticDropReleased. */
+function isOptimisticDropReleased(input: {
+  readonly optimisticDrop: SidebarOptimisticDrop;
+  readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+  readonly pinnedKeys: ReadonlyArray<string>;
+  readonly activeKeys: ReadonlyArray<string>;
+  readonly now: string;
+}): boolean {
+  const { optimisticDrop, threads, pinnedKeys, activeKeys, now } = input;
+  const canonicalByKey = new Map(threads.map((thread) => [threadShellKey(thread), thread]));
+  const thread = canonicalByKey.get(optimisticDrop.key);
+  if (thread === undefined || thread.archivedAt !== null) {
+    return true;
+  }
+  const canonicalSection = effectiveSnoozed(thread, { now })
+    ? "snoozed"
+    : thread.settledOverride === "settled"
+      ? "settled"
+      : thread.pinnedAt != null
+        ? "pinned"
+        : "active";
+  if (canonicalSection !== optimisticDrop.sourceSection && canonicalSection !== optimisticDrop.section) {
+    return true;
+  }
+  if (optimisticDrop.order === null) {
+    // Settle also emits unpin/unsnooze events. Wait for the entire move
+    // before releasing the projected fields and sort timestamps.
+    return (
+      canonicalSection === optimisticDrop.section &&
+      thread.pinnedAt == null &&
+      (!optimisticDrop.clearsSnooze || thread.snoozedUntil == null)
+    );
+  }
+  if (canonicalSection !== optimisticDrop.section) return false;
+  if (optimisticDrop.clearsSnooze && thread.snoozedUntil != null) return false;
+  const destinationKeys = optimisticDrop.section === "pinned" ? pinnedKeys : activeKeys;
+  const canonicalDestination = destinationKeys.flatMap((key) => {
+    const canonical = canonicalByKey.get(key);
+    return canonical === undefined ? [] : [canonical];
+  });
+  const keyByThread = new Map(
+    canonicalDestination.map((candidate) => [
+      threadShellKey(candidate),
+      (optimisticDrop.section === "pinned" ? candidate.pinOrderKey : candidate.activeOrderKey) ?? null,
+    ]),
+  );
+  const heldOrder = optimisticDrop.order;
+  const heldKeys = new Set(heldOrder);
+  const membershipChanged =
+    destinationKeys.length !== heldOrder.length || destinationKeys.some((key) => !heldKeys.has(key));
+  const foreignKeyLanded = destinationKeys.some((threadKey) => {
+    const currentKey = keyByThread.get(threadKey) ?? null;
+    if (currentKey === (optimisticDrop.keysAtDrop.get(threadKey) ?? null)) return false;
+    return currentKey !== optimisticDrop.assignedKeys.get(threadKey);
+  });
+  const allAssignmentsLanded = [...optimisticDrop.assignedKeys].every(
+    ([threadKey, orderKey]) => keyByThread.get(threadKey) === orderKey,
+  );
+  return membershipChanged || foreignKeyLanded || allAssignmentsLanded;
+}
+
+export const sidebarPartitionAtom = Atom.make((get): SidebarPartition => {
+  get(sidebarClockAtom);
+  const threads = get(environmentThreadShells.quietThreadShellsAtom);
+  const scope = get(sidebarProjectScopeAtom);
+  const scopedProjectKeys =
+    scope === null
+      ? null
+      : new Set(scope.memberProjectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`));
+  const input = {
+    threads,
+    scopedProjectKeys,
+    serverConfigs: get(environmentServerConfigsAtom),
+    workingShelfEnabled: get(sidebarClientSettingsAtom).sidebarWorkingShelfEnabled,
+  };
+  const optimisticDrop = get(sidebarOptimisticDropAtom);
+  const partition = partitionSidebarThreads({ ...input, optimisticDrop });
+  if (
+    optimisticDrop !== null &&
+    isOptimisticDropReleased({
+      optimisticDrop,
+      threads,
+      pinnedKeys: partition.pinnedThreads.map(threadShellKey),
+      activeKeys: partition.activeThreads.map(threadShellKey),
+      now: partition.snoozeNow,
+    })
+  ) {
+    // Web releases the hold during render, so the canonical order shows in the
+    // same pass; here the partition drops it now and the atom clears after.
+    queueMicrotask(() => {
+      if (appAtomRegistry.get(sidebarOptimisticDropAtom) === optimisticDrop) {
+        appAtomRegistry.set(sidebarOptimisticDropAtom, null);
+      }
+    });
+    return partitionSidebarThreads({ ...input, optimisticDrop: null });
+  }
+  return partition;
 });
 
 /** The open thread's row key: a subagent is represented by its nearest top-level ancestor. */
@@ -523,10 +682,17 @@ export interface SidebarThreadList extends SidebarPartition {
   readonly threadByKey: ReadonlyMap<string, EnvironmentThreadShell>;
   readonly sectionByThreadKey: ReadonlyMap<string, SidebarSection>;
   readonly searchableThreads: ReadonlyArray<EnvironmentThreadShell>;
+  readonly settledVisibleCount: number;
+  readonly pinnedKeys: ReadonlyArray<string>;
+  readonly activeKeys: ReadonlyArray<string>;
+  /** Every shell's pin / active order key, for planSidebarThreadDrop. */
+  readonly pinnedKeysById: ReadonlyMap<string, string | null>;
+  readonly activeKeysById: ReadonlyMap<string, string | null>;
 }
 
 export const sidebarThreadListAtom = Atom.make((get): SidebarThreadList => {
   const partition = get(sidebarPartitionAtom);
+  const allThreads = get(environmentThreadShells.quietThreadShellsAtom);
   const persisted = get(sidebarPersistedStateAtom);
   const tail = get(settledTailAtom);
   const routeRowThreadKey = get(routeRowThreadKeyAtom);
@@ -576,6 +742,7 @@ export const sidebarThreadListAtom = Atom.make((get): SidebarThreadList => {
     visibleSnoozedThreads,
     visibleWorkingThreads,
     hiddenSettledCount: settledThreads.length - visibleSettledThreads.length,
+    settledVisibleCount,
     settledExpanded: persisted.settledExpanded,
     snoozedExpanded: persisted.snoozedExpanded,
     workingExpanded: persisted.workingExpanded,
@@ -589,6 +756,10 @@ export const sidebarThreadListAtom = Atom.make((get): SidebarThreadList => {
       ...snoozedThreads,
       ...settledThreads,
     ],
+    pinnedKeys: pinnedThreads.map(threadShellKey),
+    activeKeys: activeThreads.map(threadShellKey),
+    pinnedKeysById: new Map(allThreads.map((thread) => [threadShellKey(thread), thread.pinOrderKey ?? null] as const)),
+    activeKeysById: new Map(allThreads.map((thread) => [threadShellKey(thread), thread.activeOrderKey ?? null] as const)),
   };
 });
 
@@ -647,6 +818,96 @@ export const sidebarContextMenuAtom = Atom.make<
   | { readonly kind: "draft"; readonly draftId: string; readonly x: number; readonly y: number }
   | null
 >(null).pipe(Atom.keepAlive);
+
+// ── Multi-select (apps/web/src/threadSelectionStore.ts) ─────────────────
+
+export interface ThreadSelectionState {
+  readonly selectedThreadKeys: ReadonlySet<string>;
+  readonly anchorThreadKey: string | null;
+}
+
+const EMPTY_SELECTION: ThreadSelectionState = { selectedThreadKeys: new Set<string>(), anchorThreadKey: null };
+
+export const threadSelectionAtom = Atom.make<ThreadSelectionState>(EMPTY_SELECTION).pipe(Atom.keepAlive);
+
+function updateSelection(next: (state: ThreadSelectionState) => ThreadSelectionState): void {
+  const current = appAtomRegistry.get(threadSelectionAtom);
+  const updated = next(current);
+  if (updated !== current) appAtomRegistry.set(threadSelectionAtom, updated);
+}
+
+export function readThreadSelection(): ThreadSelectionState {
+  return appAtomRegistry.get(threadSelectionAtom);
+}
+
+export function toggleThreadSelection(threadKey: string): void {
+  updateSelection((state) => {
+    const next = new Set(state.selectedThreadKeys);
+    if (next.has(threadKey)) next.delete(threadKey);
+    else next.add(threadKey);
+    return {
+      selectedThreadKeys: next,
+      anchorThreadKey: next.has(threadKey) ? threadKey : state.anchorThreadKey,
+    };
+  });
+}
+
+/** Selects every row between the anchor and `threadKey` in the rendered order. */
+export function rangeSelectThreadsTo(threadKey: string, orderedThreadKeys: ReadonlyArray<string>): void {
+  updateSelection((state) => {
+    const anchor = state.anchorThreadKey;
+    const anchorIndex = anchor === null ? -1 : orderedThreadKeys.indexOf(anchor);
+    const targetIndex = orderedThreadKeys.indexOf(threadKey);
+    if (anchor === null || anchorIndex === -1 || targetIndex === -1) {
+      const next = new Set(state.selectedThreadKeys);
+      next.add(threadKey);
+      return { selectedThreadKeys: next, anchorThreadKey: threadKey };
+    }
+    const next = new Set(state.selectedThreadKeys);
+    for (let index = Math.min(anchorIndex, targetIndex); index <= Math.max(anchorIndex, targetIndex); index++) {
+      const key = orderedThreadKeys[index];
+      if (key !== undefined) next.add(key);
+    }
+    return { selectedThreadKeys: next, anchorThreadKey: anchor };
+  });
+}
+
+export function clearThreadSelection(): void {
+  updateSelection((state) =>
+    state.selectedThreadKeys.size === 0 && state.anchorThreadKey === null ? state : EMPTY_SELECTION,
+  );
+}
+
+export function setThreadSelectionAnchor(threadKey: string): void {
+  updateSelection((state) => (state.anchorThreadKey === threadKey ? state : { ...state, anchorThreadKey: threadKey }));
+}
+
+export function removeFromThreadSelection(threadKeys: ReadonlyArray<string>): void {
+  updateSelection((state) => {
+    const toRemove = new Set(threadKeys);
+    const next = new Set([...state.selectedThreadKeys].filter((key) => !toRemove.has(key)));
+    if (next.size === state.selectedThreadKeys.size) return state;
+    return {
+      selectedThreadKeys: next,
+      anchorThreadKey:
+        state.anchorThreadKey !== null && toRemove.has(state.anchorThreadKey) ? null : state.anchorThreadKey,
+    };
+  });
+}
+
+/** threadSelectionStore.ts getThreadKeysToDeselectAfterDelete */
+export function getThreadKeysToDeselectAfterDelete(
+  selectedThreadKeys: ReadonlyArray<string>,
+  deletedThreadKeys: ReadonlySet<string>,
+  hasThread: (threadKey: string) => boolean,
+): string[] {
+  return selectedThreadKeys.filter((key) => deletedThreadKeys.has(key) || !hasThread(key));
+}
+
+/** One row's membership, so a selection change re-renders only the rows it touches. */
+export const threadSelectedAtom = Atom.family((threadKey: string) =>
+  Atom.make((get) => get(threadSelectionAtom).selectedThreadKeys.has(threadKey)),
+);
 
 /**
  * Web shows "Ctrl+N" badges on the first nine rows while the jump modifier is
