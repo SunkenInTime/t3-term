@@ -91,6 +91,7 @@ import {
 import { modelPickerOpenAtom, routeAtom } from "../../state/ui.ts";
 import { toast } from "../../ui/toast.tsx";
 import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
+import { chatLanePadding, useSmallViewport } from "../../ui/viewport.tsx";
 import { Text } from "../../ui/primitives.tsx";
 import {
   type ComposerSubmissionIntent,
@@ -236,6 +237,7 @@ export function Composer({
   layout?: "overlay" | "inline" | "lane";
 }) {
   const lane = <ComposerLane target={target} />;
+  const lanePadding = chatLanePadding(useSmallViewport());
   if (layout === "lane") return <div style={{ display: "flex", flexDirection: "row", width: "100%" }}>{lane}</div>;
   return layout === "overlay" ? (
     <ComposerOverlay>{lane}</ComposerOverlay>
@@ -246,8 +248,8 @@ export function Composer({
         flexDirection: "row",
         justifyContent: "center",
         width: "100%",
-        paddingLeft: LAYOUT.chatLanePadding,
-        paddingRight: LAYOUT.chatLanePadding,
+        paddingLeft: lanePadding,
+        paddingRight: lanePadding,
       }}
     >
       {lane}
@@ -261,6 +263,7 @@ export function Composer({
  */
 function ComposerOverlay({ children }: { children: ReactNode }) {
   const cardInline = useDetailsCardInline();
+  const small = useSmallViewport();
   return (
     <div
       style={{
@@ -268,8 +271,9 @@ function ComposerOverlay({ children }: { children: ReactNode }) {
         left: 0,
         right: 0,
         bottom: 0,
-        paddingTop: 8,
-        paddingBottom: 20,
+        // web `pt-1.5 sm:pt-2`, and the spacer under the stack `h-4 sm:h-5`.
+        paddingTop: small ? 6 : 8,
+        paddingBottom: small ? 16 : 20,
         pointerEvents: "none",
       }}
       onLayout={(event) => {

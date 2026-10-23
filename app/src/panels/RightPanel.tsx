@@ -14,7 +14,7 @@ import {
   type PullRequestRef,
   type ThreadId,
 } from "@t3tools/contracts";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { faviconUrlForOrigin } from "@t3tools/shared/favicon";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { DeviceServiceState, PreviewSessionSnapshot } from "@t3tools/contracts";
@@ -44,6 +44,7 @@ import { FloatingLayer } from "@gpuix/react/floating";
 import { useBrowserDefaults } from "../web/browser/browserDefaults.ts";
 import { IconButton, Kbd, Text } from "../ui/primitives.tsx";
 import { alpha, FONTS, LAYOUT, RADIUS, useTheme } from "../ui/theme.ts";
+import { sidebarWidthAtom, useMobileViewport } from "../ui/viewport.tsx";
 import { TabCloseButton } from "../terminal/ThreadTerminalDrawer.tsx";
 import { DiffSurface } from "./diff/DiffSurface.tsx";
 import { FileEntryIcon } from "./files/FileEntryIcon.tsx";
@@ -170,16 +171,32 @@ function surfaceIcon(surface: RightPanelSurface): IconName {
   }
 }
 
-export function RightPanel({ environmentId, threadId }: { environmentId: EnvironmentId; threadId: ThreadId }) {
+export function RightPanel({
+  environmentId,
+  threadId,
+  sheet = false,
+  layoutControls,
+}: {
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  /**
+   * web ChatRightPanel `sheet` (window at or below 980): the panel fills a sheet over the
+   * chat, cannot be resized or maximized, and its tab bar ends with the panel toggles.
+   */
+  sheet?: boolean;
+  layoutControls?: ReactNode;
+}) {
   const theme = useTheme();
   const threadKey = threadKeyOf(environmentId, threadId);
   const state = useAtomValue(rightPanelThreadStateAtom(threadKey));
   const storedWidth = useAtomValue(rightPanelWidthAtom(threadKey));
-  const maximized = useAtomValue(rightPanelMaximizedAtom);
+  const maximized = useAtomValue(rightPanelMaximizedAtom) && !sheet;
   const selectedPullRequest = useAtomValue(selectedPullRequestAtom(threadKey));
   const requestedKind = useAtomValue(rightPanelSurfaceAtom);
   const requestCount = useAtomValue(rightPanelSurfaceRequestAtom);
   const sidebarOpen = useAtomValue(sidebarOpenAtom);
+  const mobile = useMobileViewport();
+  const sidebarWidth = useAtomValue(sidebarWidthAtom);
   const shell = useAtomValue(environmentThreadShells.threadShellAtom({ environmentId, threadId } as never));
   const terminalContext = useThreadTerminalContext(environmentId, threadId);
   const canOperateTerminal = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
@@ -210,7 +227,7 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
     if (fromIndex >= 0 && toIndex !== fromIndex) rightPanelActions.move(threadKey, surfaceId, toIndex);
   };
 
-  const rowWidth = window.width - (sidebarOpen ? LAYOUT.sidebarWidth : 0);
+  const rowWidth = window.width - (sidebarOpen && !mobile ? sidebarWidth : 0);
   const maxWidth = rightPanelMaxWidth(window.width, rowWidth);
   const width = Math.min(Math.max(dragWidth ?? storedWidth, RIGHT_PANEL_MIN_WIDTH), maxWidth);
 
@@ -351,9 +368,11 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
         height: "100%",
         minHeight: 0,
         backgroundColor: theme.background,
-        ...(maximized
-          ? { width: "100%", flexShrink: 0 }
-          : { width, flexShrink: 0, borderLeftWidth: 1, borderColor: theme.border }),
+        ...(sheet
+          ? { width: "100%", flexGrow: 1 }
+          : maximized
+            ? { width: "100%", flexShrink: 0 }
+            : { width, flexShrink: 0, borderLeftWidth: 1, borderColor: theme.border }),
       }}
     >
       <div
@@ -367,8 +386,9 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
           flexShrink: 0,
           paddingLeft: 8,
           // The chat header pins maximize, terminal and right-panel toggles over
-          // this corner (web: pr-28 beside WorkspaceTitlebarControls).
-          paddingRight: TITLEBAR_CONTROLS_INSET,
+          // this corner (web: pr-28 beside WorkspaceTitlebarControls); a sheet
+          // carries its own toggles at the end of the bar (`pr-3`).
+          paddingRight: sheet ? 12 : TITLEBAR_CONTROLS_INSET,
           userSelect: "none",
         }}
       >
@@ -456,6 +476,11 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
             <AddSurfaceMenuItems actions={actions} onClose={() => setAddMenuOpen(false)} />
           </Menu>
         </div>
+        {sheet && layoutControls ? (
+          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", marginRight: 1, height: "100%", flexShrink: 0 }}>
+            {layoutControls}
+          </div>
+        ) : null}
       </div>
       <div style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0 }}>
         {active === null ? (
@@ -464,7 +489,7 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
           <SurfaceContent environmentId={environmentId} threadId={threadId} surface={active} />
         )}
       </div>
-      {maximized ? null : (
+      {maximized || sheet ? null : (
         <ResizeHandle
           onDragStart={(x) => {
             drag.current = { startX: x, startWidth: width };

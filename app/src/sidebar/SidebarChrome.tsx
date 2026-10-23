@@ -11,7 +11,8 @@ import {
   sidebarClientSettingsAtom,
 } from "../state/sidebar.ts";
 import { shortcutLabelForCommand } from "./shortcutLabel.ts";
-import { routeAtom, sidebarOpenAtom, type Route } from "../state/ui.ts";
+import { routeAtom, setSidebarVisible, type Route } from "../state/ui.ts";
+import { titlebarControlSize, useInSidebarSheet, useSmallViewport } from "../ui/viewport.tsx";
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Tooltip } from "../ui/overlay.tsx";
@@ -46,10 +47,14 @@ export function useStageIdentification(): {
 
 export function SidebarChromeHeader() {
   const theme = useTheme();
-  const setSidebarOpen = useAtomSet(sidebarOpenAtom);
   const setRoute = useAtomSet(routeAtom);
   const { backdropVariant, pillLabel } = useStageIdentification();
   const onBackdrop = backdropVariant !== null;
+  // In the mobile sheet web shows only the sheet's own trigger (`md:hidden`); the
+  // brand link is `hidden md:flex`. Below `sm` the trigger grows to 32.
+  const inSheet = useInSidebarSheet();
+  const small = useSmallViewport();
+  const toggleSize = inSheet ? titlebarControlSize(small) : 28;
   return (
     <div
       style={{
@@ -66,12 +71,13 @@ export function SidebarChromeHeader() {
         <IconButton
           icon="panel-left-close"
           testId="sidebar-toggle"
+          size={toggleSize}
           color={onBackdrop ? "#ffffff" : theme.mutedForeground}
           hoverBg={onBackdrop ? alpha("#ffffff", 0.16) : theme.sidebar.rowHover}
-          onClick={() => setSidebarOpen(false)}
+          onClick={() => setSidebarVisible(false)}
         />
       </div>
-      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, marginLeft: 12, minWidth: 0, flexGrow: 1 }}>
+      <div style={{ display: inSheet ? "none" : "flex", flexDirection: "row", alignItems: "center", gap: 8, marginLeft: 12, minWidth: 0, flexGrow: 1 }}>
         <div
           testId="sidebar-brand"
           onClick={() => setRoute({ kind: "home" })}

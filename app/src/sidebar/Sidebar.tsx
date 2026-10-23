@@ -58,6 +58,7 @@ import { Icon } from "../ui/Icon.tsx";
 import { Text } from "../ui/primitives.tsx";
 import { toast } from "../ui/toast.tsx";
 import { LAYOUT, RADIUS, alpha, useTheme } from "../ui/theme.ts";
+import { useSidebarWidth } from "../ui/viewport.tsx";
 import {
   buildDraftActionMenuItems,
   buildThreadActionMenuItems,
@@ -158,6 +159,7 @@ function useDebouncedValue<A>(value: A, delayMs: number): A {
 
 export function Sidebar() {
   const theme = useTheme();
+  const sidebarWidth = useSidebarWidth();
   const list = useAtomValue(sidebarThreadListAtom);
   const groups = useAtomValue(sidebarProjectGroupsAtom);
   const projects = useAtomValue(sidebarProjectsAtom);
@@ -360,7 +362,7 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
         position: "relative",
         display: "flex",
         flexDirection: "column",
-        width: LAYOUT.sidebarWidth,
+        width: sidebarWidth,
         height: "100%",
         flexShrink: 0,
         backgroundColor: theme.sidebar.background,
@@ -368,7 +370,7 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
         borderColor: theme.sidebar.border,
       }}
     >
-      {backdropVariant ? <StageBackdrop variant={backdropVariant} width={LAYOUT.sidebarWidth - 1} /> : null}
+      {backdropVariant ? <StageBackdrop variant={backdropVariant} width={sidebarWidth - 1} /> : null}
       <SidebarChromeHeader />
       <div style={{ padding: 8, flexShrink: 0 }}>
         <SidebarThreadHeader
