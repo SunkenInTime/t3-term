@@ -39,7 +39,6 @@ import {
 } from "./diffModel.ts";
 import { DiffCommentAnnotation } from "./DiffCommentAnnotation.tsx";
 import { linePoint, useDiffComments, type DiffComments, type DiffCommentsConfig } from "./useDiffComments.ts";
-import { mix } from "../code/palette.ts";
 
 const WINDOW = 160;
 
@@ -102,7 +101,12 @@ export interface DiffViewProps {
 interface RowInteraction {
   readonly current: {
     readonly comments: DiffComments;
-    readonly setHovered: (next: { key: string; side: "old" | "new" } | null) => void;
+    /**
+     * The gutter and its "+" both claim the hover. Hover goes to the topmost element, so
+     * moving onto the button leaves the gutter; a leave only clears its own claim.
+     */
+    readonly hover: (key: string, side: "old" | "new", via: "gutter" | "button") => void;
+    readonly unhover: (key: string, via: "gutter" | "button") => void;
   };
 }
 
@@ -131,9 +135,15 @@ export function DiffView(props: DiffViewProps) {
 
   const renderer = useGpuixRequired();
   const comments = useDiffComments(props.files, props.comments ?? null);
-  const [hovered, setHovered] = useState<{ key: string; side: "old" | "new" } | null>(null);
-  const interactionRef = useRef<RowInteraction["current"]>({ comments, setHovered });
-  interactionRef.current = { comments, setHovered };
+  const [hovered, setHovered] = useState<{ key: string; side: "old" | "new"; via: "gutter" | "button" } | null>(null);
+  const hover = (key: string, side: "old" | "new", via: "gutter" | "button") =>
+    setHovered((current) =>
+      current?.key === key && current.side === side && current.via === via ? current : { key, side, via },
+    );
+  const unhover = (key: string, via: "gutter" | "button") =>
+    setHovered((current) => (current?.key === key && current.via === via ? null : current));
+  const interactionRef = useRef<RowInteraction["current"]>({ comments, hover, unhover });
+  interactionRef.current = { comments, hover, unhover };
   const interaction = useMemo<RowInteraction>(
     () => ({
       get current() {
@@ -317,6 +327,7 @@ const DiffRowView = memo(function DiffRowView(props: {
           palette={palette}
           interaction={props.interaction}
           draftText={props.draftText}
+          selected={props.selected.size > 0}
         />
       );
     case "header":
@@ -414,9 +425,9 @@ function LineCellView(props: {
   const selected = props.interaction.selected;
   // StyledDiffCodeView: a selected line, change or not, is the code background with a
   // 6% wash of the modified blue, and its number column gets the blue 4px bar.
-  const selectedBg = mix(palette.bg, palette.modified, 0.06);
-  const lineBg = selected ? selectedBg : kind === "addition" ? palette.additionLine : kind === "deletion" ? palette.deletionLine : palette.bg;
-  const gutterBg = selected ? selectedBg : kind === "addition" ? palette.additionGutter : kind === "deletion" ? palette.deletionGutter : palette.bg;
+  const lineBg = selected ? palette.selectedLine : kind === "addition" ? palette.additionLine : kind === "deletion" ? palette.deletionLine : palette.bg;
+  const gutterBg = selected ? palette.selectedGutter : kind === "addition" ? palette.additionGutter : kind === "deletion" ? palette.deletionGutter : palette.bg;
+  const point = linePoint(line, props.interaction.cellSide);
   const numberColor = kind === "addition" ? palette.addition : kind === "deletion" ? palette.deletion : palette.number;
   const emphasisColor = kind === "addition" ? palette.additionEmphasis : kind === "deletion" ? palette.deletionEmphasis : undefined;
   const number = props.side === "old" ? (line.oldLine ?? line.newLine) : (line.newLine ?? line.oldLine);
@@ -427,7 +438,7 @@ function LineCellView(props: {
   const rowCount = Math.max(props.rows ?? 0, visual.length);
   const height = rowCount * CODE_LINE_HEIGHT;
   return (
-    <div style={{ display: "flex", flexDirection: "row", width: props.width, height, flexShrink: 0, backgroundColor: lineBg }}>
+    <div style={{ position: "relative", display: "flex", flexDirection: "row", width: props.width, height, flexShrink: 0, backgroundColor: lineBg }}>
       <GutterCell
         interaction={props.interaction}
         line={line}
@@ -442,7 +453,7 @@ function LineCellView(props: {
         ) : kind === "context" ? null : (
           <ChangeBar kind={kind} height={height} color={kind === "addition" ? palette.addition : palette.deletion} stripeBase={palette.deletionStripeBase} />
         )}
-        <text style={{ color: selected ? palette.fg : numberColor, fontFamily: FONTS.mono, fontSize: 13, lineHeight: CODE_LINE_HEIGHT, whiteSpace: "nowrap", pointerEvents: "none" }}>
+        <text style={{ color: selected ? palette.selectedNumber : numberColor, fontFamily: FONTS.mono, fontSize: 13, lineHeight: CODE_LINE_HEIGHT, whiteSpace: "nowrap", pointerEvents: "none" }}>
           {number === null ? "" : String(number)}
         </text>
       </GutterCell>
@@ -473,6 +484,19 @@ function LineCellView(props: {
           )}
         </div>
       </div>
+      {/* Last in the row so it paints over the spacer and code it overhangs. */}
+      {props.interaction.utility && point ? (
+        <GutterUtilityButton
+          left={props.gutter - Math.round(props.ch)}
+          palette={palette}
+          onHover={(hovered) => {
+            const current = props.interaction.interaction.current;
+            if (hovered) current.hover(props.interaction.rowKey, props.side, "button");
+            else current.unhover(props.interaction.rowKey, "button");
+          }}
+          onPress={() => props.interaction.interaction.current.comments.utility(props.interaction.filePath, point)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -487,8 +511,22 @@ interface GutterInteraction {
   readonly interaction: RowInteraction;
 }
 
-/** pierre's [data-utility-button]: a 1lh square in the modified blue, straddling the number column's edge. */
-function GutterUtilityButton({ ch, palette, onPress }: { ch: number; palette: DiffPalette; onPress: (event: EventPayload) => void }) {
+/**
+ * pierre's [data-utility-button]: a 1lh square in the modified blue whose right margin
+ * is `-1lh + 1ch`, so it starts one character inside the number column and overhangs
+ * into the code.
+ */
+function GutterUtilityButton({
+  left,
+  palette,
+  onPress,
+  onHover,
+}: {
+  left: number;
+  palette: DiffPalette;
+  onPress: (event: EventPayload) => void;
+  onHover: (hovered: boolean) => void;
+}) {
   return (
     <div
       testId="diff-gutter-utility"
@@ -496,10 +534,13 @@ function GutterUtilityButton({ ch, palette, onPress }: { ch: number; palette: Di
         consumePress(event);
         onPress(event);
       }}
+      // Hover belongs to the topmost element: keep the button while the pointer is on it.
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
       style={{
         position: "absolute",
         top: 0,
-        right: -(CODE_LINE_HEIGHT - Math.round(ch)),
+        left,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -532,10 +573,10 @@ function GutterCell(props: {
     <div
       onMouseEnter={() => {
         const current = interaction.interaction.current;
-        current.setHovered({ key: interaction.rowKey, side: hoverSide });
+        current.hover(interaction.rowKey, hoverSide, "gutter");
         if (point) current.comments.numberEnter(interaction.filePath, point);
       }}
-      onMouseLeave={() => interaction.interaction.current.setHovered(null)}
+      onMouseLeave={() => interaction.interaction.current.unhover(interaction.rowKey, "gutter")}
       onMouseDown={(event: EventPayload) => {
         if (pressConsumed(event) || !point || (event.button ?? 0) !== 0) return;
         interaction.interaction.current.comments.numberDown(interaction.filePath, point, event.modifiers?.shift === true);
@@ -555,13 +596,6 @@ function GutterCell(props: {
       }}
     >
       {props.children}
-      {interaction.utility && point ? (
-        <GutterUtilityButton
-          ch={props.ch}
-          palette={props.palette}
-          onPress={() => interaction.interaction.current.comments.utility(interaction.filePath, point)}
-        />
-      ) : null}
     </div>
   );
 }
@@ -574,15 +608,21 @@ function AnnotationRowView(props: {
   palette: DiffPalette;
   interaction: RowInteraction;
   draftText: string;
+  selected: boolean;
 }) {
   const theme = useTheme();
   const { row, palette } = props;
   const hasDraft = row.annotation.entries.some((entry) => entry.kind === "draft");
+  // pierre keeps the commented range selected while its form is open, annotation included.
+  const selected = hasDraft && props.selected;
   const half = Math.floor(props.width / 2);
   const columnWidth = row.half === "full" ? props.width : row.half === "left" ? half : props.width - half;
   const content = (
-    <div style={{ display: "flex", flexDirection: "row", width: columnWidth, flexShrink: 0, backgroundColor: palette.bg }}>
-      <div style={{ width: props.gutter + 2, flexShrink: 0 }} />
+    <div style={{ display: "flex", flexDirection: "row", width: columnWidth, flexShrink: 0, backgroundColor: selected ? palette.selectedLine : palette.bg }}>
+      <div style={{ position: "relative", width: props.gutter, flexShrink: 0, backgroundColor: selected ? palette.selectedGutter : palette.bg }}>
+        {selected ? <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, backgroundColor: palette.modified }} /> : null}
+      </div>
+      <div style={{ width: 2, flexShrink: 0, backgroundColor: palette.bg }} />
       <div
         style={{
           display: "flex",
@@ -708,10 +748,8 @@ function SeparatorRow(props: {
         display: "flex",
         flexDirection: "row",
         width: props.width,
-        // pierre: line-info separators take margin-block 8, except at the top and
-        // bottom of a file's code where they sit flush.
-        paddingTop: props.first || props.last ? 0 : BLOCK_GAP,
-        paddingBottom: props.first || props.last ? 0 : BLOCK_GAP,
+        // StyledDiffCodeView sets the separators' margin-block to 0 (the virtualizer
+        // places rows from hunkSeparatorHeight), so they sit flush between hunks.
         userSelect: "none",
       }}
     >

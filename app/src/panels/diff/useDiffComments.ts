@@ -213,6 +213,12 @@ export function useDiffComments(files: ReadonlyArray<DiffFileModel>, config: Dif
         end: point.lineNumber,
         endSide: point.side,
       };
+      // pierre's gutter selection leaves the range selected while the form is open.
+      setSelection({
+        path,
+        anchor: { lineNumber: range.start, side: range.side ?? "additions" },
+        focus: { lineNumber: range.end, side: range.endSide ?? range.side ?? "additions" },
+      });
       beginComment(path, range);
     },
     submit(entryId: string, text: string) {
