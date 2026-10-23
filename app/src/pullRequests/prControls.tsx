@@ -345,7 +345,6 @@ export function PrTextarea({
 }
 
 /** Input size="sm" (26 tall). */
-let dbgInputRenders = 0;
 export function PrInput({
   value,
   onChange,
@@ -366,8 +365,6 @@ export function PrInput({
   onKeyDown?: (event: EventPayload) => void;
 }) {
   const theme = useTheme();
-  dbgInputRenders += 1;
-  if (dbgInputRenders % 20 === 0) console.error("DBG input renders", dbgInputRenders);
   return (
     <div
       style={{
@@ -389,10 +386,7 @@ export function PrInput({
         placeholder={placeholder}
         readOnly={disabled}
         autoFocus={autoFocus}
-        onChange={(event) => {
-          console.error("DBG input change", JSON.stringify(event.value));
-          onChange(String(event.value ?? ""));
-        }}
+        onChange={(event) => onChange(String(event.value ?? ""))}
         {...(onSubmit ? { onSubmit: () => onSubmit() } : {})}
         {...(onKeyDown ? { onKeyDown } : {})}
         theme={{ caret: theme.foreground }}

@@ -1,10 +1,11 @@
 // Ports of apps/web/src/components/pullRequest/{PullRequestRow,PullRequestListRow,
 // PullRequestListGroups,PullRequestChecksPopover}.tsx.
 //
-// Not ported: the Shift-held quick actions (close/merge/ready/reopen) and the drag-to-close
-// sweep. Both are writes to the host, and nothing in t3-term performs pull request writes yet.
+// Not ported: the drag-to-close sweep across rows. The Shift-held quick actions are in
+// PullRequestSpeedActions.tsx.
 import type {
   EnvironmentId,
+  PullRequestAction,
   PullRequestCheck,
   PullRequestChecksState,
   PullRequestRef,
@@ -16,6 +17,7 @@ import { Popover, Tooltip } from "../ui/overlay.tsx";
 import { Text } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../ui/theme.ts";
 import { pullRequestEnvironment, useEnvironmentQuery } from "../state/pullRequests.ts";
+import { PullRequestSpeedActions } from "./PullRequestSpeedActions.tsx";
 import { PullRequestStackPopover, wasStackClick } from "./PullRequestStack.tsx";
 import {
   pullRequestEntryKey,
@@ -252,8 +254,12 @@ function PullRequestRowImpl({
   matchedElsewhere,
   metaWidth,
   onSelect,
+  hostActions,
+  onSpeedAction,
 }: {
   entry: EnvironmentPullRequestEntry;
+  hostActions?: ReadonlySet<PullRequestAction>;
+  onSpeedAction?: (action: PullRequestAction) => void;
   selected: boolean;
   showProvider: boolean;
   environmentLabel?: string;
@@ -410,6 +416,9 @@ function PullRequestRowImpl({
           </text>
         </div>
       </div>
+      {hostActions && hostActions.size > 0 ? (
+        <PullRequestSpeedActions entry={entry} hostActions={hostActions} {...(onSpeedAction ? { onActed: onSpeedAction } : {})} />
+      ) : null}
     </div>
   );
 }
@@ -469,6 +478,8 @@ export function PullRequestListGroups({
   showProvider,
   metaWidth,
   onSelect,
+  hostActionsOf,
+  onSpeedAction,
 }: {
   groups: ReadonlyArray<PullRequestGroup<EnvironmentPullRequestEntry>>;
   /** Only when rows come from more than one server, so each says which. */
@@ -478,6 +489,8 @@ export function PullRequestListGroups({
   showProvider: boolean;
   metaWidth: number;
   onSelect: (entry: PullRequestRowTarget) => void;
+  hostActionsOf?: (entry: EnvironmentPullRequestEntry) => ReadonlySet<PullRequestAction>;
+  onSpeedAction?: (action: PullRequestAction) => void;
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -504,6 +517,8 @@ export function PullRequestListGroups({
                 }
                 metaWidth={metaWidth}
                 onSelect={onSelect}
+                {...(hostActionsOf ? { hostActions: hostActionsOf(entry) } : {})}
+                {...(onSpeedAction ? { onSpeedAction } : {})}
               />
             );
           })}

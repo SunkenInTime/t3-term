@@ -22,6 +22,7 @@ import { toast } from "../ui/toast.tsx";
 import { RADIUS, alpha, useTheme } from "../ui/theme.ts";
 import type { PullRequestDetailView } from "./PullRequestDetailPanel.tsx";
 import { PrButton, PrSegmented, PrTextarea } from "./prControls.tsx";
+import { HeldLabel } from "./PullRequestDetailActions.tsx";
 import { PrMenu, PrMenuItem } from "./PullRequestMenus.tsx";
 import { PullRequestGlyph } from "./pullRequestPresentation.tsx";
 import { PullRequestDryRunError, runPullRequestWrite } from "./pullRequestWrites.ts";
@@ -287,6 +288,7 @@ function PullRequestCommentForm({
   onCommented: () => void;
   onClose: () => void;
 }) {
+  const theme = useTheme();
   const inlineConfirm = useInlineActionConfirm(pullRequestReviewKey(reference));
   const followUpAction =
     detail.state === "open" &&
@@ -355,7 +357,12 @@ function PullRequestCommentForm({
             testId="pr-comment-close"
             {...inlineConfirm.props("close", () => void submit("close"))}
           >
-            {submitting === "close" ? "Closing..." : closeArmed ? "Confirm close?" : "Close with comment"}
+            {/* The longest label holds the width, so the confirming press lands on the button. */}
+            <HeldLabel
+              shown={submitting === "close" ? "Closing..." : closeArmed ? "Confirm close?" : "Close with comment"}
+              widest={["Close with comment"]}
+              color={theme.errorForeground}
+            />
           </PrButton>
         ) : (
           <PrButton

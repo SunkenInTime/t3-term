@@ -38,11 +38,11 @@ export interface PickableEnvironmentOption {
 }
 
 /** A label that keeps the width of its longest wording, so a confirming press lands on it. */
-function HeldLabel({ shown, widest, color }: { shown: string; widest: ReadonlyArray<string>; color: string }) {
+export function HeldLabel({ shown, widest, color }: { shown: string; widest: ReadonlyArray<string>; color: string }) {
   return (
     <div style={{ display: "flex", position: "relative", flexShrink: 0 }}>
       <div style={{ display: "flex", flexDirection: "column", height: 16, overflow: "hidden" }}>
-        {widest.map((label) => (
+        {[...new Set([...widest, shown])].map((label) => (
           <text key={label} style={{ color: "#00000000", fontSize: 12, lineHeight: 16, fontWeight: 500, whiteSpace: "nowrap" }}>
             {label}
           </text>

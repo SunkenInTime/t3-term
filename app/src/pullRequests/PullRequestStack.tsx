@@ -27,7 +27,7 @@ import { runPullRequestWrite } from "./pullRequestWrites.ts";
 // gpuix hands a click to every handler under the pointer, so a list row would also open when its
 // stack button is pressed. The button marks the click; the row skips a marked one.
 let consumedClick: { x: number; y: number; at: number } | null = null;
-function consumeClick(event: EventPayload) {
+export function markRowControlClick(event: EventPayload) {
   consumedClick = { x: Number(event.x ?? 0), y: Number(event.y ?? 0), at: Date.now() };
 }
 export function wasStackClick(event: EventPayload): boolean {
@@ -394,7 +394,7 @@ export function PullRequestStackPopover({
           <div
             testId={`pr-row-stack-${reference.number}`}
             onClick={(event) => {
-              consumeClick(event);
+              markRowControlClick(event);
               toggle();
             }}
             style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0, cursor: "pointer" }}
