@@ -1,7 +1,4 @@
-// Port of apps/web/src/keybindings.ts. Kept close to the original so submodule
-// bumps diff cleanly. Differences: the platform comes from Node instead of
-// `navigator.platform`, t3-term counts as the desktop app (`isDesktop`), and
-// the project-script id helper is inlined from apps/web/src/projectScripts.ts.
+// Ported from apps/web/src/keybindings.ts (pure logic, kept close to the original).
 import {
   type KeybindingCommand,
   type KeybindingShortcut,
@@ -9,7 +6,6 @@ import {
   type ResolvedKeybindingRule,
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   type ResolvedKeybindingsConfig,
-  SCRIPT_RUN_COMMAND_PATTERN,
   THREAD_JUMP_KEYBINDING_COMMANDS,
   type ModelPickerJumpKeybindingCommand,
   type ThreadJumpKeybindingCommand,
@@ -18,30 +14,19 @@ import {
   isMacPlatform,
   matchesKeybindingShortcut,
   matchesKeybindingShortcutModifiers,
+  normalizeEventKey,
+  resolveEventKeys,
   type ShortcutEventLike,
   type ShortcutModifierStateLike,
 } from "@t3tools/shared/keybindings";
-import * as Schema from "effect/Schema";
+// t3-term is a desktop client: desktop-only bindings apply.
+const isElectron = true;
+// Bun has no browser navigatorPlatform; web compares against these strings.
+const navigatorPlatform = process.platform === "darwin" ? "MacIntel" : process.platform === "win32" ? "Win32" : "Linux x86_64";
+import { projectScriptIdFromCommand } from "./projectScripts";
 
 export type { ShortcutEventLike, ShortcutModifierStateLike } from "@t3tools/shared/keybindings";
 export { shortcutKeyFromEvent } from "@t3tools/shared/keybindings";
-
-/** `navigator.platform` equivalent for the machine t3-term runs on. */
-export const HOST_PLATFORM =
-  process.platform === "darwin" ? "MacIntel" : process.platform === "win32" ? "Win32" : "Linux x86_64";
-
-const isElectron = true;
-
-const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
-
-function projectScriptIdFromCommand(command: string): string | null {
-  const trimmed = command.trim();
-  if (!isScriptRunCommand(trimmed)) {
-    return null;
-  }
-  const [prefix, , suffix] = SCRIPT_RUN_COMMAND_PATTERN.parts;
-  return trimmed.slice(prefix.literal.length, -suffix.literal.length);
-}
 
 export interface ShortcutMatchContext {
   terminalFocus: boolean;
@@ -63,8 +48,13 @@ interface ResolvedShortcutLabelOptions extends ShortcutMatchOptions {
   platform?: string;
 }
 
+const TERMINAL_WORD_BACKWARD = "\u001bb";
+const TERMINAL_WORD_FORWARD = "\u001bf";
+const TERMINAL_LINE_START = "\u0001";
+const TERMINAL_LINE_END = "\u0005";
+const TERMINAL_DELETE_TO_LINE_START = "\u0015";
 function resolvePlatform(options: ShortcutMatchOptions | undefined): string {
-  return options?.platform ?? HOST_PLATFORM;
+  return options?.platform ?? navigatorPlatform;
 }
 
 function resolveContext(options: ShortcutMatchOptions | undefined): ShortcutMatchContext {
@@ -103,7 +93,10 @@ function matchesWhenClause(
   return evaluateWhenNode(whenAst, context);
 }
 
-export function shortcutConflictKey(shortcut: KeybindingShortcut, platform = HOST_PLATFORM): string {
+export function shortcutConflictKey(
+  shortcut: KeybindingShortcut,
+  platform = navigatorPlatform,
+): string {
   const useMetaForMod = isMacPlatform(platform);
   const metaKey = shortcut.metaKey || (shortcut.modKey && useMetaForMod);
   const ctrlKey = shortcut.ctrlKey || (shortcut.modKey && !useMetaForMod);
@@ -173,6 +166,15 @@ function findEffectiveShortcutForCommand(
   return effectiveShortcutsForCommand(keybindings, command, options)[0] ?? null;
 }
 
+function matchesCommandShortcut(
+  event: ShortcutEventLike,
+  keybindings: ResolvedKeybindingsConfig,
+  command: KeybindingCommand,
+  options?: ShortcutMatchOptions,
+): boolean {
+  return resolveShortcutCommand(event, keybindings, options) === command;
+}
+
 export function resolveShortcutCommand(
   event: ShortcutEventLike,
   keybindings: ResolvedKeybindingsConfig,
@@ -219,7 +221,10 @@ export function formatShortcutKeyLabel(key: string): string {
   return key.slice(0, 1).toUpperCase() + key.slice(1);
 }
 
-export function formatShortcutLabel(shortcut: KeybindingShortcut, platform = HOST_PLATFORM): string {
+export function formatShortcutLabel(
+  shortcut: KeybindingShortcut,
+  platform = navigatorPlatform,
+): string {
   const keyLabel = formatShortcutKeyLabel(shortcut.key);
   const useMetaForMod = isMacPlatform(platform);
   const showMeta = shortcut.metaKey || (shortcut.modKey && useMetaForMod);
@@ -228,7 +233,7 @@ export function formatShortcutLabel(shortcut: KeybindingShortcut, platform = HOS
   const showShift = shortcut.shiftKey;
 
   if (useMetaForMod) {
-    return `${showCtrl ? "⌃" : ""}${showAlt ? "⌥" : ""}${showShift ? "⇧" : ""}${showMeta ? "⌘" : ""}${keyLabel}`;
+    return `${showCtrl ? "\u2303" : ""}${showAlt ? "\u2325" : ""}${showShift ? "\u21e7" : ""}${showMeta ? "\u2318" : ""}${keyLabel}`;
   }
 
   const parts: string[] = [];
@@ -277,7 +282,9 @@ export function shouldShowThreadJumpHintsForModifiers(
   keybindings: ResolvedKeybindingsConfig,
   options?: ShortcutMatchOptions,
 ): boolean {
-  // The embedded terminal owns keystrokes while it has focus.
+  // The embedded terminal owns keystrokes while it has focus: the Ghostty surface encodes the
+  // keydown and can write the pressed key into the shell before our window-level shortcut handling
+  // ever runs, regardless of any configured `when` clause on the jump command.
   if (resolveContext(options).terminalFocus) {
     return false;
   }
@@ -307,3 +314,167 @@ export function modelPickerJumpIndexFromCommand(command: string): number | null 
   );
   return index === -1 ? null : index;
 }
+
+export function isTerminalToggleShortcut(
+  event: ShortcutEventLike,
+  keybindings: ResolvedKeybindingsConfig,
+  options?: ShortcutMatchOptions,
+): boolean {
+  return matchesCommandShortcut(event, keybindings, "terminal.toggle", options);
+}
+
+export function isTerminalSplitShortcut(
+  event: ShortcutEventLike,
+  keybindings: ResolvedKeybindingsConfig,
+  options?: ShortcutMatchOptions,
+): boolean {
+  return matchesCommandShortcut(event, keybindings, "terminal.split", options);
+}
+
+export function isTerminalSplitVerticalShortcut(
+  event: ShortcutEventLike,
+  keybindings: ResolvedKeybindingsConfig,
+  options?: ShortcutMatchOptions,
+): boolean {
+  return matchesCommandShortcut(event, keybindings, "terminal.splitVertical", options);
+}
+
+export function isTerminalNewShortcut(
+  event: ShortcutEventLike,
+  keybindings: ResolvedKeybindingsConfig,
+  options?: ShortcutMatchOptions,
+): boolean {
+  return matchesCommandShortcut(event, keybindings, "terminal.new", options);
+}
+
+export function isTerminalCloseShortcut(
+  event: ShortcutEventLike,
+  keybindings: ResolvedKeybindingsConfig,
+  options?: ShortcutMatchOptions,
+): boolean {
+  return matchesCommandShortcut(event, keybindings, "terminal.close", options);
+}
+
+export function isDiffToggleShortcut(
+  event: ShortcutEventLike,
+  keybindings: ResolvedKeybindingsConfig,
+  options?: ShortcutMatchOptions,
+): boolean {
+  return matchesCommandShortcut(event, keybindings, "diff.toggle", options);
+}
+
+export function isOpenFavoriteEditorShortcut(
+  event: ShortcutEventLike,
+  keybindings: ResolvedKeybindingsConfig,
+  options?: ShortcutMatchOptions,
+): boolean {
+  return (
+    event.repeat !== true &&
+    matchesCommandShortcut(event, keybindings, "editor.openFavorite", options)
+  );
+}
+
+/**
+ * Whether the keypress is the rich-text bold chord (Mod+B without extra
+ * modifiers). Tiptap binds the same chord, so app shortcuts captured ahead
+ * of the editor must yield when the rich-text composer is focused.
+ */
+export function isRichTextBoldShortcut(event: ShortcutEventLike): boolean {
+  if (event.type !== undefined && event.type !== "keydown") {
+    return false;
+  }
+  return (
+    resolveEventKeys(event).has("b") &&
+    (event.metaKey || event.ctrlKey) &&
+    !event.altKey &&
+    !event.shiftKey
+  );
+}
+
+export function isTerminalClearShortcut(
+  event: ShortcutEventLike,
+  platform = navigatorPlatform,
+): boolean {
+  if (event.type !== undefined && event.type !== "keydown") {
+    return false;
+  }
+
+  const key = event.key.toLowerCase();
+
+  if (key === "l" && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+    return true;
+  }
+
+  return (
+    isMacPlatform(platform) &&
+    key === "k" &&
+    event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.shiftKey
+  );
+}
+
+export function terminalDeleteShortcutData(
+  event: ShortcutEventLike,
+  platform = navigatorPlatform,
+): string | null {
+  if (event.type !== undefined && event.type !== "keydown") {
+    return null;
+  }
+
+  if (!isMacPlatform(platform)) {
+    return null;
+  }
+
+  const key = normalizeEventKey(event.key);
+  if (key !== "backspace") {
+    return null;
+  }
+
+  return event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
+    ? TERMINAL_DELETE_TO_LINE_START
+    : null;
+}
+
+export function terminalNavigationShortcutData(
+  event: ShortcutEventLike,
+  platform = navigatorPlatform,
+): string | null {
+  if (event.type !== undefined && event.type !== "keydown") {
+    return null;
+  }
+
+  if (event.shiftKey) return null;
+
+  const key = normalizeEventKey(event.key);
+  if (key !== "arrowleft" && key !== "arrowright") {
+    return null;
+  }
+
+  const moveWord = key === "arrowleft" ? TERMINAL_WORD_BACKWARD : TERMINAL_WORD_FORWARD;
+  const moveLine = key === "arrowleft" ? TERMINAL_LINE_START : TERMINAL_LINE_END;
+
+  if (isMacPlatform(platform)) {
+    if (event.altKey && !event.metaKey && !event.ctrlKey) {
+      return moveWord;
+    }
+    if (event.metaKey && !event.altKey && !event.ctrlKey) {
+      return moveLine;
+    }
+    return null;
+  }
+
+  if (event.ctrlKey && !event.metaKey && !event.altKey) {
+    return moveWord;
+  }
+
+  if (event.altKey && !event.metaKey && !event.ctrlKey) {
+    return moveWord;
+  }
+
+  return null;
+}
+
+/** `navigator.platform` equivalent for the machine t3-term runs on. */
+export const HOST_PLATFORM = navigatorPlatform;

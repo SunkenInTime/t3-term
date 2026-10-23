@@ -24,8 +24,9 @@ export type Route =
       readonly projectId: ProjectId | null;
     }
   | { readonly kind: "settings"; readonly page: SettingsPage }
-  | { readonly kind: "usage" }
-  | { readonly kind: "pull-requests" };
+  // Sidebar footer utility pages (web: /pull-requests, /usage).
+  | { readonly kind: "pull-requests" }
+  | { readonly kind: "usage" };
 
 // T3TERM_ROUTE opens a top-level page at launch, for screenshots and automation.
 function initialRoute(): Route {
@@ -51,7 +52,14 @@ export const sidebarSearchAtom = Atom.make("").pipe(Atom.keepAlive);
 
 export type RightPanelSurface = "terminal" | "files" | "diff" | "pull-request";
 export const rightPanelSurfaceAtom = Atom.make<RightPanelSurface>("diff").pipe(Atom.keepAlive);
+/**
+ * Bumped with every "show this surface" request, so asking for the kind the
+ * atom above already holds (its default is "diff") still reaches the panel.
+ */
+export const rightPanelSurfaceRequestAtom = Atom.make(0).pipe(Atom.keepAlive);
 
 /** Open requests for pickers that keybindings and the palette can trigger. */
 export const modelPickerOpenAtom = Atom.make(false).pipe(Atom.keepAlive);
 export const findBarOpenAtom = Atom.make(false).pipe(Atom.keepAlive);
+/** The right panel fills the workspace, hiding the chat column (web's rightPanelMaximized). */
+export const rightPanelMaximizedAtom = Atom.make(false).pipe(Atom.keepAlive);
