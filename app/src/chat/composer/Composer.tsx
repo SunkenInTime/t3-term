@@ -71,6 +71,7 @@ import {
   composerSettingsAtom,
   composerTargetKey,
   readComposerDraft,
+  referencedReviewComments,
   removeComposerAttachment,
   setComposerInteractionMode,
   setComposerModelOptions,
@@ -741,6 +742,7 @@ function ComposerBody({
     prompt,
     imageCount: draft.attachments.length,
     terminalContexts: [],
+    elementContextCount: referencedReviewComments(draft, prompt).length,
   });
   const providerSendBlockReason = getAntigravitySendBlockReason(selectedProviderStatus, selectedModel);
   const sendDisabledReason = providerSendBlockReason;
@@ -858,6 +860,7 @@ function ComposerBody({
       prompt: input.prompt,
       outgoingText,
       attachments: input.attachments,
+      reviewComments: referencedReviewComments(readComposerDraft(draftKey), input.prompt),
       modelSelection: selectedModelSelection,
       runtimeMode,
       interactionMode: input.interactionMode,
