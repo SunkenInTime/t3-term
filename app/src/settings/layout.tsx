@@ -1,6 +1,7 @@
 // Ports apps/web/src/components/settings/{settingsLayout.tsx, SettingsGroup.tsx,
 // SettingInheritance.tsx, SettingsScopeSentence.tsx}.
 import { useAtom } from "@effect/atom-react";
+import { useGpuixRequired } from "@gpuix/react";
 import {
   AuthSettingsWriteScope,
   DEFAULT_SERVER_SETTINGS,
@@ -58,8 +59,12 @@ export const settingsSearchTargetAtom = Atom.make<{ readonly id: string; readonl
 );
 
 interface ScrollHandle {
+  readonly id?: number;
   scrollIntoView?: (options?: unknown) => void;
 }
+
+/** The page scroller, so a search target can center itself in it. */
+const PageScrollerContext = createContext<{ current: { id: number } | null } | null>(null);
 
 /**
  * Returns a ref and a highlight flag for an element with a settings search id.
@@ -69,18 +74,33 @@ interface ScrollHandle {
 export function useSettingsSearchTarget(id: string | undefined) {
   const [target, setTarget] = useAtom(settingsSearchTargetAtom);
   const ref = useRef<ScrollHandle | null>(null);
+  const scroller = useContext(PageScrollerContext);
+  const renderer = useGpuixRequired();
   const [highlighted, setHighlighted] = useState(false);
   const isTarget = id !== undefined && target?.id === id;
   useEffect(() => {
     if (!isTarget) return;
     // Rows mount a frame before their layout is final.
     const timer = setTimeout(() => {
-      ref.current?.scrollIntoView?.({ block: "center" });
+      // gpuix's scrollIntoView only brings the scroller's direct child into
+      // view (the whole page column here), so center the row by its bounds.
+      const scrollerId = scroller?.current?.id;
+      const targetId = ref.current?.id;
+      const scrollerBounds = scrollerId === undefined ? null : renderer.getElementBounds?.(scrollerId);
+      const targetBounds = targetId === undefined ? null : renderer.getElementBounds?.(targetId);
+      const offset = scrollerId === undefined ? null : renderer.getScrollOffset?.(scrollerId);
+      if (scrollerId !== undefined && scrollerBounds && targetBounds && offset) {
+        const contentTop = targetBounds.y - scrollerBounds.y - (offset[1] ?? 0);
+        const top = Math.max(0, contentTop - (scrollerBounds.height - targetBounds.height) / 2);
+        renderer.scrollTo?.(scrollerId, 0, -top);
+      } else {
+        ref.current?.scrollIntoView?.({ block: "center" });
+      }
       setHighlighted(true);
       setTarget(null);
     }, 60);
     return () => clearTimeout(timer);
-  }, [isTarget, target?.nonce, setTarget]);
+  }, [isTarget, target?.nonce, setTarget, scroller, renderer]);
   useEffect(() => {
     if (!highlighted) return;
     const timer = setTimeout(() => setHighlighted(false), 1600);
@@ -109,40 +129,44 @@ export function SettingsPageContainer({
   scroll?: boolean;
 }) {
   const theme = useTheme();
+  const scrollerRef = useRef<{ id: number } | null>(null);
   return (
     <PageScopeSentenceContext.Provider value={showScope}>
-      <div
-        testId="settings-page-scroll"
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          flexGrow: 1,
-          minHeight: 0,
-          ...(scroll ? { overflowY: "scroll" } : { overflow: "hidden" }),
-          scrollbarColor: theme.scrollbar,
-          scrollbarWidth: 6,
-        }}
-      >
-        <div style={{ display: "flex", flexDirection: "row", justifyContent: "center", width: "100%", ...(scroll ? {} : { flexGrow: 1, minHeight: 0 }) }}>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              width: "100%",
-              maxWidth,
-              gap,
-              paddingTop: 24,
-              paddingLeft: 24,
-              paddingRight: 24,
-              paddingBottom: 48,
-              ...(scroll ? {} : { minHeight: 0 }),
-            }}
-          >
-            {showScope ? <SettingsScopeSentence /> : null}
-            {children}
+      <PageScrollerContext.Provider value={scroll ? scrollerRef : null}>
+        <div
+          ref={scrollerRef as never}
+          testId="settings-page-scroll"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            flexGrow: 1,
+            minHeight: 0,
+            ...(scroll ? { overflowY: "scroll" } : { overflow: "hidden" }),
+            scrollbarColor: theme.scrollbar,
+            scrollbarWidth: 6,
+          }}
+        >
+          <div style={{ display: "flex", flexDirection: "row", justifyContent: "center", width: "100%", ...(scroll ? {} : { flexGrow: 1, minHeight: 0 }) }}>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                width: "100%",
+                maxWidth,
+                gap,
+                paddingTop: 24,
+                paddingLeft: 24,
+                paddingRight: 24,
+                paddingBottom: 48,
+                ...(scroll ? {} : { minHeight: 0 }),
+              }}
+            >
+              {showScope ? <SettingsScopeSentence /> : null}
+              {children}
+            </div>
           </div>
         </div>
-      </div>
+      </PageScrollerContext.Provider>
     </PageScopeSentenceContext.Provider>
   );
 }

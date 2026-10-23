@@ -77,6 +77,13 @@ function projectEnvironmentPresentation(
   };
 }
 
+/** Every saved environment, read outside React (the palette's settings search). */
+export function readEnvironments(): ReadonlyArray<EnvironmentPresentation> {
+  return [...appAtomRegistry.get(environmentPresentations.presentationsAtom).entries()].map(([environmentId, presentation]) =>
+    projectEnvironmentPresentation(environmentId, presentation),
+  );
+}
+
 export function useEnvironments() {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const presentationById = useAtomValue(environmentPresentations.presentationsAtom);

@@ -1,11 +1,16 @@
 // Settings routing: maps the web app's /settings/<page> paths onto routeAtom,
 // remembers where Back returns to, and carries search-result targets.
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
+import { clientSettingsAtom } from "../state/clientSettings.ts";
+import { environmentProjects } from "../state/environment.ts";
 import { routeAtom, type Route, type SettingsPage } from "../state/ui.ts";
 import type { SettingsPath } from "../web/components/settings/settingsSearch.ts";
+import { deriveLogicalProjectKeyFromSettings, selectProjectGroupingSettings } from "../web/logicalProject.ts";
 import { settingsSearchTargetAtom } from "./layout.tsx";
+import { settingsScopeSearchAtom } from "./scope.tsx";
 
 export const SETTINGS_PATH_BY_PAGE: Readonly<Record<SettingsPage, SettingsPath | null>> = {
   general: "/settings/general",
@@ -57,4 +62,26 @@ export const settingsSearchFocusRequestAtom = Atom.make(0).pipe(Atom.keepAlive);
 
 export function requestSettingsSearchFocus(): void {
   appAtomRegistry.set(settingsSearchFocusRequestAtom, appAtomRegistry.get(settingsSearchFocusRequestAtom) + 1);
+}
+
+/**
+ * Web's /projects/$projectKey: the Projects page scoped to one logical project.
+ * Callers that only know a project ref get the key the way ChatView derives it.
+ */
+export function openProjectSettings(input: {
+  readonly projectKey?: string;
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+}): void {
+  let projectKey = input.projectKey;
+  if (projectKey === undefined) {
+    const project = appAtomRegistry
+      .get(environmentProjects.projectsAtom)
+      .find((candidate) => candidate.environmentId === input.environmentId && candidate.id === input.projectId);
+    if (project) {
+      projectKey = deriveLogicalProjectKeyFromSettings(project, selectProjectGroupingSettings(appAtomRegistry.get(clientSettingsAtom)));
+    }
+  }
+  appAtomRegistry.set(settingsScopeSearchAtom, projectKey ? { project: projectKey } : {});
+  openSettingsPage("projects");
 }

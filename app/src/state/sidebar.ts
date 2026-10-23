@@ -40,7 +40,7 @@ import {
   type ServerConfig,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS, type ClientSettings } from "@t3tools/contracts/settings";
+import { clientSettingsAtom } from "./clientSettings.ts";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
@@ -70,13 +70,10 @@ import {
 // ── Client settings ─────────────────────────────────────────────────────
 
 /**
- * Web keeps these in its client settings store (apps/web/src/hooks/useSettings.ts).
- * Until t3-term has one, the sidebar reads the web defaults from here; the
- * settings page can write this atom.
+ * The client settings store (state/clientSettings.ts, apps/web/src/hooks/useSettings.ts);
+ * the Settings pages write it and the sidebar re-renders from it.
  */
-export const sidebarClientSettingsAtom = Atom.make<ClientSettings>(DEFAULT_CLIENT_SETTINGS).pipe(
-  Atom.keepAlive,
-);
+export const sidebarClientSettingsAtom = clientSettingsAtom;
 
 // ── Persisted sidebar UI state (web: localStorage + uiStateStore) ────────
 

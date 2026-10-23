@@ -162,6 +162,7 @@ import {
 import { ProjectContentSearch } from "./ProjectContentSearch.tsx";
 import { ProjectFilePicker } from "./ProjectFilePicker.tsx";
 import { useRouteThreadShell } from "./projectTarget.ts";
+import { openProjectSettings } from "../settings/navigation.ts";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 
@@ -1075,8 +1076,8 @@ function CommandModePalette({
       title: "Project settings",
       description: contextualProject.title,
       icon: <ItemIcon name="folder" />,
-      // Web opens /projects/$projectKey; t3-term's settings has no per-project page yet.
-      run: async () => appAtomRegistry.set(routeAtom, { kind: "settings", page: "general" }),
+      // Web opens /projects/$projectKey.
+      run: async () => openProjectSettings({ environmentId: contextualProject.environmentId, projectId: contextualProject.id }),
     });
   }
 

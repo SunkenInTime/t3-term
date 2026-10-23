@@ -1,16 +1,22 @@
 // Port of apps/web/src/components/settings/useAvailableSettingsSearchItems.ts.
 // t3-term has no T3 Connect cloud config, no desktop WSL backend and no local
 // backend it manages, so those items stay filtered out.
-import { useEnvironments } from "../state/settings.ts";
+//
+// The same index feeds the command palette's "Settings" group (web
+// CommandPalette's settingsSearchItems), registered below.
+import { registerPaletteSettingsSearch } from "../state/palette.ts";
+import { readEnvironments, useEnvironments, type EnvironmentPresentation } from "../state/settings.ts";
 import { isProviderSettingsEnvironmentAvailable } from "../web/components/settings/ProviderSettingsPanel.logic.ts";
 import type { SettingsScopeSearch } from "../web/components/settings/settingsScope.ts";
 import {
   filterAvailableSettingsSearchItems,
   getThreadAutoSettlementSearchAvailability,
+  searchSettings,
+  SETTINGS_SECTION_LABELS,
 } from "../web/components/settings/settingsSearch.ts";
+import { openSettingsPage, pageForSettingsPath } from "./navigation.ts";
 
-export function useAvailableSettingsSearchItems(scopeSearch: SettingsScopeSearch = {}) {
-  const { environments } = useEnvironments();
+function availableSettingsSearchItems(environments: ReadonlyArray<EnvironmentPresentation>, scopeSearch: SettingsScopeSearch) {
   const hasEnvironment = environments.some((environment) => environment.serverConfig !== null);
   const hasProviderSettingsEnvironment = environments.some((environment) =>
     isProviderSettingsEnvironmentAvailable({
@@ -37,3 +43,19 @@ export function useAvailableSettingsSearchItems(scopeSearch: SettingsScopeSearch
     managedTunnelActive: false,
   });
 }
+
+export function useAvailableSettingsSearchItems(scopeSearch: SettingsScopeSearch = {}) {
+  const { environments } = useEnvironments();
+  return availableSettingsSearchItems(environments, scopeSearch);
+}
+
+registerPaletteSettingsSearch((query) =>
+  searchSettings(query, availableSettingsSearchItems(readEnvironments(), {})).map((item) => ({
+    id: item.id,
+    title: item.title,
+    sectionLabel: SETTINGS_SECTION_LABELS[item.to],
+    searchTerms: item.searchTerms ?? [],
+    ...(item.secondary ? { secondary: true } : {}),
+    open: () => openSettingsPage(pageForSettingsPath(item.to), item.targetId ?? item.id),
+  })),
+);
