@@ -25,10 +25,12 @@ if (args.help) {
 const boot = await bootstrapConnections(args);
 
 const background = process.env.GPUIX_BACKGROUND === "1";
+// T3TERM_WINDOW=<width>x<height> opens the window at another size (screenshots of narrow layouts).
+const windowSize = /^(\d+)x(\d+)$/.exec(process.env.T3TERM_WINDOW?.trim() ?? "");
 render(<App boot={boot} />, {
   title: "T3 Code",
-  width: 1440,
-  height: 900,
+  width: windowSize ? Number(windowSize[1]) : 1440,
+  height: windowSize ? Number(windowSize[2]) : 900,
   terminal: args.terminal,
   focus: !background,
   keyboardFocusDim: false,

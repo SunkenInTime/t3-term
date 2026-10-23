@@ -35,6 +35,7 @@ import {
   ComposerControl,
   ComposerControlChevron,
   ComposerControlIcon,
+  ComposerControlLabel,
   type ComposerControlSize,
 } from "./ComposerControl.tsx";
 import { OutlineBadge } from "./ModelPickerListRow.tsx";
@@ -297,9 +298,9 @@ export function TraitsPicker(props: TraitsPickerProps) {
         style={isCodexStyle ? { maxWidth: 192, flexShrink: 1, minWidth: 0, justifyContent: "flex-start" } : undefined}
       >
         <ComposerControlIcon name="brain" size={size} />
-        <TraitsTriggerLabel size={size} truncate={isCodexStyle}>
+        <ComposerControlLabel size={size} truncate={isCodexStyle}>
           {triggerLabel}
-        </TraitsTriggerLabel>
+        </ComposerControlLabel>
         <ComposerControlChevron size={size} />
       </ComposerControl>
     </div>
@@ -342,37 +343,8 @@ export function TraitsPicker(props: TraitsPickerProps) {
   );
 }
 
-/** ComposerControlLabel with optional truncation for the codex-style trigger. */
-function TraitsTriggerLabel({
-  children,
-  size,
-  truncate,
-}: {
-  children: string;
-  size: ComposerControlSize;
-  truncate: boolean;
-}) {
-  const theme = useTheme();
-  return (
-    <text
-      style={{
-        color: size === "xs" ? alpha(theme.mutedForeground, 0.7) : theme.mutedForeground,
-        fontSize: size === "xs" ? 12 : 14,
-        lineHeight: size === "xs" ? 16 : 20,
-        fontWeight: size === "xs" ? 400 : 500,
-        fontFamily: FONTS.sans,
-        whiteSpace: "nowrap",
-        pointerEvents: "none",
-        ...(truncate ? { textOverflow: "ellipsis", overflow: "hidden", minWidth: 0, flexShrink: 1 } : {}),
-      }}
-    >
-      {children}
-    </text>
-  );
-}
-
 /** MenuRadioItem: min-h 28, px 8 py 4, radius 6, 14px; checked fg/8%, highlighted accent. */
-function TraitsRadioItem(props: {
+export function TraitsRadioItem(props: {
   testId: string;
   checked: boolean;
   highlighted: boolean;
@@ -451,7 +423,7 @@ function withoutOrphan(text: string): string {
 }
 
 /** Group label: px 8, pt 6 pb 4 (py 6 for On/Off groups), 12px medium muted. */
-function TraitsGroupLabel({ children, bottom = 4 }: { children: string; bottom?: number }) {
+export function TraitsGroupLabel({ children, bottom = 4 }: { children: string; bottom?: number }) {
   const theme = useTheme();
   return (
     <div style={{ paddingLeft: 8, paddingRight: 8, paddingTop: 6, paddingBottom: bottom, flexShrink: 0 }}>
@@ -474,7 +446,7 @@ function TraitsNote({ children }: { children: string }) {
 }
 
 /** MenuSeparator: mx 8, my 4, 1px border. */
-function TraitsMenuSeparator() {
+export function TraitsMenuSeparator() {
   const theme = useTheme();
   return (
     <div

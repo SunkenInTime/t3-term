@@ -25,7 +25,7 @@ import { composerInsetAtom, restoredPromptAtom } from "../../state/timeline.ts";
 import { ChatLane, useDetailsCardInline } from "../chatLane.tsx";
 import { newThreadContextRequestAtom } from "../../state/sidebar.ts";
 import { useAtomValue } from "@effect/atom-react";
-import { useGpuixRequired, type KeyEvent } from "@gpuix/react";
+import { useGpuixRequired, useWindowSize, type KeyEvent } from "@gpuix/react";
 import {
   type ComposerDispatchMode,
   resolveComposerDispatchMode,
@@ -125,6 +125,10 @@ import {
   resolveContextWindowModelDisplayName,
 } from "../../web/components/chat/ContextWindowMeter.logic.ts";
 import { readPromptUltrathink, shouldRenderTraitsControls } from "../../web/components/chat/TraitsPicker.logic.ts";
+import {
+  shouldUseCompactComposerFooter,
+  shouldUseCompactComposerPrimaryActions,
+} from "../../web/components/composerFooterLayout.ts";
 import { runtimeModeConfig, runtimeModeOptions as runtimeModes } from "../../web/components/chat/runtimeModeConfig.ts";
 import { deriveLatestContextWindowSnapshot, latestProviderTurnTokenUsage } from "../../web/lib/contextWindow.ts";
 import { type AppModelOption, getAppModelOptionsForInstance, resolveAppModelSelectionForInstance } from "../../web/modelSelection.ts";
@@ -140,7 +144,9 @@ import {
 } from "./ComposerAttachmentStrip.tsx";
 import { ComposerTopBanners } from "./ComposerBanner.tsx";
 import { ComposerCommandMenu, ComposerCommandMenuLayer } from "./ComposerCommandMenu.tsx";
+import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu.tsx";
 import { ComposerControlSeparator } from "./ComposerControl.tsx";
+import { type ComposerControlBlockDef, ComposerControlsBar, hiddenComposerControlBlockIds } from "./ComposerControlsBar.tsx";
 import { ComposerFooterModeControls, type RuntimeModeOption } from "./ComposerFooterControls.tsx";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions.tsx";
 import {
@@ -152,13 +158,14 @@ import {
 } from "./composerSend.ts";
 import { attachmentsFromPaths } from "./composerAttachmentPaths.ts";
 import { ContextWindowMeter } from "./ContextWindowMeter.tsx";
-import { ProviderModelPicker } from "./ProviderModelPicker.tsx";
+import { MODEL_PICKER_TRIGGER_MIN_WIDTH, ProviderModelPicker } from "./ProviderModelPicker.tsx";
 import { QueuedRunsControl } from "./QueuedRunsControl.tsx";
 import { registerShortcutHandler, resolveKeyEventCommand } from "../../keybindings/useGlobalKeybindings.ts";
 import { composerFocusAtom } from "../../state/keybindings.ts";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
 import type { KeybindingCommand } from "@t3tools/contracts";
-import { TraitsPicker } from "./TraitsPicker.tsx";
+import { TraitsMenuContent, TraitsPicker } from "./TraitsPicker.tsx";
+import { type ComposerControlsMeasurer, useComposerControlsLayout } from "./useComposerControlsLayout.ts";
 import { resolveComposerProviderModel } from "./useComposerProviderModel.ts";
 import { useComposerMenuItems } from "./useComposerMenuItems.ts";
 import { ComposerStashBadge, ComposerStashMenu } from "./ComposerStash.tsx";
@@ -169,6 +176,14 @@ import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
 
 export type { ComposerTarget } from "../../state/composer.ts";
+
+/** web restingBlockDefs ids, in footer order. */
+const CONTROL_BLOCKS_WITH_TRAITS = ["traits", "mode"] as const;
+const CONTROL_BLOCKS_WITHOUT_TRAITS = ["mode"] as const;
+/** `@max-[640px]/composer-surface`: the resting strip's picker drops its label at or under this. */
+const RESTING_PICKER_LABEL_MAX_SURFACE_PX = 640;
+/** Tailwind `sm`: web's footer drops its gap from this viewport width up. */
+const SM_BREAKPOINT = 640;
 
 const NO_THREAD_SHELL_ATOM = Atom.make<EnvironmentThreadShell | null>(null);
 const NO_THREAD_STATE_ATOM = Atom.make(
@@ -554,6 +569,7 @@ function ComposerBody({
   const [highlightedSearchKey, setHighlightedSearchKey] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
   const [surfaceWidth, setSurfaceWidth] = useState<number | null>(null);
+  const { width: windowWidth } = useWindowSize();
   const [dragOver, setDragOver] = useState(false);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
 
@@ -1190,6 +1206,24 @@ function ComposerBody({
       promptUltrathink: readPromptUltrathink(prompt),
       planModeEnabled: settings.planModeEnabled,
     });
+  // ── Footer collapse (web composerFooterLayout + useRestingComposerControlsLayout) ──
+  const controlBlockIds = traitsVisible ? CONTROL_BLOCKS_WITH_TRAITS : CONTROL_BLOCKS_WITHOUT_TRAITS;
+  // The expanded footer and the resting strip each keep their own layout, as web's two hooks do.
+  const expandedControls = useComposerControlsLayout({
+    blockIds: controlBlockIds,
+    pickerMarginInline: -10,
+    pickerMinWidth: MODEL_PICKER_TRIGGER_MIN_WIDTH,
+    gap: 4,
+  });
+  // web hides the strip's picker label below a 640px composer surface (a container query).
+  const restingPickerLabelCollapsed = surfaceWidth !== null && surfaceWidth <= RESTING_PICKER_LABEL_MAX_SURFACE_PX;
+  const restingControls = useComposerControlsLayout({
+    blockIds: controlBlockIds,
+    pickerMarginInline: 0,
+    pickerMinWidth: MODEL_PICKER_TRIGGER_MIN_WIDTH,
+    pickerLabelCollapsed: restingPickerLabelCollapsed,
+    gap: 4,
+  });
   const shortcutCommands: Partial<Record<KeybindingCommand, (event: KeyEvent) => boolean>> = {
     "composer.effort": (event) => {
       if (!event.isHeld && traitsVisible) toggleMenu("traits");
@@ -1306,64 +1340,139 @@ function ComposerBody({
   );
   const compactCommandAvailable = providerSupportsManualCompaction(selectedProviderEntry);
 
+  const activeControls = isResting ? restingControls : expandedControls;
+  const hiddenBlockIds = hiddenComposerControlBlockIds(controlBlockIds, activeControls.layout);
+  const traitsInOverflow = hiddenBlockIds.includes("traits");
+  const modeInOverflow = hiddenBlockIds.includes("mode");
+  // web openControl clicks the first visible control bound to the shortcut, which is the ⋯
+  // trigger once the traits or mode block has moved into it.
+  const overflowOpen =
+    menuOpen === "overflow" || (menuOpen === "traits" && traitsInOverflow) || (menuOpen === "mode" && modeInOverflow);
+  // web closes a menu whose trigger hides (useComposerMenuState(hidden)).
+  useEffect(() => {
+    if (menuOpen === "overflow" && hiddenBlockIds.length === 0) setMenuOpen(null);
+  });
+  const restingControlsVisible = activeControls.layout.visible;
+  const onRuntimeModeChange = (mode: RuntimeMode) => {
+    setComposerRuntimeMode(draftKey, mode);
+    focusEditor();
+  };
+  const traitsProps = {
+    provider: selectedProvider,
+    instanceId: selectedInstanceId,
+    models: selectedProviderModels,
+    model: selectedModel,
+    modelOptions: traitsModelOptions,
+    reportedModelSelection,
+    promptUltrathink: readPromptUltrathink(prompt),
+    onPromptEdit,
+    onModelOptionsChange: (next: Parameters<typeof setComposerModelOptions>[3]) =>
+      setComposerModelOptions(draftKey, selectedInstanceId, selectedModel, next),
+    planModeEnabled: settings.planModeEnabled,
+  };
+  const controlBlocks: ComposerControlBlockDef[] = [
+    ...(traitsVisible
+      ? [
+          {
+            id: "traits",
+            content: (
+              <>
+                <ComposerControlSeparator size={controlsSize} />
+                <TraitsPicker
+                  {...traitsProps}
+                  size={controlsSize}
+                  open={menuOpen === "traits" && !traitsInOverflow}
+                  onOpenChange={(open) => setMenuOpen(open ? "traits" : null)}
+                />
+              </>
+            ),
+          },
+        ]
+      : []),
+    {
+      id: "mode",
+      content: (
+        <ComposerFooterModeControls
+          showInteractionModeToggle={planModeUiEnabled}
+          interactionMode={interactionMode}
+          runtimeMode={runtimeMode}
+          runtimeModeOptions={compatibleRuntimeModeOptions}
+          size={controlsSize}
+          modeMenuOpen={menuOpen === "mode" && !modeInOverflow}
+          onModeMenuOpenChange={(open) => setMenuOpen(open ? "mode" : null)}
+          onToggleInteractionMode={toggleInteractionMode}
+          onRuntimeModeChange={onRuntimeModeChange}
+        />
+      ),
+    },
+  ];
+
   const controls = showProviderUnavailable ? (
     <Text color={theme.mutedForeground} weight={500}>
       No provider available
     </Text>
   ) : (
-    <>
-      <ProviderModelPicker
-        environmentId={environmentId}
-        activeInstanceId={selectedInstanceId}
-        model={selectedModel}
-        lockedProvider={modelPickerLockedProvider}
-        lockedContinuationGroupKey={lockedContinuationGroupKey}
-        instanceEntries={providerInstanceEntries}
-        modelOptionsByInstance={modelOptionsByInstance}
-        {...(keybindings ? { keybindings } : {})}
-        size={controlsSize}
-        disabled={providerCatalogPending || sending}
-        open={modelPickerOpen}
-        onOpenChange={setModelPickerOpen}
-        getModelDisabledReason={getModelDisabledReason}
-        onOpenProviderSetup={() => appAtomRegistry.set(routeAtom, { kind: "settings", page: "providers" })}
-        onInstanceModelChange={onProviderModelSelect}
-      />
-      <TraitsSlot
-        provider={selectedProvider}
-        instanceId={selectedInstanceId}
-        models={selectedProviderModels}
-        model={selectedModel}
-        modelOptions={traitsModelOptions}
-        reportedModelSelection={reportedModelSelection}
-        promptUltrathink={readPromptUltrathink(prompt)}
-        onPromptEdit={onPromptEdit}
-        onModelOptionsChange={(next) => setComposerModelOptions(draftKey, selectedInstanceId, selectedModel, next)}
-        planModeEnabled={settings.planModeEnabled}
-        size={controlsSize}
-        open={menuOpen === "traits"}
-        onOpenChange={(open) => setMenuOpen(open ? "traits" : null)}
-      />
-      <ComposerFooterModeControls
-        showInteractionModeToggle={planModeUiEnabled}
-        interactionMode={interactionMode}
-        runtimeMode={runtimeMode}
-        runtimeModeOptions={compatibleRuntimeModeOptions}
-        size={controlsSize}
-        modeMenuOpen={menuOpen === "mode"}
-        onModeMenuOpenChange={(open) => setMenuOpen(open ? "mode" : null)}
-        onToggleInteractionMode={toggleInteractionMode}
-        onRuntimeModeChange={(mode) => {
-          setComposerRuntimeMode(draftKey, mode);
-          focusEditor();
-        }}
-      />
-    </>
+    <ComposerControlsBar
+      layout={activeControls.layout}
+      measure={activeControls.measure}
+      blocks={controlBlocks}
+      picker={
+        <ProviderModelPicker
+          environmentId={environmentId}
+          activeInstanceId={selectedInstanceId}
+          model={selectedModel}
+          lockedProvider={modelPickerLockedProvider}
+          lockedContinuationGroupKey={lockedContinuationGroupKey}
+          instanceEntries={providerInstanceEntries}
+          modelOptionsByInstance={modelOptionsByInstance}
+          {...(keybindings ? { keybindings } : {})}
+          size={controlsSize}
+          disabled={providerCatalogPending || sending}
+          open={modelPickerOpen}
+          onOpenChange={setModelPickerOpen}
+          getModelDisabledReason={getModelDisabledReason}
+          onOpenProviderSetup={() => appAtomRegistry.set(routeAtom, { kind: "settings", page: "providers" })}
+          onInstanceModelChange={onProviderModelSelect}
+          measure={activeControls.measure.picker}
+          collapseLabel={isResting && restingPickerLabelCollapsed}
+        />
+      }
+      overflowMenu={
+        <CompactComposerControlsMenu
+          interactionMode={interactionMode}
+          runtimeMode={runtimeMode}
+          runtimeModeOptions={compatibleRuntimeModeOptions}
+          size={controlsSize}
+          open={overflowOpen}
+          onOpenChange={(open) => setMenuOpen(open ? "overflow" : null)}
+          showInteractionModeToggle={planModeUiEnabled && modeInOverflow}
+          traitsMenuContent={
+            traitsInOverflow ? (
+              <TraitsMenuContent {...traitsProps} onClose={() => setMenuOpen(null)} />
+            ) : undefined
+          }
+          onToggleInteractionMode={toggleInteractionMode}
+          onRuntimeModeChange={onRuntimeModeChange}
+        />
+      }
+    />
   );
+
+  // web measureFooterCompactness: the composer form's width against 620px (780px while the
+  // footer holds the wide plan / pending-answer actions).
+  const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
+  const isComposerFooterCompact = shouldUseCompactComposerFooter(surfaceWidth, {
+    hasWideActions: composerFooterHasWideActions,
+  });
+  const isComposerPrimaryActionsCompact =
+    isComposerFooterCompact &&
+    shouldUseCompactComposerPrimaryActions(surfaceWidth, { hasWideActions: composerFooterHasWideActions });
+  // web `gap-1.5` compact, else `gap-2 sm:gap-0`.
+  const footerGap = isComposerFooterCompact ? 6 : windowWidth >= SM_BREAKPOINT ? 0 : 8;
 
   const primaryActions = (
     <ComposerPrimaryActions
-      compact={isResting}
+      compact={isResting || isComposerPrimaryActionsCompact}
       canOperateThread={true}
       pendingAction={pendingAction}
       isRunning={isRunning}
@@ -1453,9 +1562,10 @@ function ComposerBody({
               onComposerFocusRequest={focusEditor}
             />
           ) : isResting ? (
-            <RestingModelStrip>{controls}</RestingModelStrip>
+            <RestingModelStrip measure={restingControls.measure}>{controls}</RestingModelStrip>
           ) : null
         }
+        stripHidden={isResting && !restingControlsVisible}
       >
       <div
         testId="composer-surface"
@@ -1590,16 +1700,14 @@ function ComposerBody({
               flexDirection: "row",
               alignItems: "center",
               justifyContent: "space-between",
-              gap: 8,
+              gap: footerGap,
               paddingLeft: 16,
               paddingRight: 16,
               paddingBottom: 16,
               paddingTop: requests.pendingUserInputs.length > 0 ? 8 : 0,
             }}
           >
-            <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, minWidth: 0, flexShrink: 1, overflow: "hidden" }}>
-              {controls}
-            </div>
+            <ExpandedControlsHost measure={expandedControls.measure}>{controls}</ExpandedControlsHost>
             <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, flexShrink: 0 }}>
               {fileStagingAllowed ? <ComposerAttachButton onClick={() => void onAttach()} /> : null}
               {settings.contextWindowMeterEnabled && activeContextWindow ? (
@@ -1638,13 +1746,30 @@ function ComposerBody({
  * no z-index, so the strip renders first, absolutely at the bottom, and a spacer reserves the
  * part that shows below the surface. Strip components render only their box (no margins).
  */
-function StripBehindSurface({ strip, children }: { strip: ReactNode; children: ReactNode }) {
+function StripBehindSurface({
+  strip,
+  stripHidden,
+  children,
+}: {
+  strip: ReactNode;
+  /** web hides the resting model strip (`invisible absolute`) when even the collapsed controls do not fit. */
+  stripHidden?: boolean;
+  children: ReactNode;
+}) {
   const [stripHeight, setStripHeight] = useState(49);
   if (strip === null || strip === false) return <>{children}</>;
   return (
     <div style={{ position: "relative", display: "flex", flexDirection: "column" }}>
       <div
-        style={{ position: "absolute", left: 22, right: 22, bottom: 0, display: "flex", flexDirection: "column" }}
+        style={{
+          position: "absolute",
+          left: 22,
+          right: 22,
+          bottom: 0,
+          display: "flex",
+          flexDirection: "column",
+          ...(stripHidden ? { visibility: "hidden", pointerEvents: "none" } : {}),
+        }}
         onLayout={(event) => {
           const height = (event as { height?: number }).height;
           if (typeof height === "number" && Math.abs(height - stripHeight) > 0.5) setStripHeight(height);
@@ -1653,43 +1778,62 @@ function StripBehindSurface({ strip, children }: { strip: ReactNode; children: R
         {strip}
       </div>
       {children}
-      <div style={{ height: Math.max(0, stripHeight - 16), flexShrink: 0, pointerEvents: "none" }} />
+      <div style={{ height: stripHidden ? 0 : Math.max(0, stripHeight - 16), flexShrink: 0, pointerEvents: "none" }} />
     </div>
   );
 }
 
-/** The traits picker renders only when the model has trait controls (web shouldRenderTraitsControls). */
-function TraitsSlot(props: Parameters<typeof TraitsPicker>[0]) {
-  if (
-    !shouldRenderTraitsControls({
-      provider: props.provider,
-      models: props.models,
-      model: props.model,
-      modelOptions: props.modelOptions,
-      promptUltrathink: props.promptUltrathink,
-      planModeEnabled: props.planModeEnabled,
-    })
-  ) {
-    return null;
-  }
-  return (
-    <>
-      <ComposerControlSeparator size={props.size} />
-      <TraitsPicker {...props} />
-    </>
-  );
-}
-
-/** web ComposerSurface.ContextStrip hosting the resting controls (xs) under a collapsed composer. */
-function RestingModelStrip({ children }: { children: ReactNode }) {
-  const theme = useTheme();
+/**
+ * web ChatComposer's footer controls row: `flex-1 min-w-0`, with `-m-1 -ms-3.5 p-1 ps-3.5` so the
+ * picker's `-ms-2.5` and focus rings are not clipped. Its content box is the space the
+ * collapse layout fits the controls into.
+ */
+function ExpandedControlsHost({ measure, children }: { measure: ComposerControlsMeasurer; children: ReactNode }) {
   return (
     <div
+      testId="composer-footer-controls"
+      onLayout={(event) => {
+        const width = (event as { width?: number }).width;
+        if (typeof width === "number") measure.host(width - 14 - 4);
+      }}
       style={{
         display: "flex",
         flexDirection: "row",
         alignItems: "center",
         gap: 4,
+        flexGrow: 1,
+        flexShrink: 1,
+        flexBasis: 0,
+        minWidth: 0,
+        overflow: "hidden",
+        marginTop: -4,
+        marginBottom: -4,
+        marginLeft: -14,
+        marginRight: -4,
+        paddingTop: 4,
+        paddingBottom: 4,
+        paddingLeft: 14,
+        paddingRight: 4,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * web ComposerSurface.ContextStrip hosting the resting controls (xs) under a collapsed composer:
+ * the host is `min-w-0 flex-1`, the controls `flex w-max min-w-0 max-w-full gap-1`.
+ */
+function RestingModelStrip({ measure, children }: { measure: ComposerControlsMeasurer; children: ReactNode }) {
+  const theme = useTheme();
+  return (
+    <div
+      testId="composer-resting-strip"
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
         paddingTop: 20,
         paddingLeft: 8,
         paddingRight: 8,
@@ -1703,7 +1847,27 @@ function RestingModelStrip({ children }: { children: ReactNode }) {
         backgroundColor: mix("#ffffff", theme.background, 0.05),
       }}
     >
-      {children}
+      <div
+        onLayout={(event) => {
+          const width = (event as { width?: number }).width;
+          if (typeof width === "number") measure.host(width);
+        }}
+        style={{ display: "flex", flexDirection: "row", flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 }}
+      >
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 4,
+            minWidth: 0,
+            flexShrink: 1,
+            overflow: "hidden",
+          }}
+        >
+          {children}
+        </div>
+      </div>
     </div>
   );
 }

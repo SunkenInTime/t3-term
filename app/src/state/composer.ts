@@ -362,8 +362,11 @@ export const composerSettingsAtom = Atom.family((environmentId: EnvironmentId | 
 
 // ── Open requests ───────────────────────────────────────────────────────
 
-/** Which composer menu is open. The model picker uses `modelPickerOpenAtom` in state/ui.ts. */
-export type ComposerMenu = "traits" | "mode" | "env-mode" | "branch" | "environment" | "implement";
+/**
+ * Which composer menu is open. The model picker uses `modelPickerOpenAtom` in state/ui.ts.
+ * "overflow" is the footer's ⋯ menu; "traits" and "mode" open it while their blocks are in it.
+ */
+export type ComposerMenu = "traits" | "mode" | "env-mode" | "branch" | "environment" | "implement" | "overflow";
 export const composerMenuOpenAtom = Atom.make<ComposerMenu | null>(null).pipe(Atom.keepAlive);
 
 /** Bumped to ask the mounted composer to focus its editor. */
