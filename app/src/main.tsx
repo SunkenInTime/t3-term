@@ -10,6 +10,7 @@
 import { render } from "@gpuix/react";
 
 import { App } from "./app/App.tsx";
+import { handleMarkdownCopy } from "./chat/markdown/copy.ts";
 import { bootstrapConnections, parseArgs } from "./connect/bootstrap.ts";
 import { installPerfProbe, perfOnEvent, perfProbeEnabled } from "./dev/perfProbe.ts";
 import { handleGlobalKeyDown, handleGlobalKeyUp } from "./keybindings/useGlobalKeybindings.ts";
@@ -37,7 +38,11 @@ render(<App boot={boot} />, {
   keyboardFocusDim: false,
   // T3TERM_DEBUG_FRAMES=minimal|full paints GPUI draw times into the window.
   ...(process.env.T3TERM_DEBUG_FRAMES ? { debugFrameOverlay: process.env.T3TERM_DEBUG_FRAMES as "minimal" | "full" } : {}),
-  onKeyDown: (event) => handleGlobalKeyDown(event),
+  onKeyDown: (event) => {
+    // Copying chat markdown joins its runs back into lines (chat/markdown/copy.ts).
+    if (handleMarkdownCopy(event)) return;
+    handleGlobalKeyDown(event);
+  },
   onEvent: (event) => {
     if (perfProbeEnabled) perfOnEvent(event);
     // Every pointer, wheel and key event marks the user present; gpuix has no window-focus state.

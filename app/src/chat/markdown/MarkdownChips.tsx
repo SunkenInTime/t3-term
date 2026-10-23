@@ -25,6 +25,7 @@ import { useEnvironmentQuery } from "../../web/state/query.ts";
 import { mixOklab, withAlpha } from "./colors.ts";
 import type { BoxAtom, RunStyle } from "./inline.ts";
 import type { FileChipTarget } from "./links.ts";
+import { JOIN } from "./copy.ts";
 import { textWidth } from "./measure.ts";
 import { baselineOffset } from "./styles.ts";
 import { middleAlignedTop, normalizeModifiers, useLinkHover, type LinkEntry, type RenderEnv } from "./MarkdownView.tsx";
@@ -152,7 +153,7 @@ function useThreadTitle(ref: ChipPayload["threadRef"], fallback: string): string
 
 const NO_THREAD_ATOM = Atom.make(NO_THREAD_SHELL);
 
-export const ChipBox = memo(function ChipBox({ atom, env }: { atom: BoxAtom; env: RenderEnv }) {
+export const ChipBox = memo(function ChipBox({ atom, env, join }: { atom: BoxAtom; env: RenderEnv; join?: boolean }) {
   const payload = atom.payload as ChipPayload & { base: RunStyle; width: number };
   const palette = env.styles.palette;
   const colors = chipColors(palette, payload.kind);
@@ -230,7 +231,7 @@ export const ChipBox = memo(function ChipBox({ atom, env }: { atom: BoxAtom; env
           minWidth: 0,
         }}
       >
-        {label}
+        {join ? label + JOIN : label}
       </text>
     </div>
   );

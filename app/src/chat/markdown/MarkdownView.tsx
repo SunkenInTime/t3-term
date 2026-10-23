@@ -25,6 +25,7 @@ import {
   type LinkKind,
   type MessageLinkIndex,
 } from "./links.ts";
+import { JOIN } from "./copy.ts";
 import { textWidth } from "./measure.ts";
 import { baselineOffset, deriveRun, fontAscent, fontLineHeight, xHeight, type MarkdownStyles } from "./styles.ts";
 
@@ -62,7 +63,7 @@ export interface MarkdownActions {
 
 export interface InlineBoxRenderers {
   /** Paints a box atom (chips, favicons, checkboxes, inline math, images). */
-  renderBox(atom: BoxAtom, env: RenderEnv, key: string): ReactNode;
+  renderBox(atom: BoxAtom, env: RenderEnv, key: string, join: boolean): ReactNode;
   /** Measures and builds the box atom for an inline payload. */
   fileChip(target: FileChipTarget, env: RenderEnv, link: number | undefined): BoxAtom;
   threadChip(threadId: string, label: string, env: RenderEnv): BoxAtom;
@@ -800,23 +801,29 @@ const InlineLines = memo(function InlineLines({
         text += (lines[end]!.pieces[0] as { text: string }).text;
         end += 1;
       }
-      children.push(text);
+      // copy.ts: a group that wraps into the next row joins it when copied.
+      const continues = end < lines.length && !lines[end - 1]!.hardBreak;
+      children.push(continues ? text + JOIN : text);
       lineIndex = end;
       continue;
     }
-    const pieces = line.pieces.map((piece, pieceIndex) =>
-      piece.kind === "box" ? (
-        <Fragment key={pieceIndex}>{env.boxes.renderBox(piece.atom, env, `${lineIndex}:${pieceIndex}`)}</Fragment>
-      ) : piece.style.link !== undefined ? (
-        <LinkRun key={pieceIndex} text={piece.text} style={piece.style} width={piece.width} baseline={baseline} env={env} />
-      ) : piece.style.key === base.key ? (
-        piece.text
-      ) : (
+    // copy.ts: every run that the same paragraph continues after (on this row
+    // or, after a soft wrap, the next) ends with JOIN so a copy keeps it on one line.
+    const lineContinues = lineIndex < lines.length - 1 && !line.hardBreak;
+    const pieces = line.pieces.map((piece, pieceIndex) => {
+      const join = pieceIndex < line.pieces.length - 1 || lineContinues;
+      if (piece.kind === "box") return <Fragment key={pieceIndex}>{env.boxes.renderBox(piece.atom, env, `${lineIndex}:${pieceIndex}`, join)}</Fragment>;
+      const text = join ? piece.text + JOIN : piece.text;
+      if (piece.style.link !== undefined) {
+        return <LinkRun key={pieceIndex} text={text} style={piece.style} width={piece.width} baseline={baseline} env={env} />;
+      }
+      if (piece.style.key === base.key) return text;
+      return (
         <text key={pieceIndex} style={runStyle(piece.style, piece.width, baseline)}>
-          {piece.text}
+          {text}
         </text>
-      ),
-    );
+      );
+    });
     children.push(
       <div
         key={lineIndex}

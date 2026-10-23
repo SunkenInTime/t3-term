@@ -138,11 +138,11 @@ function createBoxes(context: LinkContext): InlineBoxRenderers {
   const id = (prefix: string) => `${prefix}${nextId++}`;
   const lineWidth = (env: RenderEnv) => env.styles.body.size * 40;
   return {
-    renderBox(atom: BoxAtom, env: RenderEnv, key: string): ReactNode {
+    renderBox(atom: BoxAtom, env: RenderEnv, key: string, join: boolean): ReactNode {
       const payload = atom.payload as { type: string };
       switch (payload.type) {
         case "chip":
-          return <ChipBox key={key} atom={atom} env={env} />;
+          return <ChipBox key={key} atom={atom} env={env} join={join} />;
         case "favicon":
           return <FaviconBox key={key} atom={atom} env={env} />;
         case "checkbox":
