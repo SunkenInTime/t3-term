@@ -122,6 +122,7 @@ export const ChangedFilesCard = memo(function ChangedFilesCard({
       style={{
         display: "flex",
         flexDirection: "column",
+        width: "100%",
         marginTop: 16,
         borderRadius: RADIUS.lg,
         // dark:bg-input/20 (input is white 8%).
@@ -208,7 +209,7 @@ const ChangedFilesTree = memo(function ChangedFilesTree({
     setOverrides((current) => ({ ...current, [path]: !(current[path] ?? allDirectoriesExpanded) }));
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", padding: 8 }}>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", padding: 8 }}>
       {shownRows.map(({ node, depth }) => {
         const leftPadding = 8 + depth * 14;
         // Row width less padding, chevron/icon slots, gaps and the stat columns.
@@ -311,6 +312,7 @@ function ChangedFileRowButton({
         flexDirection: "row",
         alignItems: "center",
         gap: 8,
+        width: "100%",
         height: 28,
         paddingLeft: leftPadding,
         paddingRight: 8,

@@ -411,7 +411,7 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
       <ScrollFadeRegion>
         {isSearchingThreads ? (
           threadSearchResults.length > 0 ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+            <div style={{ display: "flex", flexDirection: "column", width: "100%", gap: 1 }}>
               {threadSearchResults.map((thread, index) => {
                 const key = threadShellKey(thread);
                 const projectKey = `${thread.environmentId}:${thread.projectId}`;
@@ -442,7 +442,7 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
             </div>
           )
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 1, ...(totalThreads > 0 ? { flexGrow: 1 } : {}) }}>
+          <div style={{ display: "flex", flexDirection: "column", width: "100%", gap: 1, ...(totalThreads > 0 ? { flexGrow: 1 } : {}) }}>
             {listItems}
           </div>
         )}
@@ -491,16 +491,16 @@ function ScrollFadeRegion({ children }: { children: ReactNode }) {
     />
   );
   return (
-    <div style={{ position: "relative", display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
+    <div style={{ position: "relative", display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0 }}>
       <div
         testId="sidebar-thread-list"
         onLayout={(event) => setViewportHeight(event.height ?? 0)}
         onScrollChange={(event) => setScrollY(event.scrollY ?? 0)}
-        style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, overflowY: "scroll" }}
+        style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, overflowY: "scroll" }}
       >
         <div
           onLayout={(event) => setContentHeight(event.height ?? 0)}
-          style={{ display: "flex", flexDirection: "column", flexGrow: 1, flexShrink: 0, paddingLeft: 8, paddingRight: 8, paddingBottom: 8 }}
+          style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, flexShrink: 0, paddingLeft: 8, paddingRight: 8, paddingBottom: 8 }}
         >
           {children}
         </div>

@@ -333,6 +333,7 @@ export function DetailsSection({
       style={{
         display: "flex",
         flexDirection: "column",
+        width: "100%",
         paddingLeft: 8,
         paddingRight: 8,
         paddingTop: 8,

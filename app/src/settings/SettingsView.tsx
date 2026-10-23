@@ -102,7 +102,7 @@ function SettingsContentLayout({ page }: { page: SettingsPage }) {
           leaveSettings();
         }
       }}
-      style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, minWidth: 0, backgroundColor: theme.background }}
+      style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, minWidth: 0, backgroundColor: theme.background }}
     >
       <div
         style={{
@@ -130,7 +130,7 @@ function SettingsContentLayout({ page }: { page: SettingsPage }) {
         </div>
         {page === "general" ? <RestoreDeviceDefaultsButton onRestored={() => setRestoreSignal((value) => value + 1)} /> : null}
       </div>
-      <div key={`${page}:${contentScopeKey}:${restoreSignal}`} style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
+      <div key={`${page}:${contentScopeKey}:${restoreSignal}`} style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0 }}>
         <SettingsScopeBoundary page={page}>
           <Page />
         </SettingsScopeBoundary>

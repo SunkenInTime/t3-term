@@ -22,13 +22,13 @@ export function ChatView({ environmentId, threadId }: { environmentId: Environme
   const terminalOpen = useAtomValue(terminalOpenAtom);
   const rightOpen = useAtomValue(rightPanelOpenAtom);
   return (
-    <div style={{ display: "flex", flexDirection: "row", flexGrow: 1, minHeight: 0, minWidth: 0 }}>
+    <div style={{ display: "flex", flexDirection: "row", width: "100%", flexGrow: 1, minHeight: 0, minWidth: 0 }}>
       <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
         <PerfRegion id="header">
           <ChatHeader environmentId={environmentId} threadId={threadId} />
         </PerfRegion>
         <div
-          style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, position: "relative" }}
+          style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, position: "relative" }}
           onScroll={(event) => reportTimelineWheel(composerTargetKey({ kind: "thread", environmentId, threadId }), event.deltaY ?? 0)}
         >
           <PerfRegion id="timeline">
