@@ -179,22 +179,19 @@ export function ConnectionDiagnosisPanel({
           </div>
         ) : null}
       </div>
-      {/* dl grid-cols-[auto_minmax(0,1fr)] font-mono: labels sized to the longest. */}
-      <div style={{ display: "flex", flexDirection: "row", gap: 12 }}>
-        <div style={{ display: "flex", flexDirection: "column", flexShrink: 0 }}>
-          {diagnosis.facts.map(([label]) => (
-            <Text key={label} size="xs" mono color={theme.mutedForeground}>
+      {/* dl grid-cols-[auto_minmax(0,1fr)] font-mono: the label column is as wide as the
+          longest label (mono 12px is ~7.2px a character); values wrap (`break-all`). */}
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {diagnosis.facts.map(([label, value]) => (
+          <div key={label} style={{ display: "flex", flexDirection: "row", gap: 12 }}>
+            <Text size="xs" mono color={theme.mutedForeground} style={{ width: Math.ceil(Math.max(...diagnosis.facts.map(([name]) => name.length)) * 7.3), flexShrink: 0 }}>
               {label}
             </Text>
-          ))}
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
-          {diagnosis.facts.map(([label, value]) => (
-            <Text key={label} size="xs" mono truncate>
+            <Text size="xs" mono style={{ flexGrow: 1, flexShrink: 1, minWidth: 0 }}>
               {value}
             </Text>
-          ))}
-        </div>
+          </div>
+        ))}
       </div>
       <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         <Button size="xs" variant="outline" onClick={onRetry} testId="connection-diagnosis-retry">
