@@ -225,6 +225,19 @@ export function PrMenuSeparator() {
   );
 }
 
+/**
+ * MenuSubTrigger's `[&>svg:not(:last-child)]:-mx-0.5`: a leading svg icon gives
+ * 2px back on each side (a project favicon is a span and keeps its box).
+ */
+function SubTriggerIcon({ children }: { children: ReactNode }) {
+  // A 10px slot with the 14px icon centered over it, rather than negative margins.
+  return (
+    <div style={{ display: "flex", justifyContent: "center", alignItems: "center", width: 10, flexShrink: 0, pointerEvents: "none" }}>
+      {children}
+    </div>
+  );
+}
+
 export function PrMenuSub({
   id,
   trigger,
@@ -261,7 +274,10 @@ export function PrMenuSub({
           style={{ ...menuRowStyle(open, false, theme), flexGrow: 1 }}
         >
           {trigger}
-          <Icon name="chevron-right" size={16} color={theme.mutedForeground} opacity={0.8} />
+          {/* -me-0.5: the chevron hangs 2px into the row's right padding. */}
+          <div style={{ display: "flex", justifyContent: "flex-start", width: 14, flexShrink: 0, pointerEvents: "none" }}>
+            <Icon name="chevron-right" size={16} color={theme.mutedForeground} opacity={0.8} />
+          </div>
         </div>
       }
     >
@@ -335,7 +351,7 @@ function FilterRadioSubmenu<Value extends string>({
       testId={`pr-filter-${id}`}
       trigger={
         <>
-          <OptionIcon option={current} />
+          {current.project ? <OptionIcon option={current} /> : <SubTriggerIcon><OptionIcon option={current} /></SubTriggerIcon>}
           <Text style={{ flexGrow: 1 }}>{label}</Text>
           <Text size="xs" color={theme.mutedForeground} truncate style={{ maxWidth: 128 }}>
             {current.label}
@@ -394,7 +410,9 @@ function AuthorFilter({
       minWidth={240}
       trigger={
         <>
-          <Icon name="user-round" size={14} color={theme.mutedForeground} opacity={0.8} />
+          <SubTriggerIcon>
+            <Icon name="user-round" size={14} color={theme.mutedForeground} opacity={0.8} />
+          </SubTriggerIcon>
           <Text style={{ flexGrow: 1 }}>Author</Text>
           <Text size="xs" color={theme.mutedForeground} truncate style={{ maxWidth: 128 }}>
             {value ?? "Anyone"}
@@ -457,7 +475,9 @@ function LabelFilter({
       minWidth={200}
       trigger={
         <>
-          <Icon name="tag" size={14} color={theme.mutedForeground} opacity={0.8} />
+          <SubTriggerIcon>
+            <Icon name="tag" size={14} color={theme.mutedForeground} opacity={0.8} />
+          </SubTriggerIcon>
           <Text style={{ flexGrow: 1 }}>Labels</Text>
           <Text size="xs" color={theme.mutedForeground}>
             {value.length === 0 ? "Any" : `${value.length} selected`}
