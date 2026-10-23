@@ -28,10 +28,10 @@ import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "reac
 
 import { refreshPreviewStreamAccess, usePreviewStreamAccess } from "../../state/preview.ts";
 import { readClipboardText, writeClipboardText } from "../../terminal/clipboard.ts";
-import { Icon } from "../../ui/Icon.tsx";
 import { Button, Text } from "../../ui/primitives.tsx";
 import { toast, dismissToast } from "../../ui/toast.tsx";
-import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
+import { FONTS, RADIUS, useTheme } from "../../ui/theme.ts";
+import { AgentCursorMark } from "./AgentBrowserCursor.tsx";
 import { containedRect, jpegSize, pageKeyInput, pageModifiers } from "./pageInput.ts";
 
 export interface ServerBrowserHandle {
@@ -52,7 +52,21 @@ const INPUT_FLUSH_MS = 16;
  * downsampled on 1x.
  */
 const FRAME_CAP_SCALE = 2;
-const CURSOR_ACTIVE_MS = 700;
+
+/**
+ * Dev only. `T3TERM_DEV_AGENT_POINTER="move:200,150@1500;click:400,300@5000"`
+ * replays agent pointer events (page CSS px, ms after the first frame) through
+ * the stream's onPointer path, so the cursor can be screenshotted without an
+ * agent run.
+ */
+const DEV_AGENT_POINTER: ReadonlyArray<{ phase: "move" | "click"; x: number; y: number; at: number }> = (
+  process.env.T3TERM_DEV_AGENT_POINTER ?? ""
+)
+  .split(";")
+  .flatMap((entry) => {
+    const match = /^(move|click):(\d+(?:\.\d+)?),(\d+(?:\.\d+)?)@(\d+)$/.exec(entry.trim());
+    return match ? [{ phase: match[1] as "move" | "click", x: Number(match[2]), y: Number(match[3]), at: Number(match[4]) }] : [];
+  });
 
 type MouseInput = Extract<PreviewStreamInput, { type: "mouse" }>;
 type WheelInput = Extract<PreviewStreamInput, { type: "wheel" }>;
@@ -175,7 +189,6 @@ export function ServerBrowserSurface(props: {
   const [promptText, setPromptText] = useState("");
   const [fileChooser, setFileChooser] = useState<PreviewStreamFileChooser | null>(null);
   const [agentCursor, setAgentCursor] = useState<AgentCursorPlacement | null>(null);
-  const [cursorActive, setCursorActive] = useState(false);
   const unauthorizedRef = useRef(0);
   const [accessDenied, setAccessDenied] = useState(false);
   const [hostSetup, setHostSetup] = useState<PreviewStreamHostSetup | null>(null);
@@ -296,6 +309,11 @@ export function ServerBrowserSurface(props: {
     // a frame that arrives meanwhile replaces the one waiting.
     let waiting: ArrayBuffer | null = null;
     let paintScheduled = false;
+    const devPointerTimers: ReturnType<typeof setTimeout>[] = [];
+    const onPointer = (pointer: PreviewStreamPointer) => {
+      const placed = placeAgentCursor(pointer);
+      if (placed) setAgentCursor(placed);
+    };
     const paint = () => {
       paintScheduled = false;
       const jpeg = waiting;
@@ -314,6 +332,9 @@ export function ServerBrowserSurface(props: {
         hasFrameRef.current = true;
         setHasFrame(true);
         callbacks.current.onFirstFrame?.();
+        DEV_AGENT_POINTER.forEach(({ at, ...pointer }, index) =>
+          devPointerTimers.push(setTimeout(() => onPointer({ ...pointer, sequence: -1 - index }), at)),
+        );
       }
     };
     const client = createPreviewStreamClient(
@@ -327,10 +348,7 @@ export function ServerBrowserSurface(props: {
             setImmediate(paint);
           }
         },
-        onPointer: (pointer) => {
-          const placed = placeAgentCursor(pointer);
-          if (placed) setAgentCursor(placed);
-        },
+        onPointer,
         onClipboard: (text) =>
           void writeClipboardText(text).catch(() =>
             toast({ type: "info", title: "The page copied text", action: { label: "Copy", onClick: () => void writeClipboardText(text) } }),
@@ -382,6 +400,7 @@ export function ServerBrowserSurface(props: {
     clientRef.current = client;
     return () => {
       stopped = true;
+      devPointerTimers.forEach(clearTimeout);
       if (refreshTimer !== null) clearTimeout(refreshTimer);
       client.stop();
       if (clientRef.current === client) clientRef.current = null;
@@ -399,14 +418,6 @@ export function ServerBrowserSurface(props: {
   }, [access, accessDenied, environmentId, visible]);
 
   useEffect(() => () => clearInput(), []);
-
-  // The agent cursor fades after a moment without new pointer events (no animation, one repaint).
-  useEffect(() => {
-    if (!agentCursor) return;
-    setCursorActive(true);
-    const timer = setTimeout(() => setCursorActive(false), CURSOR_ACTIVE_MS);
-    return () => clearTimeout(timer);
-  }, [agentCursor?.sequence]);
 
   function placeAgentCursor(pointer: PreviewStreamPointer): AgentCursorPlacement | null {
     const viewport = viewportRef.current;
@@ -609,11 +620,7 @@ export function ServerBrowserSurface(props: {
             style={{ width: box?.width ?? 0, height: box?.height ?? 0, opacity: hasFrame ? 1 : 0, pointerEvents: "none" }}
           />
           {agentCursor && !youControl && !hidden ? (
-            <AgentCursorMark
-              placement={agentCursor}
-              active={cursorActive}
-              controller={control?.controller === "agent" ? "agent" : "none"}
-            />
+            <AgentCursorMark {...agentCursor} controller={control?.controller === "agent" ? "agent" : "none"} />
           ) : null}
         </div>
         {fileChooser && youControl ? (
@@ -799,48 +806,6 @@ function FullCover({ children }: { children: React.ReactNode }) {
       }}
     >
       {children}
-    </div>
-  );
-}
-
-/** web AgentCursorMark: the agent's pointer over the page, dimmed once it stops moving. */
-function AgentCursorMark({
-  placement,
-  active,
-  controller,
-}: {
-  placement: AgentCursorPlacement;
-  active: boolean;
-  controller: "agent" | "none";
-}) {
-  const theme = useTheme();
-  const opacity = active ? 1 : controller === "agent" ? 0.35 : 0.35;
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: placement.left - 2,
-        top: placement.top - 2,
-        width: 20,
-        height: 20,
-        opacity,
-        pointerEvents: "none",
-      }}
-    >
-      {placement.phase === "click" && active ? (
-        <div
-          style={{
-            position: "absolute",
-            left: 2,
-            top: 2,
-            width: 16,
-            height: 16,
-            borderRadius: 8,
-            backgroundColor: alpha(theme.primary, 0.25),
-          }}
-        />
-      ) : null}
-      <Icon name="mouse-pointer-2" size={20} color={theme.primary} />
     </div>
   );
 }
