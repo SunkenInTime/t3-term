@@ -15,7 +15,7 @@ import * as Panel from "../web/rightPanelStore.ts";
 import { isRecord, persistedAtom } from "./persistedAtom.ts";
 import { rightPanelOpenAtom, rightPanelSurfaceAtom, routeAtom, type RightPanelSurface as SharedSurfaceKind } from "./ui.ts";
 
-export type { RightPanelSurface, ThreadRightPanelState } from "../web/rightPanelStore.ts";
+export type { DeviceTabTarget, RightPanelSurface, ThreadRightPanelState } from "../web/rightPanelStore.ts";
 
 export const RIGHT_PANEL_DEFAULT_WIDTH = 540;
 export const RIGHT_PANEL_MIN_WIDTH = 360;
@@ -40,6 +40,13 @@ function decodeStates(raw: unknown): Record<string, Panel.ThreadRightPanelState>
       surfaces,
       activeSurfaceId,
       ...(value.maximized === true ? { maximized: true as const } : {}),
+      ...(Array.isArray(value.dismissedDeviceSurfaceIds)
+        ? {
+            dismissedDeviceSurfaceIds: (value.dismissedDeviceSurfaceIds as unknown[]).filter(
+              (entry): entry is string => typeof entry === "string",
+            ),
+          }
+        : {}),
     };
   }
   return result;
@@ -108,9 +115,14 @@ export function updateRightPanel(
   let next: Panel.ThreadRightPanelState = Panel.EMPTY_THREAD_STATE;
   appAtomRegistry.update(rightPanelStatesAtom, (states) => {
     const current = states[threadKey] ?? Panel.EMPTY_THREAD_STATE;
-    next = updater(current);
+    next = Panel.rememberDismissedDevices(current, updater(current));
     if (next === current) return states;
-    if (next.surfaces.length === 0 && next.activeSurfaceId === null && next.maximized === undefined) {
+    if (
+      next.surfaces.length === 0 &&
+      next.activeSurfaceId === null &&
+      next.maximized === undefined &&
+      !next.dismissedDeviceSurfaceIds?.length
+    ) {
       const { [threadKey]: _removed, ...rest } = states;
       return rest;
     }
@@ -157,6 +169,13 @@ export const rightPanelActions = {
   },
   reconcileBrowserSurfaces(threadKey: string, tabIds: ReadonlyArray<string>, hiddenTabIds?: ReadonlySet<string>) {
     updateRightPanel(threadKey, (current) => Panel.reconcileBrowserSurfaces(current, tabIds, hiddenTabIds));
+  },
+  /** A device tab; `automatic` (a device an agent opened) leaves tabs the user closed alone. */
+  openDevice(threadKey: string, target: Panel.DeviceTabTarget, automatic = false) {
+    reveal(updateRightPanel(threadKey, (current) => Panel.openDevice(current, target, automatic)));
+  },
+  renameDevice(threadKey: string, surfaceId: string, title: string) {
+    updateRightPanel(threadKey, (current) => Panel.renameDevice(current, surfaceId, title));
   },
   openTerminal(threadKey: string, terminalId: string) {
     reveal(updateRightPanel(threadKey, (current) => Panel.openTerminal(current, terminalId)));

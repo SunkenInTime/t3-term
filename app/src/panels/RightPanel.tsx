@@ -58,6 +58,8 @@ import {
 } from "../state/preview.ts";
 import { setActivePreviewTab, useThreadPreviewState } from "../web/previewStateStore.ts";
 import { toast } from "../ui/toast.tsx";
+import { openDeviceSetupDialog, useDeviceState } from "../state/device.ts";
+import { DevicePanel } from "./device/DevicePanel.tsx";
 
 const SURFACE_DISABLED_REASONS = {
   browser: "Browser previews are only available in the T3 Code desktop app.",
@@ -66,9 +68,7 @@ const SURFACE_DISABLED_REASONS = {
   diff: "Diff is only available for server threads in Git repositories.",
   pullRequest: "This thread's branch has no pull request yet.",
   pullRequests: "No linked pull requests are available for this thread.",
-  // Web streams simulators as H.264 through WebCodecs (packages/client-runtime/src/device/stream.ts);
-  // Bun has no video decoder, so t3-term cannot show a device yet.
-  device: "Device mirroring streams H.264 video, which t3-term cannot decode yet.",
+  device: "Devices are only available from a thread.",
 } as const;
 
 const SURFACE_UNAVAILABLE_HINTS = {
@@ -78,7 +78,7 @@ const SURFACE_UNAVAILABLE_HINTS = {
   diff: "Available for Git repositories.",
   pullRequest: "No pull request on this branch yet.",
   pullRequests: "No linked pull requests available.",
-  device: "Not available in t3-term.",
+  device: "Available from a thread.",
 } as const;
 
 interface SurfaceAction {
@@ -123,7 +123,7 @@ function surfaceTitle(
     case "pull-requests":
       return "Pull requests";
     case "device":
-      return surface.title ?? "Device";
+      return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
       // RightPanelTabs.surfaceTitle: the page title, else its host.
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
@@ -160,7 +160,7 @@ function surfaceIcon(surface: RightPanelSurface): IconName {
     case "pull-requests":
       return "link-2";
     case "device":
-      return "smartphone";
+      return surface.target?.platform === "ios" ? "brand-apple" : surface.target?.platform === "android" ? "brand-android" : "smartphone";
     case "preview":
       return "globe";
   }
@@ -183,6 +183,7 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
   const metadata = useTerminalMetadata(environmentId, canReadTerminal);
   const serverBrowser = useEnvironmentSupportsServerBrowser(environmentId);
   const previewSessions = useThreadPreviewState(threadRefOf(environmentId, threadId)).sessions;
+  const { state: deviceState } = useDeviceState(environmentId);
   const window = useWindowSize();
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -308,7 +309,18 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
       available: visiblePullRequests.length > 0,
       onClick: () => rightPanelActions.open(threadKey, "pull-requests"),
     },
-    { key: "device", label: "Device", icon: "smartphone", shortcut: "M", available: false, onClick: () => undefined },
+    {
+      key: "device",
+      label: "Device",
+      icon: "smartphone",
+      shortcut: "M",
+      available: true,
+      // useRightPanelActions addDeviceSurface: setup first while the hub is off or not onboarded.
+      onClick: () => {
+        if (!deviceState.onboardingCompleted || deviceState.hostStatus === "disabled") openDeviceSetupDialog(threadKey);
+        else rightPanelActions.open(threadKey, "device");
+      },
+    },
   ];
 
   const active = state.surfaces.find((surface) => surface.id === state.activeSurfaceId) ?? null;
@@ -481,21 +493,17 @@ function SurfaceContent({
     case "preview":
       return <PreviewView key={surface.id} environmentId={environmentId} threadId={threadId} tabId={surface.resourceId} visible />;
     case "device":
-      return <UnavailableSurface icon="smartphone" title="Device" description={SURFACE_DISABLED_REASONS.device} />;
+      return (
+        <DevicePanel
+          key={surface.id}
+          environmentId={environmentId}
+          threadId={threadId}
+          surface={surface}
+          visible
+          onDismissSetup={() => rightPanelActions.close(threadKeyOf(environmentId, threadId), surface.id)}
+        />
+      );
   }
-}
-
-function UnavailableSurface({ icon, title, description }: { icon: IconName; title: string; description: string }) {
-  const theme = useTheme();
-  return (
-    <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 24 }}>
-      <Icon name={icon} size={20} color={theme.mutedForeground} />
-      <Text weight={500}>{title}</Text>
-      <Text size="xs" color={theme.mutedForeground} style={{ textAlign: "center", maxWidth: 320 }}>
-        {description}
-      </Text>
-    </div>
-  );
 }
 
 /** RightPanelEmptyState: "Open a surface", letter shortcuts and arrow keys. */
