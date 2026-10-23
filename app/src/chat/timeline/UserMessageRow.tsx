@@ -10,7 +10,7 @@ import { collectComposerContextReferences, replaceComposerContextReferences } fr
 import { buildNewThreadLink, PROMPT_LINK_MAX_PROMPT_LENGTH } from "@t3tools/shared/promptLinks";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
-import { memo, use, useState, type ReactNode } from "react";
+import { createContext, memo, use, useState, type ReactNode } from "react";
 
 import { environmentSession, environmentThreadShells } from "../../state/environment.ts";
 import { timelineAssets } from "../../state/timeline.ts";
@@ -29,6 +29,28 @@ import { TimelineRowActivityCtx, TimelineRowCtx, type TimelineRow } from "./rowC
 import { openExternalUrl } from "./system.ts";
 
 type MessageRow = Extract<TimelineRow, { kind: "message" }>;
+
+// The bubble is max-w-[80%] with p-3 and shrinks to its text, so its markdown
+// lays out against the row's width rather than its own content-sized box.
+const BubbleTextWidth = createContext<number | undefined>(undefined);
+let lastRowWidth = 0;
+
+function useRowWidth(): [number, (event: { width?: number }) => void] {
+  const [width, setWidth] = useState(lastRowWidth);
+  return [
+    width,
+    (event) => {
+      const next = event.width ?? 0;
+      if (next <= 0) return;
+      lastRowWidth = next;
+      if (Math.abs(next - width) > 0.5) setWidth(next);
+    },
+  ];
+}
+
+function bubbleTextWidth(rowWidth: number): number | undefined {
+  return rowWidth > 0 ? Math.max(40, rowWidth * 0.8 - 24) : undefined;
+}
 
 const NO_SHELL_ATOM = Atom.make(null);
 const EMPTY_URLS_ATOM = Atom.make<ReadonlyArray<ReturnType<typeof timelineAssets.createUrl> extends Atom.Atom<infer R> ? R : never>>([]);
@@ -155,22 +177,25 @@ function AutomationMessageRow({ row }: { row: MessageRow }) {
   const [hovered, hover] = useHover();
   const { text } = resolveUserMessagePresentation(row.message);
   const summary = text.trim().split(/\r?\n/, 1)[0] ?? "";
+  const [rowWidth, onRowLayout] = useRowWidth();
   return (
-    <div {...hover} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-      {row.message.inputIntent === "steer" || row.message.inputIntent === "promoted_queued_to_steer" ? (
-        <UserMessageIntentMarker intent={row.message.inputIntent} />
-      ) : null}
-      <div {...hover} style={{ display: "flex", flexDirection: "column", minWidth: 0, maxWidth: "80%", ...(expanded ? { width: "80%" } : {}), borderRadius: RADIUS["2xl"], backgroundColor: theme.messageSurface }}>
-        <FoldedMessageHeader icon="calendar-clock" label="Automation" summary={summary} expanded={expanded} onToggle={() => setExpanded((value) => !value)} />
-        {expanded ? (
-          <div style={{ paddingLeft: 12, paddingRight: 12, paddingBottom: 12 }}>
-            <CollapsibleUserMessageBody text={text} />
-          </div>
+    <BubbleTextWidth value={bubbleTextWidth(rowWidth)}>
+      <div {...hover} onLayout={onRowLayout} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, width: "100%" }}>
+        {row.message.inputIntent === "steer" || row.message.inputIntent === "promoted_queued_to_steer" ? (
+          <UserMessageIntentMarker intent={row.message.inputIntent} />
         ) : null}
+        <div {...hover} style={{ display: "flex", flexDirection: "column", minWidth: 0, maxWidth: "80%", ...(expanded ? { width: "80%" } : {}), borderRadius: RADIUS["2xl"], backgroundColor: theme.messageSurface }}>
+          <FoldedMessageHeader icon="calendar-clock" label="Automation" summary={summary} expanded={expanded} onToggle={() => setExpanded((value) => !value)} />
+          {expanded ? (
+            <div style={{ paddingLeft: 12, paddingRight: 12, paddingBottom: 12 }}>
+              <CollapsibleUserMessageBody text={text} />
+            </div>
+          ) : null}
+        </div>
+        <UserMessageProjectedStatus row={row} />
+        {expanded ? <UserMessageMeta row={row} visible={hovered} copyText={text} promptLink={promptLinkFor(text)} /> : null}
       </div>
-      <UserMessageProjectedStatus row={row} />
-      {expanded ? <UserMessageMeta row={row} visible={hovered} copyText={text} promptLink={promptLinkFor(text)} /> : null}
-    </div>
+    </BubbleTextWidth>
   );
 }
 
@@ -210,9 +235,11 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
   const unchippedFiles = files.filter((file) => !isVideoAttachment(file) && !chippedAttachmentIds.has(file.id));
   const foldSummary = plainText.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? "";
   const promptLink = promptLinkFor(plainText);
+  const [rowWidth, onRowLayout] = useRowWidth();
 
   return (
-    <div {...hover} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+    <BubbleTextWidth value={bubbleTextWidth(rowWidth)}>
+    <div {...hover} onLayout={onRowLayout} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, width: "100%" }}>
       {userMessage.attribution === "t3code" ? (
         <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)} style={{ marginRight: 4 }}>
           Sent by T3 Code
@@ -271,6 +298,7 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
         />
       ) : null}
     </div>
+    </BubbleTextWidth>
   );
 });
 
@@ -362,10 +390,11 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody({ te
   const [expanded, setExpanded] = useState(false);
   const canCollapse = collapsible && text.trim().length > 0 && shouldCollapseUserMessage(text);
   const isCollapsed = canCollapse && !expanded;
+  const maxWidth = use(BubbleTextWidth);
   return (
     <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
       <div style={{ position: "relative", minWidth: 0, ...(isCollapsed ? { height: COLLAPSED_HEIGHT, overflow: "hidden" } : {}) }}>
-        <ChatMarkdown text={text} tone="user" lineBreaks />
+        <ChatMarkdown text={text} tone="user" lineBreaks parseRawHtml={false} {...(maxWidth !== undefined ? { maxWidth } : {})} />
         {isCollapsed ? (
           <div
             style={{

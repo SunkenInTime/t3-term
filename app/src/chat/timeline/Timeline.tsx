@@ -75,6 +75,8 @@ import { ThreadStatusFooter } from "./ThreadStatusLine.tsx";
 import { PendingHandoffRow } from "./PendingHandoffRow.tsx";
 import { TimelineRowContent } from "./TimelineRows.tsx";
 import { TimelineSystemDivider } from "./parts.tsx";
+import { MarkdownOverlayHost } from "../markdown/overlays.tsx";
+import { TextMeasureHost } from "../markdown/TextMeasureHost.tsx";
 import {
   TimelineRowActivityCtx,
   TimelineRowCtx,
@@ -551,7 +553,9 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
           }}
         />
       ) : null}
+      <TextMeasureHost />
       {body}
+      <MarkdownOverlayHost />
       {findOpen ? (
         <div style={{ position: "absolute", top: 12, right: 12, width: 280, display: "flex", pointerEvents: "none" }}>
           <ThreadFindBar environmentId={environmentId} threadId={threadId} onChange={onFindChange} onClose={closeFind} />
