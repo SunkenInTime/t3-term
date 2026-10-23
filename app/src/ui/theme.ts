@@ -79,7 +79,10 @@ export const DARK: Palette = {
   diffAdd: "#00d492",
   diffDel: "#ff6467",
   scrollbar: "#ffffff14",
-  overlay: "#0a0a0aa3",
+  // web .dialog-backdrop: background at 64% plus a 4px backdrop blur. GPUI has no
+  // backdrop blur, so the dim goes to 80%, which knocks text behind a dialog down
+  // about as far as the blur does (brightest glyph pixels ~50 vs web ~44).
+  overlay: "#0a0a0acc",
   sidebar: {
     background: "#000000",
     foreground: "#f1f3f7",
@@ -125,7 +128,8 @@ export const LIGHT: Palette = {
   diffAdd: "#009966",
   diffDel: "#e7000b",
   scrollbar: "#d9d9d9",
-  overlay: "#fcfcfc99",
+  // web: 60% + blur; 75% here for the same reason as the dark overlay.
+  overlay: "#fcfcfcbf",
   sidebar: {
     background: "#fafafa",
     foreground: "#27272a",
