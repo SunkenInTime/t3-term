@@ -1,0 +1,22 @@
+{
+  "packageOverrides": [
+    {
+      "name": "@xterm/headless",
+      "version": "6.0.0",
+      "sourceUrl": "https://github.com/xtermjs/xterm.js/blob/6.0.0/LICENSE",
+      "noticeFile": "notices/xterm-headless.txt"
+    },
+    {
+      "name": "lru_map",
+      "version": "0.4.1",
+      "sourceUrl": "https://github.com/rsms/js-lru",
+      "noticeFile": "notices/lru_map.txt"
+    },
+    {
+      "name": "remark-math",
+      "version": "6.0.0",
+      "sourceUrl": "https://github.com/remarkjs/remark-math/blob/main/license",
+      "noticeFile": "notices/remark-math.txt"
+    }
+  ]
+}

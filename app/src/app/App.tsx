@@ -11,15 +11,15 @@ import { SettingsSidebar } from "../settings/SettingsView.tsx";
 import { CommandPalette } from "../palette/CommandPalette.tsx";
 import { DialogHost } from "../dialogs/DialogHost.tsx";
 import { MainView } from "./MainView.tsx";
-import { AppearanceThemeProvider } from "../palette/AppearanceThemeProvider.tsx";
 import { useTheme } from "../ui/theme.ts";
+import { AppThemeProvider } from "../state/clientSettings.ts";
 import { TooltipProvider } from "../ui/overlay.tsx";
 import { ToastHost } from "../ui/toast.tsx";
 
 export function App({ boot }: { boot: Boot }) {
   return (
     <RegistryContext.Provider value={appAtomRegistry}>
-      <AppearanceThemeProvider>
+      <AppThemeProvider>
         <TooltipProvider>
           {/* One host root: gpuix paints a single root element, so sibling
               overlays at the top level would replace the shell when they mount. */}
@@ -32,12 +32,13 @@ export function App({ boot }: { boot: Boot }) {
             <ToastHost />
           </div>
         </TooltipProvider>
-      </AppearanceThemeProvider>
+      </AppThemeProvider>
     </RegistryContext.Provider>
   );
 }
 
 function Shell({ boot }: { boot: Boot }) {
+  const theme = useTheme();
   // Mounting the catalog starts the connection registry; saved environments reconnect.
   useAtomValue(environmentCatalog.catalogAtom);
   const sidebarOpen = useAtomValue(sidebarOpenAtom);
@@ -45,7 +46,6 @@ function Shell({ boot }: { boot: Boot }) {
     if (boot.error) console.error(boot.error);
   }, [boot.error]);
   const route = useAtomValue(routeAtom);
-  const theme = useTheme();
   return (
     <div
       style={{
