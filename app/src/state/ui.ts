@@ -23,9 +23,25 @@ export type Route =
       readonly environmentId: EnvironmentId | null;
       readonly projectId: ProjectId | null;
     }
-  | { readonly kind: "settings"; readonly page: SettingsPage };
+  | { readonly kind: "settings"; readonly page: SettingsPage }
+  | { readonly kind: "usage" }
+  | { readonly kind: "pull-requests" };
 
-export const routeAtom = Atom.make<Route>({ kind: "home" }).pipe(Atom.keepAlive);
+// T3TERM_ROUTE opens a top-level page at launch, for screenshots and automation.
+function initialRoute(): Route {
+  switch (process.env.T3TERM_ROUTE) {
+    case "usage":
+      return { kind: "usage" };
+    case "pull-requests":
+      return { kind: "pull-requests" };
+    case "settings":
+      return { kind: "settings", page: "general" };
+    default:
+      return { kind: "home" };
+  }
+}
+
+export const routeAtom = Atom.make<Route>(initialRoute()).pipe(Atom.keepAlive);
 export const sidebarOpenAtom = Atom.make(true).pipe(Atom.keepAlive);
 export const detailsPanelOpenAtom = Atom.make(true).pipe(Atom.keepAlive);
 export const terminalOpenAtom = Atom.make(false).pipe(Atom.keepAlive);

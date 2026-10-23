@@ -5,3 +5,8 @@ import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 export function DraftView(_props: { environmentId: EnvironmentId | null; projectId: ProjectId | null }) {
   return null;
 }
+
+/** The "/" route: opens a draft in the most recent project, or the no-projects hero. */
+export function HomeView() {
+  return null;
+}
