@@ -73,6 +73,9 @@ docs/                   specs: web-ui-spec.md, client-runtime.md, gpuix-notes.md
 - `T3CODE_HOME` in agent shells points at Dara's **live** T3 install (`E:\.t3`).
   Never start a T3 server or CLI command without overriding it
   (`T3CODE_HOME='E:\w\ref\t3home-dev'`). Never touch the live server on :3773.
+- t3-term with no `--url` auto-connects to the T3 server in `$T3CODE_HOME` and
+  mints a session token there through its CLI. In agent shells that is the live
+  install. Always pass `--url ... --token ...`, or set `T3TERM_NO_LOCAL=1`.
 - Never kill processes by name or pattern. Stop only PIDs you started.
 - Provider runs started from t3-term are real agent runs. Only send messages
   in threads of the **t3term-sandbox** project (`E:\w\t3term-sandbox`), with
