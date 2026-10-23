@@ -65,9 +65,8 @@ import {
 import { searchSidebarThreads, shouldCreateNewThreadInCurrentProject } from "../web/components/Sidebar.logic.ts";
 import { resolveSnoozePresets, snoozeWakeLabel } from "../web/components/Sidebar.snooze.ts";
 import { ContextMenu } from "./ContextMenu.tsx";
-import { requestCustomSnooze } from "./dialogRequests.ts";
+import { requestCustomSnooze } from "../dialogs/CustomSnoozeDialog.tsx";
 import { SidebarChromeFooter, SidebarChromeHeader, useStageIdentification } from "./SidebarChrome.tsx";
-import { SidebarDialogs } from "./SidebarDialogs.tsx";
 import { SidebarDraftBlock } from "./SidebarDraftBlock.tsx";
 import { SidebarSectionHeader } from "./SidebarListMarkers.tsx";
 import { SidebarThreadHeader } from "./SidebarThreadHeader.tsx";
@@ -446,7 +445,6 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
       </ScrollFadeRegion>
       <SidebarChromeFooter />
       <SidebarContextMenuHost />
-      <SidebarDialogs />
       <RouteVisitWatermark />
     </div>
   );

@@ -42,7 +42,7 @@ import {
   shouldNavigateAfterThreadPark,
   type ThreadTraversalDirection,
 } from "../web/components/Sidebar.logic.ts";
-import { requestConfirm } from "./dialogRequests.ts";
+import { requestConfirmDialog as requestConfirm } from "../dialogs/confirmDialog.ts";
 import { writeClipboardText } from "./clipboard.ts";
 
 type Result = AtomCommandResult<unknown, unknown>;
