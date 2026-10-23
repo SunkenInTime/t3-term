@@ -6,7 +6,7 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import type { AssetResource, EnvironmentId, MessageId } from "@t3tools/contracts";
-import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
+import { collectComposerContextReferences, replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { buildNewThreadLink, PROMPT_LINK_MAX_PROMPT_LENGTH } from "@t3tools/shared/promptLinks";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
@@ -19,10 +19,10 @@ import { Tooltip } from "../../ui/overlay.tsx";
 import { Button, Text } from "../../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { shouldCollapseUserMessage } from "../../web/components/chat/MessagesTimeline.logic.ts";
-import { resolveUserMessageContext } from "../../web/lib/userMessageContext.ts";
+import { asKnownContextRecord, resolveUserMessageContext } from "../../web/lib/userMessageContext.ts";
 import { selectMessageImageResources } from "../../web/session-logic.ts";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../web/timestampFormat.ts";
-import { isFileAttachment, isImageAttachment, type ChatAttachment } from "../../web/types.ts";
+import { isFileAttachment, isImageAttachment, isVideoAttachment, type ChatAttachment, type ChatFileAttachment } from "../../web/types.ts";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
 import { MessageCopyButton, MicroIconButton, useHover } from "./parts.tsx";
 import { TimelineRowActivityCtx, TimelineRowCtx, type TimelineRow } from "./rowContext.ts";
@@ -196,6 +196,18 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
   const resolvedContext = resolveUserMessageContext(row.message);
   // Context chips render as their labels; gpuix markdown has no inline components.
   const plainText = replaceComposerContextReferences(resolvedContext.text, (reference) => reference.label);
+  // Web renders context references as inline chips; gpuix markdown has no inline
+  // components, so a chip becomes inline code, the closest native pill.
+  const chippedText = replaceComposerContextReferences(resolvedContext.text, (reference) => `\`${reference.label.replaceAll("`", "")}\``);
+  // Files a chip already shows are not listed again (web's chippedAttachmentIds).
+  const chippedAttachmentIds = new Set(
+    collectComposerContextReferences(resolvedContext.text).flatMap((occurrence) => {
+      const record = asKnownContextRecord(resolvedContext.recordsById.get(occurrence.contextId));
+      return record?.kind === "file" || record?.kind === "image" ? [record.attachmentId] : [];
+    }),
+  );
+  const videos = files.filter(isVideoAttachment);
+  const unchippedFiles = files.filter((file) => !isVideoAttachment(file) && !chippedAttachmentIds.has(file.id));
   const foldSummary = plainText.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? "";
   const promptLink = promptLinkFor(plainText);
 
@@ -234,9 +246,9 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
         ) : null}
         {!folded || expanded ? (
           <div style={{ display: "flex", flexDirection: "column", minWidth: 0, ...(folded ? { paddingLeft: 12, paddingRight: 12, paddingBottom: 12 } : {}) }}>
-            {regularImages.length > 0 ? <UserImageGrid images={regularImages} /> : null}
-            {files.length > 0 || unknownAttachments.length > 0 ? <UserFileList files={[...files, ...unknownAttachments]} /> : null}
-            {resolvedContext.text.trim().length > 0 ? <CollapsibleUserMessageBody text={plainText} collapsible={!folded} /> : null}
+            {regularImages.length > 0 || videos.length > 0 ? <UserImageGrid images={regularImages} videos={videos} /> : null}
+            {unchippedFiles.length > 0 || unknownAttachments.length > 0 ? <UserFileList files={[...unchippedFiles, ...unknownAttachments]} /> : null}
+            {resolvedContext.text.trim().length > 0 ? <CollapsibleUserMessageBody text={chippedText} collapsible={!folded} /> : null}
           </div>
         ) : null}
       </div>
@@ -263,7 +275,7 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
 });
 
 /** Two 4:3 thumbnails per row in a 210px grid, radius 10. */
-function UserImageGrid({ images }: { images: ReadonlyArray<Extract<ChatAttachment, { type: "image" }> | ChatAttachment> }) {
+function UserImageGrid({ images, videos }: { images: ReadonlyArray<ChatAttachment>; videos: ReadonlyArray<ChatFileAttachment> }) {
   const ctx = use(TimelineRowCtx);
   const theme = useTheme();
   const resources = selectMessageImageResources(images as never);
@@ -295,13 +307,32 @@ function UserImageGrid({ images }: { images: ReadonlyArray<Extract<ChatAttachmen
             {url ? (
               <img src={url} objectFit="cover" style={{ width: cellWidth, height: Math.round((cellWidth * 3) / 4), borderRadius: RADIUS.lg }} />
             ) : (
-              <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)} style={{ textAlign: "center", paddingLeft: 8, paddingRight: 8 }}>
+              <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)} style={{ textAlign: "center", width: cellWidth - 16 }}>
                 {image.name}
               </Text>
             )}
           </div>
         );
       })}
+      {videos.map((video) => (
+        // MediaVideoPlayer's resting state: a black 4:3 tile with a play glyph.
+        <div
+          key={video.id}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: cellWidth,
+            height: Math.round((cellWidth * 3) / 4),
+            borderRadius: RADIUS.lg,
+            borderWidth: 1,
+            borderColor: alpha(theme.border, 0.8),
+            backgroundColor: "#000000",
+          }}
+        >
+          <Icon name="play" size={16} color="#ffffff" />
+        </div>
+      ))}
     </div>
   );
 }
