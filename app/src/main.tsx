@@ -31,6 +31,8 @@ render(<App boot={boot} />, {
   terminal: args.terminal,
   focus: !background,
   keyboardFocusDim: false,
+  // T3TERM_DEBUG_FRAMES=minimal|full paints GPUI draw times into the window.
+  ...(process.env.T3TERM_DEBUG_FRAMES ? { debugFrameOverlay: process.env.T3TERM_DEBUG_FRAMES as "minimal" | "full" } : {}),
   onKeyDown: (event) => handleGlobalKeyDown(event),
   onKeyUp: (event) => handleGlobalKeyUp(event),
   titlebarTransparent: process.platform === "darwin",
