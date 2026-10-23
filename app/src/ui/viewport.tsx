@@ -12,6 +12,14 @@ import { Atom } from "effect/reactivity";
 import { createContext, useContext, useLayoutEffect, useState } from "react";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
+import { persistedAtom } from "../state/persistedAtom.ts";
+import {
+  clampThreadSidebarWidth,
+  resolveInitialThreadSidebarWidth,
+  resolveThreadSidebarMaximumWidth,
+  resolveThreadSidebarMinimumWidth,
+  THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
+} from "../web/components/threadSidebarWidth.ts";
 
 /** Tailwind v4 defaults (useMediaQuery.ts BREAKPOINTS). */
 export const BREAKPOINTS = { sm: 640, md: 768, lg: 1024, xl: 1280 } as const;
@@ -79,19 +87,46 @@ export function titlebarContentLeft(small: boolean): number {
   return 12 + titlebarControlSize(small) + 12;
 }
 
-// threadSidebarWidth.ts
-const THREAD_SIDEBAR_DEFAULT_WIDTH = 256;
-const THREAD_SIDEBAR_MIN_WIDTH = 208;
-export const THREAD_MAIN_CONTENT_MIN_WIDTH = 640;
+export { THREAD_MAIN_CONTENT_MIN_WIDTH } from "../web/components/threadSidebarWidth.ts";
 
-/** resolveInitialThreadSidebarWidth with no stored width, clamped to keep a 640px main column. */
-export function threadSidebarWidth(viewportWidth: number): number {
-  const maximum = Math.max(THREAD_SIDEBAR_MIN_WIDTH, Math.floor(viewportWidth) - THREAD_MAIN_CONTENT_MIN_WIDTH);
-  return Math.min(maximum, Math.max(THREAD_SIDEBAR_MIN_WIDTH, THREAD_SIDEBAR_DEFAULT_WIDTH));
+/**
+ * The width the user dragged the rail to (web: localStorage
+ * `chat_thread_sidebar_width`), null until they do. Double-clicking the rail
+ * clears it.
+ */
+export const storedSidebarWidthAtom = persistedAtom<number | null>(THREAD_SIDEBAR_WIDTH_STORAGE_KEY, null, (raw) =>
+  typeof raw === "number" && Number.isFinite(raw) ? raw : null,
+);
+
+/** The rail's live width while it is dragged; written to the stored width on release. */
+export const sidebarDragWidthAtom = Atom.make<number | null>(null).pipe(Atom.keepAlive);
+
+/**
+ * AppSidebarLayout's minimum: the brand probe (titlebar inset, wordmark, pr-3)
+ * measures about 120px, under the 13rem floor, so the floor always wins.
+ */
+export const THREAD_SIDEBAR_MINIMUM_WIDTH = resolveThreadSidebarMinimumWidth(0);
+
+export function threadSidebarMaximumWidth(viewportWidth: number): number {
+  return resolveThreadSidebarMaximumWidth(viewportWidth, THREAD_SIDEBAR_MINIMUM_WIDTH);
+}
+
+/**
+ * `--sidebar-width`: the stored (or default) width clamped to the window, so a
+ * narrower window shrinks the sidebar without forgetting the user's width.
+ */
+export function threadSidebarWidth(viewportWidth: number, storedWidth: number | null = null): number {
+  return clampThreadSidebarWidth(
+    resolveInitialThreadSidebarWidth(storedWidth, Number.POSITIVE_INFINITY),
+    THREAD_SIDEBAR_MINIMUM_WIDTH,
+    threadSidebarMaximumWidth(viewportWidth),
+  );
 }
 
 /** The docked sidebar's width at the current window size. */
-export const sidebarWidthAtom = Atom.make((get) => threadSidebarWidth(get(viewportWidthAtom))).pipe(Atom.keepAlive);
+export const sidebarWidthAtom = Atom.make((get) =>
+  threadSidebarWidth(get(viewportWidthAtom), get(sidebarDragWidthAtom) ?? get(storedSidebarWidthAtom)),
+).pipe(Atom.keepAlive);
 
 /** Set by the mobile sidebar sheet (app/App.tsx mobileSidebarSheetWidth). */
 export const SidebarSheetWidthContext = createContext<number | null>(null);

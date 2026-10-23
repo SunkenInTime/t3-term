@@ -9,6 +9,7 @@ import { environmentCatalog } from "../state/environment.ts";
 import { routeAtom, sidebarMobileOpenAtom, sidebarOpenAtom } from "../state/ui.ts";
 import { SidebarSheetWidthContext, smallViewportAtom, useMobileViewport, viewportWidthAtom, ViewportSync } from "../ui/viewport.tsx";
 import { Sidebar } from "../sidebar/Sidebar.tsx";
+import { SidebarRail } from "../sidebar/SidebarRail.tsx";
 import { SettingsSidebar } from "../settings/SettingsView.tsx";
 import { CommandPalette } from "../palette/CommandPalette.tsx";
 import { DialogHost } from "../dialogs/DialogHost.tsx";
@@ -66,6 +67,7 @@ function Shell({ boot }: { boot: Boot }) {
   return (
     <div
       style={{
+        position: "relative",
         display: "flex",
         flexDirection: "row",
         width: "100%",
@@ -78,6 +80,8 @@ function Shell({ boot }: { boot: Boot }) {
       <PerfRegion id="main">
         <MainView />
       </PerfRegion>
+      {/* After the main view so its overhang paints and hit-tests on top. */}
+      {!mobile && sidebarOpen ? <SidebarRail /> : null}
     </div>
   );
 }

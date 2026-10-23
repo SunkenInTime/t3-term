@@ -4,6 +4,7 @@
 //         |{hover:[x,y]}|{hoverTestId: testId}|{hoverText: text}|{rightClick:[x,y]}|{rightClickText: text}
 //         |{wheel:[x,y,dy]}|{wheelXY:[x,y,dx,dy]}|{mouseMods:[x,y,"shift"]}|{dblclick:[x,y]}|{dblclickText: text}
 //         |{wheelTestId:[testId,dx,dy]}|{dragTestId:[testId,dx,dy]}|{rightClickTestId: testId}|{tryClick: testId}
+//         |{down:[x,y]}|{downTestId: testId}|{move:[x,y]} (button held)|{up:[x,y]} (a held gesture, to shoot mid-drag)
 //         |{keys: "g p u"} (key-downs to whatever has focus, without focusing a target first)
 //         |{keyUp: "backspace"} (a key release; `keys` sends none)
 //         |{tree: name} (writes the retained element tree to <out-dir>/<name>.tree.json)
@@ -114,6 +115,10 @@ async function runSteps(list: any[]) {
     if (step.keyUp) await (app as unknown as { call: (method: string, params: object) => Promise<unknown> }).call("keyUp", { key: step.keyUp });
     if (step.press) await app.getByTestId(step.target ?? "composer").press(step.press);
     if (step.wheelTestId) await app.getByTestId(step.wheelTestId[0]).wheel(step.wheelTestId[1], step.wheelTestId[2]);
+    if (step.down) await app.mouse.down({ x: step.down[0], y: step.down[1] });
+    if (step.downTestId) await app.mouse.down(app.getByTestId(step.downTestId));
+    if (step.move) await app.mouse.move({ x: step.move[0], y: step.move[1] }, { pressedButton: 0 });
+    if (step.up) await app.mouse.up({ x: step.up[0], y: step.up[1] });
     if (step.dragTestId) await app.getByTestId(step.dragTestId[0]).dragBy(step.dragTestId[1], step.dragTestId[2], { steps: 8 });
     if (step.rightClickTestId) await app.getByTestId(step.rightClickTestId).click({ button: 2 });
     if (step.tree) {
