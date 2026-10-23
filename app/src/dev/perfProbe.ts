@@ -62,6 +62,7 @@ function poll() {
     if (stats.frames === phase.frames + 1 && stats.currentMs !== undefined) phase.drawTimes.push(stats.currentMs);
     phase.frames = stats.frames;
     phase.frameTimes.push(wallNow());
+    if (process.env.PERF_DEBUG) console.error("[perfdbg] frame", Math.round(wallNow() - phase.startedAt), stats.currentMs?.toFixed(1));
   }
 }
 
@@ -182,7 +183,7 @@ if (dir) {
     if (process.env.PERF_DEBUG && phase) {
       const kinds: Record<string, number> = {};
       for (const op of ops) kinds[String(op[0])] = (kinds[String(op[0])] ?? 0) + 1;
-      console.error("[perfdbg] batch", json.length, JSON.stringify(kinds));
+      console.error("[perfdbg] batch", Math.round(wallNow() - phase.startedAt), json.length, JSON.stringify(kinds));
       if (process.env.PERF_DEBUG === "ops") console.error(json.slice(0, 4000));
     }
     onCommit(elapsed);
