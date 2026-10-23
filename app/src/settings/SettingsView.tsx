@@ -21,6 +21,7 @@ import { isTextEntryFocused } from "./controls.tsx";
 import { SETTINGS_DEVICE_ONLY_PAGES, SettingsMessage, SettingsPageContainer, settingsSearchTargetAtom } from "./layout.tsx";
 import { SETTINGS_PATH_BY_PAGE, leaveSettings, requestSettingsSearchFocus } from "./navigation.ts";
 import { SettingsScopeProvider, useSettingsScope } from "./scope.tsx";
+import { SettingsScopeNotice } from "./ScopeNotice.tsx";
 import { GeneralSettingsPanel, useSettingsRestore } from "./pages/GeneralSettings.tsx";
 import { AppearanceSettings } from "./pages/AppearanceSettings.tsx";
 import { ArchivedThreadsSettings } from "./pages/ArchivedThreadsSettings.tsx";
@@ -183,27 +184,31 @@ function RestoreDeviceDefaultsButton({ onRestored }: { onRestored: () => void })
 }
 
 function SettingsScopeBoundary({ page, children }: { page: SettingsPage; children: ReactNode }) {
-  const { scope, connectedEnvironments, selectScope, search } = useSettingsScope();
+  const { scope, connectedEnvironments } = useSettingsScope();
   const { environments } = useEnvironments();
   const target = useAtomValue(settingsSearchTargetAtom);
   const searchTarget = target ? getSettingsSearchTargetScope(target.id) : null;
   const autoSettlementAvailability = searchTarget?.requiresThreadAutoSettlement
     ? getThreadAutoSettlementSearchAvailability(environments, scope)
     : null;
-  if (scope.kind !== "unavailable" && searchTarget && autoSettlementAvailability && !autoSettlementAvailability.isTargetAvailable) {
+  if (scope.kind !== "unavailable" && target && searchTarget && autoSettlementAvailability && !autoSettlementAvailability.isTargetAvailable) {
     return (
-      <ScopeNotice onReset={() => selectScope({})}>
+      <SettingsScopeNotice target="environment" targetId={target.id} eligibleEnvironmentIds={autoSettlementAvailability.eligibleEnvironmentIds}>
         {autoSettlementAvailability.eligibleEnvironmentIds.length > 0
           ? `${searchTarget.title} requires a supporting environment. Choose one to continue.`
           : `${searchTarget.title} requires a supporting environment. Connect or update an environment to continue.`}
-      </ScopeNotice>
+      </SettingsScopeNotice>
     );
   }
-  if (scope.kind !== "unavailable" && searchTarget && !isSettingsSearchScopeAvailable(searchTarget.scope, scope.kind)) {
+  if (scope.kind !== "unavailable" && target && searchTarget && !isSettingsSearchScopeAvailable(searchTarget.scope, scope.kind)) {
+    const noticeTarget =
+      searchTarget.scope === "environment" || searchTarget.scope === "project" || searchTarget.scope === "checkout"
+        ? searchTarget.scope
+        : "all";
     return (
-      <ScopeNotice onReset={() => selectScope({})}>
+      <SettingsScopeNotice target={noticeTarget} targetId={target.id}>
         {`${searchTarget.title} is not available for the selected target. Choose its owning scope to continue.`}
-      </ScopeNotice>
+      </SettingsScopeNotice>
     );
   }
   if (SETTINGS_DEVICE_ONLY_PAGES.has(page) || page === "projects" || page === "open-source-licenses") return <>{children}</>;
@@ -221,20 +226,5 @@ function SettingsScopeBoundary({ page, children }: { page: SettingsPage; childre
       </SettingsPageContainer>
     );
   }
-  void search;
   return <>{children}</>;
-}
-
-/** SettingsScopeNotice.tsx, reduced to its message and a way back to all scopes. */
-function ScopeNotice({ children, onReset }: { children: string; onReset: () => void }) {
-  return (
-    <SettingsPageContainer>
-      <SettingsMessage>{children}</SettingsMessage>
-      <div style={{ display: "flex", flexDirection: "row" }}>
-        <Button size="sm" variant="outline" onClick={onReset}>
-          Show all projects and environments
-        </Button>
-      </div>
-    </SettingsPageContainer>
-  );
 }

@@ -48,6 +48,7 @@ import {
   settingsScopeProjectMachines,
 } from "../web/components/settings/settingsScopeAxis.ts";
 import { useClearProjectOverrides, useClearScopedSettings, useOptionalSettingsScope } from "./scope.tsx";
+import { ProjectFavicon } from "../sidebar/ProjectFavicon.tsx";
 
 // ── Search targets ──────────────────────────────────────────────────────
 
@@ -898,10 +899,14 @@ interface ScopeOption {
   value: string;
   label: string;
   secondary?: string;
-  icon?: IconName;
+  icon?: ReactNode;
   offline?: boolean;
 }
 
+/**
+ * The project / environment picker in the scope sentence. Up to six options it
+ * is a menu; more turn it into a searchable list, like the web's Combobox.
+ */
 function ScopeMenu({
   testId,
   icon,
@@ -909,60 +914,112 @@ function ScopeMenu({
   value,
   options,
   allOption,
+  searchLabel,
   onChange,
 }: {
   testId: string;
-  icon: IconName | null;
+  icon: ReactNode;
   label: string;
   value: string;
   options: ScopeOption[];
   allOption: ScopeOption | null;
+  searchLabel: string;
   onChange: (next: string) => void;
 }) {
   const theme = useTheme();
   const [hover, setHover] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const searchable = options.length > 6;
   const choices = allOption ? [allOption, ...options] : options;
+  const needle = query.trim().toLowerCase();
+  const visible = searchable
+    ? choices.filter((option) => `${option.label} ${option.secondary ?? ""} ${option.value}`.toLowerCase().includes(needle))
+    : choices;
+  const setOpenState = (next: boolean) => {
+    setOpen(next);
+    if (!next) setQuery("");
+  };
   return (
-    <Menu
+    <Popover
+      open={open}
+      onOpenChange={setOpenState}
       align="start"
-      minWidth={288}
-      maxHeight={360}
       testId={`${testId}-menu`}
-      trigger={({ toggle, open }) => (
+      style={{ padding: 4, width: searchable ? 320 : 288, maxHeight: 420, overflowY: "scroll" }}
+      trigger={
         <div
           testId={testId}
-          onClick={toggle}
+          onClick={() => setOpenState(!open)}
           onMouseEnter={() => setHover(true)}
           onMouseLeave={() => setHover(false)}
           style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, cursor: "pointer", minWidth: 0, maxWidth: 288 }}
         >
-          {icon ? <Icon name={icon} size={14} color={theme.foreground} /> : null}
+          {icon}
           <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
             <Text size="base" weight={600} truncate>
               {label}
             </Text>
-            <div
-              style={{
-                height: 1,
-                marginTop: -2,
-                backgroundColor: hover || open ? theme.foreground : alpha(theme.foreground, 0.3),
-              }}
-            />
+            <div style={{ height: 1, marginTop: -2, backgroundColor: hover || open ? theme.foreground : alpha(theme.foreground, 0.3) }} />
           </div>
           <Icon name="chevron-down" size={14} color={theme.mutedForeground} />
         </div>
-      )}
+      }
     >
-      {choices.map((option, index) => (
+      {searchable ? (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 8,
+            height: 36,
+            marginBottom: 4,
+            paddingLeft: 8,
+            paddingRight: 8,
+            borderBottomWidth: 1,
+            borderColor: theme.primary,
+          }}
+        >
+          <Icon name="search" size={14} color={theme.mutedForeground} />
+          <input
+            testId={`${testId}-search`}
+            autoFocus
+            value={query}
+            placeholder={searchLabel}
+            theme={{ caret: theme.foreground, textMuted: theme.mutedForeground, appearance: theme.appearance }}
+            onChange={(event) => setQuery(event.value ?? "")}
+            onSubmit={() => {
+              const first = visible[0];
+              if (first) {
+                onChange(first.value);
+                setOpenState(false);
+              }
+            }}
+            style={{ flexGrow: 1, minWidth: 0, height: 34, fontSize: 14, lineHeight: 34, color: theme.foreground }}
+          />
+        </div>
+      ) : null}
+      {visible.length === 0 ? (
+        <div style={{ padding: 12 }}>
+          <Text size="sm" color={theme.mutedForeground}>
+            No matches found.
+          </Text>
+        </div>
+      ) : null}
+      {visible.map((option, index) => (
         <ScopeMenuRow
           key={option.value}
           option={option}
           checked={option.value === value}
-          separatorAfter={index === 0 && allOption !== null}
-          onSelect={() => onChange(option.value)}
+          separatorAfter={!searchable && index === 0 && allOption !== null}
+          onSelect={() => {
+            onChange(option.value);
+            setOpenState(false);
+          }}
         />
       ))}
-    </Menu>
+    </Popover>
   );
 }
 
@@ -980,21 +1037,42 @@ function ScopeMenuRow({
   const theme = useTheme();
   return (
     <>
-      <MenuItem
-        icon={option.icon}
-        checked={checked}
-        description={option.secondary || undefined}
-        onSelect={onSelect}
-        trailing={
-          option.offline ? (
-            <Text size="xs" color={theme.mutedForeground}>
-              Offline
-            </Text>
-          ) : undefined
-        }
+      <div
+        testId={`scope-option-${option.label}`}
+        onClick={onSelect}
+        style={{
+          display: "flex",
+          flexDirection: "row",
+          alignItems: option.secondary ? "flex-start" : "center",
+          gap: 8,
+          minHeight: 28,
+          paddingTop: option.secondary ? 6 : 0,
+          paddingBottom: option.secondary ? 6 : 0,
+          paddingLeft: 8,
+          paddingRight: 8,
+          borderRadius: RADIUS.sm,
+          backgroundColor: checked ? alpha(theme.foreground, 0.06) : "#00000000",
+          cursor: "pointer",
+          flexShrink: 0,
+          hover: { backgroundColor: theme.accent },
+        }}
       >
-        {option.label}
-      </MenuItem>
+        {option.icon ? <div style={{ display: "flex", alignItems: "center", height: 20 }}>{option.icon}</div> : null}
+        <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
+          <Text>{option.label}</Text>
+          {option.secondary ? (
+            <Text size="xs" color={theme.mutedForeground}>
+              {option.secondary}
+            </Text>
+          ) : null}
+        </div>
+        {option.offline ? (
+          <Text size="xs" color={theme.mutedForeground}>
+            Offline
+          </Text>
+        ) : null}
+        {checked ? <Icon name="check" size={14} color={theme.foreground} /> : null}
+      </div>
       {separatorAfter ? <MenuSeparator /> : null}
     </>
   );
@@ -1047,7 +1125,8 @@ export function SettingsScopeSentence() {
         </Text>
         <ScopeMenu
           testId="settings-scope-project"
-          icon={selectedProject ? "folder" : null}
+          icon={selectedProject ? <ProjectFavicon project={{ ...selectedProject, title: selectedProject.displayName }} size={14} /> : null}
+          searchLabel="Search projects"
           label={selectedProject?.displayName ?? (value.project ? "Unavailable project" : "All projects")}
           value={projectAxisValue(value)}
           onChange={(next) => scope.selectScope(selectProjectAxis(value, next))}
@@ -1067,7 +1146,7 @@ export function SettingsScopeSentence() {
                   : sameName.some((other) => other.machines === machines)
                     ? `${machines} · ${group.workspaceRoot}`
                     : machines,
-              icon: "folder",
+              icon: <ProjectFavicon project={{ ...group, title: group.displayName }} size={14} />,
             };
           })}
         />
@@ -1078,7 +1157,8 @@ export function SettingsScopeSentence() {
         </Text>
         <ScopeMenu
           testId="settings-scope-environment"
-          icon={selectedEnvironment ? machineIcon(selectedEnvironment.serverConfig) : null}
+          icon={selectedEnvironment ? <Icon name={machineIcon(selectedEnvironment.serverConfig)} size={14} color={theme.foreground} /> : null}
+          searchLabel="Search environments"
           label={
             selectedEnvironment
               ? settingsScopeEnvironmentLabel(selectedEnvironment, environments)
@@ -1090,14 +1170,18 @@ export function SettingsScopeSentence() {
           }
           value={environmentValue}
           onChange={(next) => scope.selectScope(selectEnvironmentAxis(value, next))}
-          allOption={scope.singleEnvironment ? null : { value: ALL_ENVIRONMENTS_VALUE, label: "All environments", icon: "layers" }}
+          allOption={
+            scope.singleEnvironment
+              ? null
+              : { value: ALL_ENVIRONMENTS_VALUE, label: "All environments", icon: <Icon name="layers" size={14} color={theme.mutedForeground} /> }
+          }
           options={environmentOptions.map((environment) => {
             const { primary, secondary } = settingsScopeEnvironmentLabels(environment, environments);
             return {
               value: environment.environmentId,
               label: primary,
               secondary: environments.length <= 1 ? "" : secondary || settingsScopeEnvironmentAddress(environment),
-              icon: machineIcon(environment.serverConfig),
+              icon: <Icon name={machineIcon(environment.serverConfig)} size={14} color={theme.mutedForeground} />,
               offline: environment.connection.phase !== "connected",
             };
           })}
