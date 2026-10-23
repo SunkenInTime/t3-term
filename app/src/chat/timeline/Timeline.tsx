@@ -61,6 +61,7 @@ import { Icon } from "../../ui/Icon.tsx";
 import "./devOpenThread.ts";
 import { ThreadErrorBanner } from "./ThreadErrorBanner.tsx";
 import { findHighlightColors, ThreadFindBar, type ThreadFindState } from "./ThreadFindBar.tsx";
+import { ThreadStatusFooter } from "./ThreadStatusLine.tsx";
 import { TimelineRowContent } from "./TimelineRows.tsx";
 import { TimelineSystemDivider } from "./parts.tsx";
 import {
@@ -525,6 +526,7 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
       <TimelineRowCtx value={sharedState}>
         <TimelineRowActivityCtx value={activityState}>
           <TimelineList
+            threadRef={threadRef}
             rows={rows}
             find={activeFind}
             history={showHistoryControl ? history : null}
@@ -644,6 +646,7 @@ function EmptyTimeline() {
 // ── The list ────────────────────────────────────────────────────────────────
 
 const TimelineList = memo(function TimelineList({
+  threadRef,
   rows,
   find,
   history,
@@ -651,6 +654,7 @@ const TimelineList = memo(function TimelineList({
   parentThreadLink,
   onOpenThread,
 }: {
+  threadRef: ScopedThreadRef;
   rows: ReadonlyArray<MessagesTimelineRow>;
   find: ThreadFindState | null;
   history: { readonly hasMoreHistory: boolean; readonly loading: boolean; readonly error: string | null } | null;
@@ -667,7 +671,7 @@ const TimelineList = memo(function TimelineList({
   const lane = resolveChatLane(width, detailsOpen);
   const [atEnd, setAtEnd] = useState(true);
   const leadingRows = (history ? 1 : 0) + (parentThreadLink ? 1 : 0) + 1;
-  const rowCount = leadingRows + rows.length + 1;
+  const rowCount = leadingRows + rows.length + 2;
 
   const checkAtEnd = () => {
     const id = listRef.current?.id;
@@ -769,6 +773,7 @@ const TimelineList = memo(function TimelineList({
             )
           : null}
         {rows.map((row, index) => frame(row.id, <TimelineRowContent row={row} />, index))}
+        {frame("timeline-status", <ThreadStatusFooter threadRef={threadRef} />)}
         <div key="timeline-footer" style={{ height: composerInset + 16 }} />
       </virtual-list>
       {atEnd ? null : <ScrollToEndButton bottom={composerInset + 4} left={lane.left} width={lane.width} onScrollToEnd={scrollToEnd} />}
