@@ -16,7 +16,7 @@ import { hastPlainTextDeep } from "../../web/components/chat/markdownHast.logic.
 import { withAlpha } from "./colors.ts";
 import { CodeBlockIconButton, useCopyFeedback } from "./MarkdownCodeBlock.tsx";
 import { textWidth } from "./measure.ts";
-import { renderParagraph, type RenderEnv } from "./MarkdownView.tsx";
+import { MARGIN_AWARE, renderParagraph, type RenderEnv } from "./MarkdownView.tsx";
 import { deriveRun } from "./styles.ts";
 import type { RunStyle } from "./inline.ts";
 
@@ -81,7 +81,7 @@ function longestWord(text: string, style: RunStyle): number {
   return widest;
 }
 
-export const MarkdownTable = memo(function MarkdownTable({ node, width, env }: { node: Element; width: number; env: RenderEnv }) {
+export const MarkdownTable = memo(function MarkdownTable({ node, width, env, marginTop }: { node: Element; width: number; env: RenderEnv; marginTop?: number }) {
   const palette = useTheme();
   const [expanded, setExpanded] = useState(() => getClientSettings().wordWrap);
   const [copied, copy] = useCopyFeedback();
@@ -169,7 +169,7 @@ export const MarkdownTable = memo(function MarkdownTable({ node, width, env }: {
 
   const copyLabel = copied ? "Copied" : "Copy table";
   return (
-    <div style={{ display: "flex", flexDirection: "column", width: "100%" }}>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", marginTop }}>
       <div style={{ display: "flex", flexDirection: "row", width: "100%", overflowX: "scroll", scrollbarColor: palette.scrollbar }}>
         <div style={{ display: "flex", flexDirection: "column", width: tableWidth, flexShrink: 0 }}>{rowNodes}</div>
       </div>
@@ -198,3 +198,4 @@ export const MarkdownTable = memo(function MarkdownTable({ node, width, env }: {
     </div>
   );
 });
+MARGIN_AWARE.add(MarkdownTable);

@@ -60,6 +60,8 @@ export interface InlineLine {
   readonly pieces: ReadonlyArray<LinePiece>;
   readonly width: number;
   readonly height: number;
+  /** Ended by a hard break (<br>), not by wrapping. */
+  readonly hardBreak: boolean;
 }
 
 interface Unit {
@@ -194,6 +196,7 @@ export function layoutInline(atoms: ReadonlyArray<InlineAtom>, maxWidth: number,
   const units = buildUnits(atoms);
   const available = Math.max(1, maxWidth) + 0.01;
   const lines: Placed[][] = [];
+  const hardBreaks = new Set<number>();
   let line: Placed[] = [];
   let width = 0;
 
@@ -235,6 +238,7 @@ export function layoutInline(atoms: ReadonlyArray<InlineAtom>, maxWidth: number,
 
   for (const unit of units) {
     if (unit.hardBreak) {
+      hardBreaks.add(lines.length);
       newLine();
       continue;
     }
@@ -264,10 +268,10 @@ export function layoutInline(atoms: ReadonlyArray<InlineAtom>, maxWidth: number,
     }
   }
   if (line.length > 0 || lines.length === 0) lines.push(line);
-  return lines.map((placed) => assembleLine(placed, lineHeight));
+  return lines.map((placed, index) => ({ ...assembleLine(placed, lineHeight), hardBreak: hardBreaks.has(index) }));
 }
 
-function assembleLine(placed: ReadonlyArray<Placed>, lineHeight: number): InlineLine {
+function assembleLine(placed: ReadonlyArray<Placed>, lineHeight: number): Omit<InlineLine, "hardBreak"> {
   const pieces: LinePiece[] = [];
   let width = 0;
   let height = lineHeight;

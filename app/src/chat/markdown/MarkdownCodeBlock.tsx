@@ -17,6 +17,7 @@ import { hasSpecificPierreIconForFileName, syntheticFileNameForLanguageId } from
 import { copyTextToClipboard } from "../timeline/system.ts";
 import { textWidth } from "./measure.ts";
 import type { MarkdownStyles } from "./styles.ts";
+import { MARGIN_AWARE } from "./MarkdownView.tsx";
 
 const FENCE_TITLE_ATTR_REGEX = /(?:^|\s)(?:title|file(?:name)?)=(?:"([^"]+)"|'([^']+)'|(\S+))/i;
 const FENCE_FILENAME_TOKEN_REGEX = /^[\w@][\w@./-]*\.[A-Za-z0-9]+$/;
@@ -142,6 +143,7 @@ export const MarkdownCodeBlock = memo(function MarkdownCodeBlock({
   onRunShellCommand,
   viewToggle,
   children,
+  marginTop,
 }: {
   code: string;
   language: string;
@@ -153,6 +155,7 @@ export const MarkdownCodeBlock = memo(function MarkdownCodeBlock({
   viewToggle?: ReactNode;
   /** Replaces the highlighted body (the Mermaid diagram). */
   children?: ReactNode;
+  marginTop?: number;
 }) {
   const [wrapped, setWrapped] = useState(() => getClientSettings().wordWrap);
   const [copied, copy] = useCopyFeedback();
@@ -165,6 +168,7 @@ export const MarkdownCodeBlock = memo(function MarkdownCodeBlock({
         display: "flex",
         flexDirection: "column",
         width: "100%",
+        marginTop,
         borderRadius: block.radius,
         borderWidth: 1,
         borderColor: block.border,
@@ -265,3 +269,4 @@ export const HighlightedCode = memo(function HighlightedCode({
     </div>
   );
 });
+MARGIN_AWARE.add(MarkdownCodeBlock);

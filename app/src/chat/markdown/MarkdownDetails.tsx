@@ -7,10 +7,10 @@ import { memo, useState } from "react";
 import { Icon } from "../../ui/Icon.tsx";
 import { alpha } from "../../ui/theme.ts";
 import { withAlpha } from "./colors.ts";
-import { renderFlow, renderParagraph, stack, type RenderEnv } from "./MarkdownView.tsx";
+import { MARGIN_AWARE, renderFlow, renderParagraph, stack, type RenderEnv } from "./MarkdownView.tsx";
 import { deriveRun } from "./styles.ts";
 
-export const MarkdownDetails = memo(function MarkdownDetails({ node, width, env }: { node: Element; width: number; env: RenderEnv }) {
+export const MarkdownDetails = memo(function MarkdownDetails({ node, width, env, marginTop }: { node: Element; width: number; env: RenderEnv; marginTop?: number }) {
   const [open, setOpen] = useState(Boolean(node.properties.open));
   const palette = env.styles.palette;
   const summary = node.children.find((child): child is Element => child.type === "element" && child.tagName === "summary");
@@ -21,7 +21,7 @@ export const MarkdownDetails = memo(function MarkdownDetails({ node, width, env 
     : renderParagraph([{ type: "text", value: "Details" }], width - 24, env, summaryStyle, "s");
   const body = open ? stack(renderFlow(content, width - 24, env, { body: deriveRun(env.styles.body, { color: alpha(palette.foreground, 0.8) }), ulDepth: 0, olDepth: 0 }, "d")) : null;
   return (
-    <div style={{ display: "flex", flexDirection: "column", width: "100%", borderTopWidth: 1, borderBottomWidth: 1, borderColor: withAlpha(env.styles.border, 0.6) }}>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", marginTop, borderTopWidth: 1, borderBottomWidth: 1, borderColor: withAlpha(env.styles.border, 0.6) }}>
       <div
         onClick={() => setOpen((value) => !value)}
         style={{ display: "flex", flexDirection: "row", alignItems: "flex-start", gap: 8, paddingTop: 8, paddingBottom: 8, cursor: "pointer", width: "100%" }}
@@ -39,3 +39,4 @@ export const MarkdownDetails = memo(function MarkdownDetails({ node, width, env 
     </div>
   );
 });
+MARGIN_AWARE.add(MarkdownDetails);

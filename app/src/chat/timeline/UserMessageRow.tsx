@@ -391,10 +391,14 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody({ te
   const canCollapse = collapsible && text.trim().length > 0 && shouldCollapseUserMessage(text);
   const isCollapsed = canCollapse && !expanded;
   const maxWidth = use(BubbleTextWidth);
+  // The bubble shrinks to its text; definite widths down the chain keep Taffy
+  // from laying the markdown out once per auto-width ancestor.
+  const [fitWidth, setFitWidth] = useState<number | undefined>(undefined);
+  const width = fitWidth !== undefined ? { width: fitWidth } : {};
   return (
-    <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-      <div style={{ position: "relative", minWidth: 0, ...(isCollapsed ? { height: COLLAPSED_HEIGHT, overflow: "hidden" } : {}) }}>
-        <ChatMarkdown text={text} tone="user" lineBreaks parseRawHtml={false} {...(maxWidth !== undefined ? { maxWidth } : {})} />
+    <div style={{ display: "flex", flexDirection: "column", minWidth: 0, ...width }}>
+      <div style={{ position: "relative", minWidth: 0, ...width, ...(isCollapsed ? { height: COLLAPSED_HEIGHT, overflow: "hidden" } : {}) }}>
+        <ChatMarkdown text={text} tone="user" lineBreaks parseRawHtml={false} onFitWidth={setFitWidth} {...(maxWidth !== undefined ? { maxWidth } : {})} />
         {isCollapsed ? (
           <div
             style={{

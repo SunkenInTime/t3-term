@@ -8,7 +8,7 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import { isHostPath } from "@t3tools/shared/path";
 import { mediaMimeTypeFromExtension } from "@t3tools/shared/filePreview";
-import { memo, useContext, useMemo, useState, type ReactNode } from "react";
+import { memo, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
 import { useClientSettings } from "../../state/clientSettings.ts";
@@ -36,6 +36,7 @@ import { messageLinkIndex, type FileChipTarget } from "../markdown/links.ts";
 import { parseChatMarkdown } from "../markdown/parse.ts";
 import { showMarkdownContextMenu } from "../markdown/overlays.tsx";
 import { markdownStyles, type ChatMarkdownTone } from "../markdown/styles.ts";
+import { NativeChatMarkdown } from "../../dev/nativeMarkdown.tsx";
 import { TimelineRowCtx, type TimelineRowSharedState } from "./rowContext.ts";
 import { copyTextToClipboard, openExternalUrl } from "./system.ts";
 
@@ -221,13 +222,22 @@ function createBlocks(): BlockRenderers {
   };
 }
 
-export const ChatMarkdown = memo(function ChatMarkdown({
+// T3TERM_NATIVE_MD=1: the previous native renderer, for perf comparisons only.
+const NATIVE_MARKDOWN = process.env.T3TERM_NATIVE_MD === "1";
+
+export const ChatMarkdown = memo(function ChatMarkdown(props: Parameters<typeof RenderedChatMarkdown>[0]) {
+  if (NATIVE_MARKDOWN) return <NativeChatMarkdown text={props.text} tone={props.tone ?? "assistant"} textSize={props.textSize ?? 14} lineBreaks={props.lineBreaks ?? false} />;
+  return <RenderedChatMarkdown {...props} />;
+});
+
+const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   text,
   tone = "assistant",
   textSize = 14,
   lineBreaks = false,
   parseRawHtml = true,
   maxWidth,
+  onFitWidth,
 }: {
   text: string;
   tone?: ChatMarkdownTone;
@@ -237,6 +247,8 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   parseRawHtml?: boolean;
   /** Shrink-to-fit inside a bubble: lay out at most this wide and take the content's width. */
   maxWidth?: number;
+  /** Reports the shrink-to-fit width, so wrappers can take it as a definite width (Taffy lays auto-width chains out repeatedly). */
+  onFitWidth?: (width: number) => void;
 }) {
   const palette = useTheme();
   const styles = markdownStyles(palette, tone, textSize);
@@ -269,6 +281,9 @@ export const ChatMarkdown = memo(function ChatMarkdown({
     // epoch: new text metrics re-lay out lines measured with estimates.
   }, [tree, width, styles, text, cwd, hover, handlers, mathEnabled, epoch]);
   const fitWidth = maxWidth !== undefined && rendered ? Math.min(maxWidth, Math.ceil(rendered.extent)) : undefined;
+  useEffect(() => {
+    if (fitWidth !== undefined) onFitWidth?.(fitWidth);
+  }, [fitWidth, onFitWidth]);
   return (
     <div
       onLayout={

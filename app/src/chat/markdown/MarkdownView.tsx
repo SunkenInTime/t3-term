@@ -7,7 +7,7 @@
 // first/last child's margin out). Inline content goes through inline.ts and
 // paints as rows of nowrap runs.
 import type { Element, ElementContent, Root } from "hast";
-import { Fragment, memo, useSyncExternalStore, type ReactNode } from "react";
+import { cloneElement, Fragment, isValidElement, memo, useSyncExternalStore, type ReactNode } from "react";
 
 import { Icon, type IconName } from "../../ui/Icon.tsx";
 import { FONTS, alpha } from "../../ui/theme.ts";
@@ -163,19 +163,31 @@ export function className(node: Element): string {
  * neighbours; the first child's top margin and the last child's bottom margin
  * are returned for the container to pass out (or drop).
  */
+/** Components that take a `marginTop` prop and put it on their root, so a gap costs no wrapper element. */
+export const MARGIN_AWARE = new Set<unknown>();
+
+function withMarginTop(node: ReactNode, gap: number, key: string): ReactNode {
+  if (isValidElement<{ style?: object; marginTop?: number }>(node)) {
+    if (typeof node.type === "string") return cloneElement(node, { key, style: { ...node.props.style, marginTop: gap } });
+    if (MARGIN_AWARE.has(node.type)) return cloneElement(node, { key, marginTop: gap });
+  }
+  return (
+    <div key={key} style={{ display: "flex", flexDirection: "column", width: "100%", marginTop: gap }}>
+      {node}
+    </div>
+  );
+}
+
+/**
+ * Lays blocks out in a column. Gaps are the collapsed margins between
+ * neighbours; the first child's top margin and the last child's bottom margin
+ * are returned for the container to pass out (or drop).
+ */
 export function stack(blocks: Block[]): { nodes: ReactNode[]; firstMt: number; lastMb: number } {
   const nodes: ReactNode[] = [];
   blocks.forEach((block, index) => {
     const gap = index === 0 ? 0 : Math.max(blocks[index - 1]!.mb, block.mt);
-    nodes.push(
-      gap > 0 ? (
-        <div key={`g${index}`} style={{ display: "flex", flexDirection: "column", width: "100%", marginTop: gap }}>
-          {block.node}
-        </div>
-      ) : (
-        <Fragment key={`b${index}`}>{block.node}</Fragment>
-      ),
-    );
+    nodes.push(gap > 0 ? withMarginTop(block.node, gap, `g${index}`) : <Fragment key={`b${index}`}>{block.node}</Fragment>);
   });
   return { nodes, firstMt: blocks[0]?.mt ?? 0, lastMb: blocks[blocks.length - 1]?.mb ?? 0 };
 }
@@ -708,28 +720,86 @@ export function renderParagraph(children: ReadonlyArray<ElementContent>, width: 
   return <InlineLines key={key} lines={lines} env={env} base={style} />;
 }
 
-const InlineLines = memo(function InlineLines({ lines, env, base }: { lines: InlineLine[]; env: RenderEnv; base: RunStyle }) {
+/** A line that is one plain run: consecutive ones paint as a single wrapping <text>. */
+function plainLine(line: InlineLine, base: RunStyle): boolean {
+  if (line.pieces.length !== 1) return false;
+  const piece = line.pieces[0]!;
+  return piece.kind === "text" && piece.style.key === base.key && piece.style.link === undefined && line.height === base.lineHeight;
+}
+
+/**
+ * Paints laid-out lines. Every host <text> costs per frame, so runs of plain
+ * lines (no pills, links or style changes) collapse into one <text> that GPUI
+ * wraps itself: their words are the same either way, and the rows after the
+ * group start on their own line, so a wrap that differs by a word only moves
+ * where that group's own lines break.
+ */
+const InlineLines = memo(function InlineLines({
+  lines,
+  env,
+  base,
+  marginTop,
+}: {
+  lines: InlineLine[];
+  env: RenderEnv;
+  base: RunStyle;
+  marginTop?: number;
+}) {
   const baseline = baselineOffset(base.face.family, base.size, base.lineHeight);
+  // Runs in the paragraph's own style paint as bare strings that inherit it
+  // from their row: a bare string is one element, a <text> is two, and every
+  // element costs per frame. Bare strings that sit side by side also copy as
+  // one line.
+  const textStyle = {
+    fontFamily: fontFamilyOf(base),
+    fontSize: base.size,
+    fontWeight: base.face.weight,
+    color: base.color,
+    lineHeight: base.lineHeight,
+  };
+  const children: ReactNode[] = [];
+  for (let lineIndex = 0; lineIndex < lines.length; ) {
+    const line = lines[lineIndex]!;
+    if (plainLine(line, base)) {
+      let end = lineIndex + 1;
+      let text = (line.pieces[0] as { text: string }).text;
+      // A hard break ends the group: the next line starts a new line, not a wrap.
+      while (end < lines.length && !lines[end - 1]!.hardBreak && plainLine(lines[end]!, base)) {
+        text += (lines[end]!.pieces[0] as { text: string }).text;
+        end += 1;
+      }
+      children.push(text);
+      lineIndex = end;
+      continue;
+    }
+    const pieces = line.pieces.map((piece, pieceIndex) =>
+      piece.kind === "box" ? (
+        <Fragment key={pieceIndex}>{env.boxes.renderBox(piece.atom, env, `${lineIndex}:${pieceIndex}`)}</Fragment>
+      ) : piece.style.link !== undefined ? (
+        <LinkRun key={pieceIndex} text={piece.text} style={piece.style} width={piece.width} baseline={baseline} env={env} />
+      ) : piece.style.key === base.key ? (
+        piece.text
+      ) : (
+        <text key={pieceIndex} style={runStyle(piece.style, piece.width, baseline)}>
+          {piece.text}
+        </text>
+      ),
+    );
+    children.push(
+      <div
+        key={lineIndex}
+        style={{ display: "flex", flexDirection: "row", alignItems: "flex-start", height: line.height, width: "100%", whiteSpace: "nowrap" }}
+      >
+        {pieces}
+      </div>,
+    );
+    lineIndex += 1;
+  }
   return (
-    <div style={{ display: "flex", flexDirection: "column", width: "100%" }}>
-      {lines.map((line, lineIndex) => (
-        <div key={lineIndex} style={{ display: "flex", flexDirection: "row", alignItems: "flex-start", height: line.height, width: "100%" }}>
-          {line.pieces.map((piece, pieceIndex) =>
-            piece.kind === "box" ? (
-              <Fragment key={pieceIndex}>{env.boxes.renderBox(piece.atom, env, `${lineIndex}:${pieceIndex}`)}</Fragment>
-            ) : piece.style.link !== undefined ? (
-              <LinkRun key={pieceIndex} text={piece.text} style={piece.style} width={piece.width} baseline={baseline} env={env} />
-            ) : (
-              <text key={pieceIndex} style={runStyle(piece.style, piece.width, baseline)}>
-                {piece.text}
-              </text>
-            ),
-          )}
-        </div>
-      ))}
-    </div>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", ...textStyle, ...(marginTop ? { marginTop } : {}) }}>{children}</div>
   );
 });
+MARGIN_AWARE.add(InlineLines);
 
 /** Style for one painted run; pills get their border box and baseline offset. */
 export function runStyle(style: RunStyle, width: number, lineBaseline: number, decoration?: "underline") {
