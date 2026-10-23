@@ -5,7 +5,7 @@
 // - Rendered HTML/PDF (sandboxed iframes), video and audio players: there is no
 //   browser surface here. HTML shows its source; the others show a notice.
 // - Chat attachments.
-import { useAtom } from "@effect/atom-react";
+import { useAtom, useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import {
@@ -233,7 +233,7 @@ export default function FilePreviewPanel({
   const previewPath = isFolder ? null : relativePath;
   const [explorerOpen, setExplorerOpen] = useAtom(fileExplorerOpenAtom);
   const [renderMarkdownPreferred, setRenderMarkdownPreferred] = useAtom(renderMarkdownAtom);
-  const [wordWrap, setWordWrap] = useAtom(wordWrapPref.atom);
+  const wordWrap = useAtomValue(wordWrapPref.atom);
   const showExplorer = shouldShowFileExplorer({ relativePath: previewPath, explorerOpen, attachmentOpen: false });
   // Paired with the path on purpose: each file surface counts its reveals from
   // one, so a bare id would let a dismissed reveal on one file swallow the first
@@ -364,7 +364,7 @@ export default function FilePreviewPanel({
               label={wordWrap ? "Disable word wrap" : "Enable word wrap"}
               icon="wrap-text"
               pressed={wordWrap}
-              onPress={() => setWordWrap(!wordWrap)}
+              onPress={() => wordWrapPref.set(!wordWrap)}
             />
           ) : null}
           {!isHostFile && previewPath !== null ? (
