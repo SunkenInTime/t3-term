@@ -23,7 +23,10 @@ export type Route =
       readonly environmentId: EnvironmentId | null;
       readonly projectId: ProjectId | null;
     }
-  | { readonly kind: "settings"; readonly page: SettingsPage };
+  | { readonly kind: "settings"; readonly page: SettingsPage }
+  // Sidebar footer utility pages (web: /pull-requests, /usage).
+  | { readonly kind: "pull-requests" }
+  | { readonly kind: "usage" };
 
 export const routeAtom = Atom.make<Route>({ kind: "home" }).pipe(Atom.keepAlive);
 export const sidebarOpenAtom = Atom.make(true).pipe(Atom.keepAlive);
