@@ -14,10 +14,17 @@ export type RightPanelKind =
 
 export type PullRequestDetailTab = "summary" | "guide" | "timeline" | "code";
 
+export interface DeviceTabTarget {
+  hostId: string;
+  deviceId: string;
+  platform: "ios" | "android";
+  name: string;
+}
+
 export type RightPanelSurface =
   | { id: `browser:${string}`; kind: "preview"; resourceId: string }
   | { id: "browser:new"; kind: "preview"; resourceId: null }
-  | { id: "device" | `device:${string}`; kind: "device"; title?: string }
+  | { id: "device" | `device:${string}`; kind: "device"; target?: DeviceTabTarget; title?: string }
   | {
       id: `terminal:${string}`;
       kind: "terminal";
@@ -59,6 +66,8 @@ export interface ThreadRightPanelState {
   activeSurfaceId: string | null;
   surfaces: RightPanelSurface[];
   maximized?: true;
+  /** Device tabs the user closed, so an agent-opened session does not reopen them. */
+  dismissedDeviceSurfaceIds?: string[];
 }
 
 export const EMPTY_THREAD_STATE: ThreadRightPanelState = {
@@ -417,4 +426,57 @@ export function setMaximized(current: ThreadRightPanelState, maximized: boolean)
 
 export function selectedSurface(state: ThreadRightPanelState): RightPanelSurface | null {
   return state.surfaces.find((surface) => surface.id === state.activeSurfaceId) ?? null;
+}
+
+/** rightPanelStore userAction: device tabs a user action removed are remembered as dismissed. */
+export function rememberDismissedDevices(
+  current: ThreadRightPanelState,
+  next: ThreadRightPanelState,
+): ThreadRightPanelState {
+  if (next === current) return next;
+  const removed = current.surfaces.filter(
+    (surface) => surface.kind === "device" && !next.surfaces.some((entry) => entry.id === surface.id),
+  );
+  if (removed.length === 0) return next;
+  return {
+    ...next,
+    dismissedDeviceSurfaceIds: [
+      ...new Set([...(next.dismissedDeviceSurfaceIds ?? []), ...removed.map((surface) => surface.id)]),
+    ],
+  };
+}
+
+/** rightPanelStore openDevice. `automatic` (an agent opened it) respects a user's dismissal. */
+export function openDevice(
+  current: ThreadRightPanelState,
+  target: DeviceTabTarget,
+  automatic = false,
+): ThreadRightPanelState {
+  const id = `device:${encodeURIComponent(target.hostId)}:${encodeURIComponent(target.deviceId)}` as const;
+  if (automatic && current.dismissedDeviceSurfaceIds?.includes(id)) return current;
+  const surface: RightPanelSurface = { id, kind: "device", target };
+  const existing = current.surfaces.find((entry) => entry.id === id);
+  const surfaces = existing
+    ? current.surfaces.filter((entry) => entry.id !== "device")
+    : current.surfaces.map((entry) => (entry.id === "device" ? surface : entry));
+  return upsertSurface(
+    {
+      ...current,
+      surfaces,
+      dismissedDeviceSurfaceIds: (current.dismissedDeviceSurfaceIds ?? []).filter((entry) => entry !== id),
+    },
+    existing ?? surface,
+  );
+}
+
+/** rightPanelStore renameDevice: an empty title falls back to the device's name. */
+export function renameDevice(current: ThreadRightPanelState, surfaceId: string, title: string): ThreadRightPanelState {
+  return {
+    ...current,
+    surfaces: current.surfaces.map((surface) =>
+      surface.id === surfaceId && surface.kind === "device"
+        ? { ...surface, title: title.trim() || surface.target?.name || "Device" }
+        : surface,
+    ),
+  };
 }
