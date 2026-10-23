@@ -177,6 +177,7 @@ import { sendQueuedRunNow } from "./QueuedRunsControl.tsx";
 import { usePendingThreadRequests } from "./usePendingThreadRequests.ts";
 import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
+import { mentionDragOverAtom, reportComposerDropZone } from "../../panels/files/fileTreeActions.ts";
 
 export type { ComposerTarget } from "../../state/composer.ts";
 
@@ -582,6 +583,8 @@ function ComposerBody({
   const [surfaceWidth, setSurfaceWidth] = useState<number | null>(null);
   const { width: windowWidth } = useWindowSize();
   const [dragOver, setDragOver] = useState(false);
+  const mentionDragOver = useAtomValue(mentionDragOverAtom) === draftKey;
+  useEffect(() => () => reportComposerDropZone(draftKey, null), [draftKey]);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -1612,6 +1615,13 @@ function ComposerBody({
         onLayout={(event) => {
           const width = (event as { width?: number }).width;
           if (typeof width === "number" && width !== surfaceWidth) setSurfaceWidth(width);
+          // Files tree rows drop mentions here (panels/files/fileTreeActions.ts).
+          reportComposerDropZone(draftKey, {
+            x: Number(event.x ?? 0),
+            y: Number(event.y ?? 0),
+            width: Number(event.width ?? 0),
+            height: Number(event.height ?? 0),
+          });
         }}
         onFileDrop={(event) => {
           setDragOver(false);
@@ -1629,7 +1639,7 @@ function ComposerBody({
         style={{
           ...surfaceBase,
           position: "relative",
-          ...(dragOver ? { backgroundColor: mix("#ffffff", surfaceBase.backgroundColor, 0.045), borderColor: alpha(theme.primary, 0.7) } : {}),
+          ...(dragOver || mentionDragOver ? { backgroundColor: mix("#ffffff", surfaceBase.backgroundColor, 0.045), borderColor: alpha(theme.primary, 0.7) } : {}),
         }}
       >
         <SurfaceHighlight />

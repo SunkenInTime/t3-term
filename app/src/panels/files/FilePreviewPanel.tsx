@@ -7,6 +7,7 @@
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import { AuthFilesystemWriteScope, type EnvironmentId, type ScopedThreadRef, type ThreadId } from "@t3tools/contracts";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
+import { filePreviewDelimiter } from "@t3tools/shared/delimitedPreview";
 import {
   isWorkspaceAudioPreviewPath,
   isWorkspaceImagePreviewPath,
@@ -38,6 +39,7 @@ import { composerTargetKey } from "../../state/composer.ts";
 import { fileSavePendingAtom, fileSavePendingKey, setFileSavePending } from "../../state/files.ts";
 import { threadKeyOf } from "../../state/rightPanel.ts";
 import { FileEditor } from "./FileEditor.tsx";
+import { DelimitedTablePreview } from "./DelimitedTablePreview.tsx";
 import { useFileSaveCoordinator } from "./useFileSaveCoordinator.ts";
 import { useAssetUrlState } from "./fileAssets.ts";
 import FileBrowserPanel from "./FileBrowserPanel.tsx";
@@ -60,6 +62,8 @@ function decodeBoolean(fallback: boolean) {
 const fileExplorerOpenAtom = persistedAtom("file-explorer-open", true, decodeBoolean(true));
 /** web: localStorage `t3code.renderMarkdown`, default source. */
 const renderMarkdownAtom = persistedAtom("file-render-markdown", false, decodeBoolean(false));
+/** web: localStorage `t3code.renderTable`, default table. */
+const renderTableAtom = persistedAtom("file-render-table", true, decodeBoolean(true));
 
 function markdownTheme(theme: Palette) {
   return {
@@ -296,6 +300,11 @@ export default function FilePreviewPanel({
   const revealHandled =
     revealLine === null || (handledReveal?.path === relativePath && handledReveal.requestId === revealRequestId);
   const renderMarkdown = isMarkdown && renderMarkdownPreferred && revealHandled;
+  const [renderTablePreferred, setRenderTablePreferred] = useAtom(renderTableAtom);
+  const tableDelimiter = previewPath ? filePreviewDelimiter({ name: previewPath }) : null;
+  const renderTable = tableDelimiter !== null && renderTablePreferred && revealHandled;
+  const renderedMode = isMarkdown ? ("markdown" as const) : tableDelimiter ? ("table" as const) : null;
+  const rendered = isMarkdown ? renderMarkdown : renderTable;
   const [panelWidth, setPanelWidth] = useState(540);
 
   const navigateToFolder = (crumbPath: string) => {
@@ -315,7 +324,12 @@ export default function FilePreviewPanel({
 
   // web `showsRawText`: the wrap toggle exists while source text is on screen.
   const showsRawText =
-    previewPath !== null && !isMedia && !isPdf && !(isMarkdown && renderMarkdown) && !(file.error && file.data === null);
+    previewPath !== null &&
+    !isMedia &&
+    !isPdf &&
+    !(isMarkdown && renderMarkdown) &&
+    !(tableDelimiter && renderTable) &&
+    !(file.error && file.data === null);
 
   const content = (() => {
     if (isFolder || !relativePath) return null;
@@ -346,6 +360,9 @@ export default function FilePreviewPanel({
     }
     if (file.data === null) return <FileSurfaceLoading />;
     if (isMarkdown && renderMarkdown) return <RenderedMarkdown key={relativePath} text={file.data.contents} />;
+    if (tableDelimiter && renderTable) {
+      return <DelimitedTablePreview key={relativePath} name={relativePath} text={file.data.contents} delimiter={tableDelimiter} />;
+    }
     if (!file.data.truncated && !isHostFile && canWriteFiles) {
       return (
         <EditableFileSurface
@@ -414,15 +431,24 @@ export default function FilePreviewPanel({
             </div>
           </div>
           {absolutePath && !isFolder ? <OpenInEditorButton environmentId={environmentId} absolutePath={absolutePath} /> : null}
-          {previewPath !== null && isMarkdown ? (
+          {previewPath !== null && renderedMode !== null ? (
             <FileSurfaceAction
               testId="files-toggle-rendered"
-              label={renderMarkdown ? "Show markdown source" : "Show rendered markdown"}
-              icon={renderMarkdown ? "code" : "eye"}
-              pressed={renderMarkdown}
+              label={
+                renderedMode === "markdown"
+                  ? rendered
+                    ? "Show markdown source"
+                    : "Show rendered markdown"
+                  : rendered
+                    ? "Show source"
+                    : "Show table"
+              }
+              icon={rendered ? "code" : renderedMode === "table" ? "table-2" : "eye"}
+              pressed={rendered}
               onPress={() => {
-                const pressed = !renderMarkdown;
-                setRenderMarkdownPreferred(pressed);
+                const pressed = !rendered;
+                if (renderedMode === "markdown") setRenderMarkdownPreferred(pressed);
+                else setRenderTablePreferred(pressed);
                 setHandledReveal(pressed && relativePath !== null ? { path: relativePath, requestId: revealRequestId } : null);
               }}
             />
@@ -490,6 +516,7 @@ export default function FilePreviewPanel({
               selectedPathRevealId={revealRequestId}
               onOpenFile={onOpenFile}
               workspaceMutationId={workspaceMutationId}
+              composerDraftKey={composerTargetKey({ kind: "thread", environmentId, threadId })}
               {...(previewPath && !isMedia && !isPdf ? { onRefreshSelectedFile: file.refresh } : {})}
             />
           </div>

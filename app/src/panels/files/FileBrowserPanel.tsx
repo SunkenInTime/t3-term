@@ -1,13 +1,18 @@
 // Port of apps/web/src/components/files/FileBrowserPanel.tsx. The web tree is
 // @pierre/trees (compact density); here it is one <virtual-list> of rows built by
-// fileTreeRows.ts. Not ported: the right-click menu (open with, copy mention, add to
-// chat), drag-to-mention, middle truncation of long names and pierre's sticky folder rows.
-import { useAtom } from "@effect/atom-react";
+// fileTreeRows.ts, with pierre's extension-keeping middle truncation (TreeName), the
+// right-click menu and drag-to-mention (fileTreeActions.ts). Not ported: pierre's
+// sticky folder rows.
+import { useAtom, useAtomValue } from "@effect/atom-react";
+import type { EventPayload } from "@gpuix/native";
 import { useGpuixRequired, type KeyEvent, type PublicInstance } from "@gpuix/react";
 import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import { ActionMenu } from "../../chat/header/ActionMenu.tsx";
+import { appAtomRegistry } from "../../runtime/runtime.ts";
+import { serverEnvironment } from "../../state/environment.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
 import { Text } from "../../ui/primitives.tsx";
@@ -27,6 +32,18 @@ import {
   type FileTreeRow,
 } from "./fileTreeRows.ts";
 import { useWorkspaceMutationRefresh } from "./workspaceMutation.ts";
+import { TreeName } from "./TreeName.tsx";
+import {
+  composerAtPoint,
+  composerMentionFromTreePath,
+  fileTreeMenuItems,
+  insertMentionAtEnd,
+  mentionDragOverAtom,
+  runFileTreeMenuAction,
+  type FileTreeMenuAction,
+} from "./fileTreeActions.ts";
+import { buildFileTreePathUpdates } from "../../web/components/files/fileTreePathReconciliation.ts";
+import type { ContextMenuItem } from "@t3tools/contracts";
 
 const ROW_HEIGHT = 24;
 const ROW_INDENT = 19;
@@ -50,7 +67,12 @@ interface FileBrowserPanelProps {
   hostFolder?: boolean;
   onRefreshSelectedFile?: () => void;
   workspaceMutationId: string | null;
+  /** The thread composer "Add to chat" and drags write mentions into. */
+  composerDraftKey?: string | null;
 }
+
+/** How far a press must travel before it is a drag (dnd-kit's PointerSensor distance). */
+const DRAG_DISTANCE = 6;
 
 /**
  * Expanded folders per workspace. The web tree survives the switch from the explorer
@@ -180,22 +202,79 @@ const TreeRow = memo(function TreeRow(props: {
   /** Indent levels that draw a guide line in this row. */
   guideLevel: number | null;
   onPress: (row: FileTreeRow) => void;
+  menuItems: ReadonlyArray<ContextMenuItem<FileTreeMenuAction>>;
+  onMenuAction: (row: FileTreeRow, action: FileTreeMenuAction) => void;
+  onDragEnd: (row: FileTreeRow, x: number, y: number) => void;
 }) {
   const theme = useTheme();
   const { row } = props;
+  const [menu, setMenu] = useState<{ x: number } | null>(null);
+  const [rowX, setRowX] = useState(0);
+  // A press that travelled past DRAG_DISTANCE is a mention drag, not a click.
+  const press = useRef<{ x: number; y: number; dragging: boolean } | null>(null);
+  const suppressClick = useRef(false);
   const fg = row.ignored ? theme.mutedForeground : theme.foreground;
   const guideColor = theme.border;
   // The list's direct child is the row slot; it carries pierre's inline padding so the
   // row inside spans the full width between them.
   return (
     <div style={{ display: "flex", flexDirection: "column", width: "100%", paddingLeft: TREE_INSET, paddingRight: TREE_INSET }}>
+    <ActionMenu<FileTreeMenuAction>
+      open={menu !== null}
+      onOpenChange={(open) => {
+        if (!open) setMenu(null);
+      }}
+      items={props.menuItems}
+      onSelect={(action) => {
+        setMenu(null);
+        props.onMenuAction(row, action);
+      }}
+      // Web opens the menu at the pointer; here it hangs under the row at the pointer's x.
+      alignOffset={menu?.x ?? 0}
+      testId={`files-row-menu:${row.path}`}
+      rootStyle={{ width: "100%" }}
+      trigger={
     <div
       testId={`files-row:${row.path}`}
       role="treeitem"
       aria-label={row.segments.join(" / ")}
       aria-expanded={row.kind === "directory" ? row.expanded : undefined}
       aria-selected={props.selected}
-      onClick={() => props.onPress(row)}
+      onLayout={(event) => {
+        const x = Number(event.x ?? 0);
+        if (x !== rowX) setRowX(x);
+      }}
+      onClick={() => {
+        if (suppressClick.current) {
+          suppressClick.current = false;
+          return;
+        }
+        props.onPress(row);
+      }}
+      onAuxClick={(event: EventPayload) => {
+        if (event.isRightClick) setMenu({ x: Math.max(0, Number(event.x ?? 0) - rowX) });
+      }}
+      onMouseDown={(event: EventPayload) => {
+        if ((event.button ?? 0) === 0) press.current = { x: Number(event.x ?? 0), y: Number(event.y ?? 0), dragging: false };
+      }}
+      onMouseMove={(event: EventPayload) => {
+        const state = press.current;
+        if (!state || event.pressedButton !== 0) return;
+        const x = Number(event.x ?? 0);
+        const y = Number(event.y ?? 0);
+        if (!state.dragging && Math.hypot(x - state.x, y - state.y) < DRAG_DISTANCE) return;
+        state.dragging = true;
+        const over = composerAtPoint(x, y);
+        if (appAtomRegistry.get(mentionDragOverAtom) !== over) appAtomRegistry.set(mentionDragOverAtom, over);
+      }}
+      onMouseUp={(event: EventPayload) => {
+        const state = press.current;
+        press.current = null;
+        if (!state?.dragging) return;
+        suppressClick.current = true;
+        appAtomRegistry.set(mentionDragOverAtom, null);
+        props.onDragEnd(row, Number(event.x ?? 0), Number(event.y ?? 0));
+      }}
       style={{
         display: "flex",
         flexDirection: "row",
@@ -234,24 +313,32 @@ const TreeRow = memo(function TreeRow(props: {
           <FileEntryIcon pathValue={row.path} kind="file" />
         )}
       </div>
-      <text
-        style={{
-          marginLeft: 4,
-          color: fg,
-          fontSize: 12,
-          lineHeight: 16,
-          fontFamily: FONTS.sans,
-          whiteSpace: "nowrap",
-          textOverflow: "ellipsis",
-          overflow: "hidden",
-          minWidth: 0,
-          flexShrink: 1,
-          pointerEvents: "none",
-        }}
-      >
-        {row.segments.join(" / ")}
-      </text>
+      {row.kind === "file" ? (
+        <div style={{ display: "flex", marginLeft: 4, minWidth: 0, flexShrink: 1, pointerEvents: "none" }}>
+          <TreeName name={row.segments[0] ?? row.path} color={fg} />
+        </div>
+      ) : (
+        <text
+          style={{
+            marginLeft: 4,
+            color: fg,
+            fontSize: 12,
+            lineHeight: 16,
+            fontFamily: FONTS.sans,
+            whiteSpace: "nowrap",
+            textOverflow: "ellipsis",
+            overflow: "hidden",
+            minWidth: 0,
+            flexShrink: 1,
+            pointerEvents: "none",
+          }}
+        >
+          {row.segments.join(" / ")}
+        </text>
+      )}
     </div>
+      }
+    />
     </div>
   );
 });
@@ -266,6 +353,7 @@ export default function FileBrowserPanel({
   onRefreshSelectedFile,
   workspaceMutationId,
   hostFolder = false,
+  composerDraftKey = null,
 }: FileBrowserPanelProps) {
   const theme = useTheme();
   const renderer = useGpuixRequired();
@@ -296,6 +384,38 @@ export default function FileBrowserPanel({
     [children, expanded, searchVisible],
   );
   const allDirectoriesExpanded = areAllDirectoriesExpanded(expanded, expandableDirectoryPaths);
+
+  // web fileTreePathReconciliation: when a refresh drops paths, folders that are gone
+  // leave the expansion set, as pierre's batch "remove" drops them from its model.
+  const previousTreePathsRef = useRef<readonly string[] | null>(null);
+  useEffect(() => {
+    const nextPaths = entries.map((entry) => (entry.kind === "directory" ? `${entry.path}/` : entry.path));
+    const previous = previousTreePathsRef.current;
+    previousTreePathsRef.current = nextPaths;
+    if (previous === null || query.trim()) return;
+    const removed = buildFileTreePathUpdates(previous, nextPaths)
+      .filter((update) => update.type === "remove")
+      .map((update) => update.path.replace(/\/$/, ""));
+    if (removed.length === 0) return;
+    setExpanded((current) => {
+      const next = new Set([...current].filter((path) => !removed.some((gone) => path === gone || path.startsWith(`${gone}/`))));
+      return next.size === current.size ? current : next;
+    });
+  }, [entries, query, setExpanded]);
+
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const menuItems = useMemo(() => fileTreeMenuItems(serverConfig), [serverConfig]);
+  const menuActionRef = useRef<(row: FileTreeRow, action: FileTreeMenuAction) => void>(() => {});
+  menuActionRef.current = (row, action) =>
+    void runFileTreeMenuAction({ action, environmentId, cwd, path: panelPath(row.path), draftKey: composerDraftKey });
+  const onMenuAction = useCallback((row: FileTreeRow, action: FileTreeMenuAction) => menuActionRef.current(row, action), []);
+  const dragEndRef = useRef<(row: FileTreeRow, x: number, y: number) => void>(() => {});
+  dragEndRef.current = (row, x, y) => {
+    const target = composerAtPoint(x, y);
+    const mention = composerMentionFromTreePath(panelPath(row.path));
+    if (target !== null && mention !== null) insertMentionAtEnd(target, `${mention} `);
+  };
+  const onDragEnd = useCallback((row: FileTreeRow, x: number, y: number) => dragEndRef.current(row, x, y), []);
 
   const [selected, setSelected] = useState<string | null>(selectedPath);
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
@@ -636,6 +756,9 @@ export default function FileBrowserPanel({
                     : null
                 }
                 onPress={onPressRow}
+                menuItems={menuItems}
+                onMenuAction={onMenuAction}
+                onDragEnd={onDragEnd}
               />
             ))}
           </virtual-list>
