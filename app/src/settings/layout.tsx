@@ -981,8 +981,9 @@ function ScopeMenu({
         >
           {icon}
           <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-            <Text size="base" weight={600} truncate>
-              {label}
+            {/* JS truncation: ellipsis text inside nested shrinking flex costs hundreds of ms per frame in gpuix. */}
+            <Text size="base" weight={600}>
+              {label.length > 30 ? `${label.slice(0, 29).trimEnd()}…` : label}
             </Text>
             <div style={{ height: 1, marginTop: -2, backgroundColor: hover || open ? theme.foreground : alpha(theme.foreground, 0.3) }} />
           </div>

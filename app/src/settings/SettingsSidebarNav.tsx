@@ -58,6 +58,8 @@ function SectionIcon({ icon, size, color }: { icon: IconName | "snap-shot"; size
   return <Icon name={icon} size={size} color={color} />;
 }
 
+const clip = (value: string, max: number) => (value.length > max ? `${value.slice(0, max - 1).trimEnd()}…` : value);
+
 export function SettingsSidebarNav({ page }: { page: SettingsPage }) {
   const theme = useTheme();
   const scopeSearch = useAtomValue(settingsScopeSearchAtom);
@@ -90,10 +92,48 @@ export function SettingsSidebarNav({ page }: { page: SettingsPage }) {
     openSettingsPage(pageForSettingsPath(item.to), item.targetId ?? item.id);
   };
 
+  const renderResult = (item: SettingsSearchItem, index: number) => (
+    <div
+      key={item.id}
+      testId={`settings-search-result-${item.id}`}
+      onMouseMove={() => {
+        if (index !== activeResultIndex) setActiveResultIndex(index);
+      }}
+      onClick={() => handleSearchResultClick(item)}
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 8,
+        minHeight: 40,
+        paddingTop: 4,
+        paddingBottom: 4,
+        paddingLeft: 10,
+        paddingRight: 10,
+        borderRadius: RADIUS.md,
+        backgroundColor: index === activeResultIndex ? theme.sidebar.rowSelected : "#00000000",
+        cursor: "pointer",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", height: 20 }}>
+        <SectionIcon icon={SETTINGS_SECTION_ICONS[item.to]} size={14} color={alpha(theme.sidebar.mutedForeground, 0.6)} />
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
+        {/* Truncated in JS: ellipsis text in a long list of shrinkable rows made
+            each keystroke's layout take seconds (one-letter queries match ~150 items). */}
+        <Text weight={500} color={theme.sidebar.foreground}>
+          {clip(item.title, 30)}
+        </Text>
+        <Text size="2xs" color={alpha(theme.sidebar.mutedForeground, 0.75)}>
+          {SETTINGS_SECTION_LABELS[item.to]}
+        </Text>
+      </div>
+    </div>
+  );
+
   return (
     <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-      <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, overflowY: "scroll", padding: 8 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", flexDirection: "column", paddingTop: 8, paddingLeft: 8, paddingRight: 8, flexShrink: 0 }}>
           <div
             style={{
               display: "flex",
@@ -157,67 +197,43 @@ export function SettingsSidebarNav({ page }: { page: SettingsPage }) {
               <Kbd>/</Kbd>
             )}
           </div>
-          {isSearching && results.length === 0 ? (
-            <div style={{ display: "flex", justifyContent: "center", paddingTop: 24, paddingBottom: 24, paddingLeft: 8, paddingRight: 8 }}>
-              <Text size="xs" color={theme.sidebar.mutedForeground}>
-                No settings found
-              </Text>
-            </div>
-          ) : null}
+      </div>
+      {isSearching ? (
+        results.length === 0 ? (
+          <div style={{ display: "flex", justifyContent: "center", paddingTop: 32, paddingBottom: 24, paddingLeft: 16, paddingRight: 16 }}>
+            <Text size="xs" color={theme.sidebar.mutedForeground}>
+              No settings found
+            </Text>
+          </div>
+        ) : (
+          // A one-letter query matches ~150 settings: a virtual list builds only the visible rows.
+          <virtual-list overdraw={240} style={{ flexGrow: 1, minHeight: 0 }}>
+            {results.map((item, index) => (
+              <div key={item.id} style={{ display: "flex", flexDirection: "column", paddingLeft: 8, paddingRight: 8, paddingTop: index === 0 ? 8 : 4, paddingBottom: index === results.length - 1 ? 8 : 0 }}>
+                {renderResult(item, index)}
+              </div>
+            ))}
+          </virtual-list>
+        )
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, overflowY: "scroll", padding: 8 }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {isSearching
-              ? results.map((item, index) => (
-                  <div
-                    key={item.id}
-                    testId={`settings-search-result-${item.id}`}
-                    onMouseMove={() => {
-                      if (index !== activeResultIndex) setActiveResultIndex(index);
-                    }}
-                    onClick={() => handleSearchResultClick(item)}
-                    style={{
-                      display: "flex",
-                      flexDirection: "row",
-                      alignItems: "flex-start",
-                      gap: 8,
-                      minHeight: 40,
-                      paddingTop: 4,
-                      paddingBottom: 4,
-                      paddingLeft: 10,
-                      paddingRight: 10,
-                      borderRadius: RADIUS.md,
-                      backgroundColor: index === activeResultIndex ? theme.sidebar.rowSelected : "#00000000",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", height: 20 }}>
-                      <SectionIcon icon={SETTINGS_SECTION_ICONS[item.to]} size={14} color={alpha(theme.sidebar.mutedForeground, 0.6)} />
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
-                      <Text weight={500} color={theme.sidebar.foreground} truncate>
-                        {item.title}
-                      </Text>
-                      <Text size="2xs" color={alpha(theme.sidebar.mutedForeground, 0.75)} truncate>
-                        {SETTINGS_SECTION_LABELS[item.to]}
-                      </Text>
-                    </div>
-                  </div>
-                ))
-              : navItems.map((item) => {
-                  const isActive = pathname === item.to || (item.to === "/settings/general" && page === "open-source-licenses");
-                  return (
-                    <NavRow
-                      key={item.to}
-                      label={item.label}
-                      icon={item.icon}
-                      active={isActive}
-                      testId={`settings-nav-${pageForSettingsPath(item.to)}`}
-                      onClick={() => openSettingsPage(pageForSettingsPath(item.to))}
-                    />
-                  );
-                })}
+            {navItems.map((item) => {
+              const isActive = pathname === item.to || (item.to === "/settings/general" && page === "open-source-licenses");
+              return (
+                <NavRow
+                  key={item.to}
+                  label={item.label}
+                  icon={item.icon}
+                  active={isActive}
+                  testId={`settings-nav-${pageForSettingsPath(item.to)}`}
+                  onClick={() => openSettingsPage(pageForSettingsPath(item.to))}
+                />
+              );
+            })}
           </div>
         </div>
-      </div>
+      )}
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, padding: 8, flexShrink: 0 }}>
         <NavRow label="Back" icon="arrow-left" active={false} testId="settings-back" onClick={leaveSettings} />
       </div>
