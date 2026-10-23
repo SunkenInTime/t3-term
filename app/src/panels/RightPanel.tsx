@@ -6,7 +6,14 @@ import { useAtom, useAtomValue } from "@effect/atom-react";
 import { useGpuixRequired, useWindowSize, type KeyEvent } from "@gpuix/react";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import { getTerminalLabel, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
-import { AuthTerminalOperateScope, AuthTerminalReadScope, type EnvironmentId, type ThreadId } from "@t3tools/contracts";
+import {
+  AuthTerminalOperateScope,
+  AuthTerminalReadScope,
+  type EnvironmentId,
+  type ProjectId,
+  type PullRequestRef,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { useEffect, useRef, useState } from "react";
 
 import { environmentThreadShells } from "../state/environment.ts";
@@ -25,7 +32,9 @@ import {
   type RightPanelSurface,
 } from "../state/rightPanel.ts";
 import { selectThreadSessions, useEnvironmentScope, useTerminalMetadata, useThreadTerminalContext } from "../state/terminal.ts";
-import { rightPanelOpenAtom, rightPanelSurfaceAtom, sidebarOpenAtom, terminalOpenAtom } from "../state/ui.ts";
+import { rightPanelMaximizedAtom, rightPanelSurfaceAtom, sidebarOpenAtom } from "../state/ui.ts";
+import { selectedPullRequestAtom } from "../state/gitPullRequests.ts";
+import { appAtomRegistry } from "../runtime/runtime.ts";
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Menu, MenuItem, MenuSeparator, Tooltip } from "../ui/overlay.tsx";
 import { IconButton, Kbd, Text } from "../ui/primitives.tsx";
@@ -66,6 +75,9 @@ interface SurfaceAction {
   readonly available: boolean;
   readonly onClick: () => void;
 }
+
+/** Room for the pinned titlebar controls: three 28px toggles, gaps and the 12px inset. */
+const TITLEBAR_CONTROLS_INSET = 140;
 
 const STRETCH = { display: "flex", flexDirection: "column", alignItems: "stretch", alignSelf: "stretch" } as const;
 
@@ -122,8 +134,8 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
   const threadKey = threadKeyOf(environmentId, threadId);
   const state = useAtomValue(rightPanelThreadStateAtom(threadKey));
   const storedWidth = useAtomValue(rightPanelWidthAtom(threadKey));
-  const [terminalOpen, setTerminalOpen] = useAtom(terminalOpenAtom);
-  const [, setRightPanelOpen] = useAtom(rightPanelOpenAtom);
+  const maximized = useAtomValue(rightPanelMaximizedAtom);
+  const selectedPullRequest = useAtomValue(selectedPullRequestAtom(threadKey));
   const requestedKind = useAtomValue(rightPanelSurfaceAtom);
   const sidebarOpen = useAtomValue(sidebarOpenAtom);
   const shell = useAtomValue(environmentThreadShells.threadShellAtom({ environmentId, threadId } as never));
@@ -154,7 +166,6 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
   const rowWidth = window.width - (sidebarOpen ? LAYOUT.sidebarWidth : 0);
   const maxWidth = rightPanelMaxWidth(window.width, rowWidth);
   const width = Math.min(Math.max(dragWidth ?? storedWidth, RIGHT_PANEL_MIN_WIDTH), maxWidth);
-  const maximized = state.maximized === true;
 
   // Requests other areas write to the shared kind atom ("Open diff", a PR link).
   useEffect(() => {
@@ -169,11 +180,29 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
       if (existing) rightPanelActions.activate(threadKey, existing.id);
       else if (terminalContext) addTerminalSurface(terminalContext, sessionsIds());
     } else if (requestedKind === "pull-request") {
-      const existing = state.surfaces.find((surface) => surface.kind === "pull-request" || surface.kind === "pull-requests");
-      if (existing) rightPanelActions.activate(threadKey, existing.id);
-      else rightPanelActions.open(threadKey, "pull-requests");
+      openSelectedPullRequest();
     }
   }, [requestedKind]);
+
+  // openPullRequestSurface names the PR in selectedPullRequestAtom; it gets its own "#N" tab.
+  function openSelectedPullRequest() {
+    const reference = appAtomRegistry.get(selectedPullRequestAtom(threadKey));
+    if (reference) {
+      rightPanelActions.openPullRequest(threadKey, {
+        projectId: reference.projectId,
+        ...(reference.host ? { host: reference.host } : {}),
+        repository: reference.repository,
+        number: reference.number,
+      });
+      return;
+    }
+    const existing = state.surfaces.find((surface) => surface.kind === "pull-request" || surface.kind === "pull-requests");
+    if (existing) rightPanelActions.activate(threadKey, existing.id);
+    else rightPanelActions.open(threadKey, "pull-requests");
+  }
+  useEffect(() => {
+    if (selectedPullRequest !== null && lastSyncedSharedKind.current === "pull-request") openSelectedPullRequest();
+  }, [selectedPullRequest?.number, selectedPullRequest?.repository]);
 
   // Switching threads shows that thread's own active kind.
   useEffect(() => {
@@ -252,7 +281,9 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
           minHeight: LAYOUT.topbar,
           flexShrink: 0,
           paddingLeft: 8,
-          paddingRight: 12,
+          // The chat header pins maximize, terminal and right-panel toggles over
+          // this corner (web: pr-28 beside WorkspaceTitlebarControls).
+          paddingRight: TITLEBAR_CONTROLS_INSET,
           userSelect: "none",
         }}
       >
@@ -277,7 +308,17 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
               active={surface.id === state.activeSurfaceId}
               isLast={index === state.surfaces.length - 1}
               isOnly={state.surfaces.length === 1}
-              onActivate={() => rightPanelActions.activate(threadKey, surface.id)}
+              onActivate={() => {
+                if (surface.kind === "pull-request") {
+                  appAtomRegistry.set(selectedPullRequestAtom(threadKey), {
+                    projectId: surface.projectId as ProjectId,
+                    ...(surface.host ? { host: surface.host } : {}),
+                    repository: surface.repository,
+                    number: surface.number,
+                  } as PullRequestRef);
+                }
+                rightPanelActions.activate(threadKey, surface.id);
+              }}
               onClose={() => rightPanelActions.close(threadKey, surface.id)}
               onCloseOthers={() => rightPanelActions.closeOthers(threadKey, surface.id)}
               onCloseToRight={() => rightPanelActions.closeToRight(threadKey, surface.id)}
@@ -311,22 +352,6 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
           >
             <AddSurfaceMenuItems actions={actions} />
           </Menu>
-        </div>
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0, marginRight: 1 }}>
-          <Tooltip content={maximized ? "Restore panel size" : "Maximize panel"}>
-            <IconButton
-              icon={maximized ? "minimize-2" : "maximize-2"}
-              pressed={maximized}
-              onClick={() => rightPanelActions.setMaximized(threadKey, !maximized)}
-              testId="right-panel-maximize"
-            />
-          </Tooltip>
-          <Tooltip content="Toggle terminal drawer" shortcut={process.platform === "darwin" ? "⌘J" : "Ctrl+J"}>
-            <IconButton icon="panel-bottom" pressed={terminalOpen} onClick={() => setTerminalOpen(!terminalOpen)} testId="right-panel-toggle-terminal" />
-          </Tooltip>
-          <Tooltip content="Toggle right panel">
-            <IconButton icon="panel-right" pressed onClick={() => setRightPanelOpen(false)} testId="right-panel-close" />
-          </Tooltip>
         </div>
       </div>
       <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>

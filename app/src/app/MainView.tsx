@@ -74,13 +74,8 @@ export function MainHeader({ crumbs }: { crumbs: ReactNode }) {
       </div>
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>
         <IconButton icon="square-menu" pressed={details} onClick={() => setDetails(!details)} testId="toggle-details" />
-        {/* While the right panel is open its tab bar owns these two (web: PanelLayoutControls in RightPanelTabs). */}
-        {right ? null : (
-          <>
-            <IconButton icon="panel-bottom" pressed={terminal} onClick={() => setTerminal(!terminal)} testId="toggle-terminal" />
-            <IconButton icon="panel-right" pressed={right} onClick={() => setRight(!right)} testId="toggle-right-panel" />
-          </>
-        )}
+        <IconButton icon="panel-bottom" pressed={terminal} onClick={() => setTerminal(!terminal)} testId="toggle-terminal" />
+        <IconButton icon="panel-right" pressed={right} onClick={() => setRight(!right)} testId="toggle-right-panel" />
       </div>
     </div>
   );
