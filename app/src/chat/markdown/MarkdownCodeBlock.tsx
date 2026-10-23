@@ -8,7 +8,7 @@ import { memo, useEffect, useState, type ReactNode } from "react";
 import { FileEntryIcon } from "../../panels/files/FileEntryIcon.tsx";
 import { expandTabs, segmentsFor, wrapLine } from "../../panels/code/codeRows.tsx";
 import { useSyntaxTokens } from "../../panels/code/highlighter.ts";
-import { getClientSettings } from "../../state/clientSettings.ts";
+import { getClientSettings, useClientSettings } from "../../state/clientSettings.ts";
 import { Icon, type IconName } from "../../ui/Icon.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
 import { useSmallViewport } from "../../ui/viewport.tsx";
@@ -226,7 +226,10 @@ export const HighlightedCode = memo(function HighlightedCode({
   const block = styles.codeBlock;
   const source = code.endsWith("\n") ? code.slice(0, -1) : code;
   const tokens = useSyntaxTokens(source, syntheticFileNameForLanguageId(language), palette.appearance);
-  const charWidth = textWidth({ family: "mono", weight: 400 }, block.textSize, "0");
+  // --font-size-code (Settings → Typography, default 13) at leading-snug.
+  const textSize = useClientSettings((settings) => settings.fontSizeCode);
+  const lineHeight = textSize * 1.375;
+  const charWidth = textWidth({ family: "mono", weight: 400 }, textSize, "0");
   const contentWidth = width - 2 * block.padX;
   const columns = wrapped ? Math.max(8, Math.floor(contentWidth / charWidth)) : Number.MAX_SAFE_INTEGER;
   const fallback = palette.foreground;
@@ -237,15 +240,15 @@ export const HighlightedCode = memo(function HighlightedCode({
     for (const [start, end] of wrapLine(line, columns)) {
       const segments = segmentsFor(line, lineTokens, start, end, [], fallback);
       rows.push(
-        <div key={`${lineIndex}:${start}`} style={{ display: "flex", flexDirection: "row", height: block.lineHeight, flexShrink: 0 }}>
+        <div key={`${lineIndex}:${start}`} style={{ display: "flex", flexDirection: "row", height: lineHeight, flexShrink: 0 }}>
           {segments.map((segment, index) => (
             <text
               key={index}
               style={{
                 color: segment.color,
                 fontFamily: FONTS.mono,
-                fontSize: block.textSize,
-                lineHeight: block.lineHeight,
+                fontSize: textSize,
+                lineHeight,
                 whiteSpace: "nowrap",
                 flexShrink: 0,
               }}
