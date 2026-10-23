@@ -8,10 +8,11 @@ import { OPENAI_SVG } from "../../sidebar/providerMarks.gen.ts";
 import { Button, Text } from "../../ui/primitives.tsx";
 import { useTheme } from "../../ui/theme.ts";
 import { openExternalUrl } from "../../usage/openExternal.ts";
+import { withDevChatGptSharing } from "./devComposerBanners.ts";
 
 export function ChatGptSharingControl({ provider }: { provider: ServerProvider | null }) {
   const theme = useTheme();
-  if (!usesChatGptSharing(provider)) return null;
+  if (!usesChatGptSharing(withDevChatGptSharing(provider))) return null;
   return (
     <div
       testId="chatgpt-sharing-control"

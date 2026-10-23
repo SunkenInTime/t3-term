@@ -3,7 +3,7 @@
 // a checkout on another branch). Inert unless set:
 //
 //   T3TERM_DEV_COMPOSER_BANNERS=goal,child-input,background,branch,limit,feedback-sent,feedback-failed,
-//     feedback-uploading,tasks,provider-warning,provider-error,provider-unauthenticated,provider-unsupported
+//     feedback-uploading,tasks,chatgpt-sharing,provider-warning,provider-error,provider-unauthenticated,provider-unsupported
 //
 // Each flag only replaces the data the banner reads in the open thread; buttons on the
 // banners still run their real commands, so don't click them against a real thread.
@@ -118,4 +118,10 @@ export function devComposerTasks<T>(threadId: string | null, real: T | null): T 
       { step: "Run the sandbox checks", status: "pending" },
     ],
   } as T;
+}
+
+/** `chatgpt-sharing`: the provider reports it runs on the user's ChatGPT plan. */
+export function withDevChatGptSharing(provider: ServerProvider | null): ServerProvider | null {
+  if (!provider || !flags.has("chatgpt-sharing")) return provider;
+  return { ...provider, auth: { ...provider.auth, status: "authenticated", subscriptionSharing: true } } as ServerProvider;
 }
