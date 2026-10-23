@@ -3,7 +3,8 @@
 // The ui kit's Dialog fixes header/footer layout and has no close button or
 // initial-focus target, which these dialogs need, so they compose the gpuix
 // primitive directly with the same surface styles.
-import { dialogGlassShadow } from "../ui/overlay.tsx";
+import { dialogGlassShadow, reversedChildren } from "../ui/overlay.tsx";
+import { useAtomValue } from "@effect/atom-react";
 import * as DialogPrimitive from "@gpuix/react/dialog";
 import type { PublicInstance } from "@gpuix/react";
 import { useState, type ReactNode, type RefObject } from "react";
@@ -11,6 +12,7 @@ import { useState, type ReactNode, type RefObject } from "react";
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { IconButton, Text, type Style } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../ui/theme.ts";
+import { useSmallViewport, viewportWidthAtom } from "../ui/viewport.tsx";
 
 /** Tailwind max-w-* values the web dialogs use. */
 export const DIALOG_WIDTH = { sm: 384, lg: 512, xl: 576 } as const;
@@ -32,9 +34,19 @@ export function DialogShell({
 }) {
   const theme = useTheme();
   const dark = theme.appearance === "dark";
+  // dialog.tsx: `p-4` around the popup; below `sm` a full-width sheet docked to the
+  // bottom (bottomStickOnMobile, DIALOG_MOBILE_SHEET_CLASS).
+  const small = useSmallViewport();
+  const viewportWidth = useAtomValue(viewportWidthAtom);
   return (
     <DialogPrimitive.Root open onOpenChange={onOpenChange}>
-      <DialogPrimitive.Portal>
+      <DialogPrimitive.Portal
+        style={
+          small
+            ? { flexDirection: "column", justifyContent: "flex-end", alignItems: "stretch", paddingTop: 48 }
+            : { flexDirection: "column", justifyContent: "center", alignItems: "center", padding: 16 }
+        }
+      >
         <DialogPrimitive.Backdrop
           style={{
             position: "absolute",
@@ -53,11 +65,9 @@ export function DialogShell({
             position: "relative",
             display: "flex",
             flexDirection: "column",
-            width,
-            maxWidth: "92%",
-            maxHeight: "96%",
-            borderRadius: RADIUS["2xl"],
-            borderWidth: 1,
+            ...(small
+              ? { width: "100%", maxHeight: "100%", borderRadius: 0, borderTopWidth: 1 }
+              : { width: Math.min(width, Math.max(0, viewportWidth - 32)), maxHeight: "100%", borderRadius: RADIUS["2xl"], borderWidth: 1 }),
             borderColor: dark ? alpha("#ffffff", 0.08) : alpha(theme.foreground, 0.1),
             backgroundColor: dark ? "#0f0f0f" : "#ffffff",
             boxShadow: dialogGlassShadow(theme),
@@ -95,6 +105,7 @@ export function DialogHeader({
   hasPanel: boolean;
 }) {
   const theme = useTheme();
+  const small = useSmallViewport();
   return (
     <div
       style={{
@@ -104,7 +115,8 @@ export function DialogHeader({
         paddingTop: 24,
         paddingLeft: 24,
         paddingRight: 24,
-        paddingBottom: hasPanel ? 12 : 24,
+        // `pb-3` before a panel, `max-sm:pb-4`.
+        paddingBottom: small ? 16 : hasPanel ? 12 : 24,
       }}
     >
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -174,13 +186,15 @@ export function DialogPanel({ children, gap = 16 }: { children: ReactNode; gap?:
 /** DialogFooter: border-t, bg-muted/72, py-4 px-6, buttons end-aligned with gap-2. */
 export function DialogFooter({ children }: { children: ReactNode }) {
   const theme = useTheme();
+  // `flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:rounded-b-*`
+  const small = useSmallViewport();
   return (
     <div
       style={{
         display: "flex",
-        flexDirection: "row",
+        flexDirection: small ? "column" : "row",
         justifyContent: "flex-end",
-        alignItems: "center",
+        alignItems: small ? "stretch" : "center",
         gap: 8,
         paddingTop: 16,
         paddingBottom: 16,
@@ -191,12 +205,12 @@ export function DialogFooter({ children }: { children: ReactNode }) {
         backgroundColor: alpha(theme.muted, 0.72),
         // sm:rounded-b-[calc(var(--radius-2xl)-1px)]: the popup's overflow clip is
         // rectangular, so the footer fill rounds its own corners.
-        borderBottomLeftRadius: RADIUS["2xl"] - 1,
-        borderBottomRightRadius: RADIUS["2xl"] - 1,
+        borderBottomLeftRadius: small ? 0 : RADIUS["2xl"] - 1,
+        borderBottomRightRadius: small ? 0 : RADIUS["2xl"] - 1,
         flexShrink: 0,
       }}
     >
-      {children}
+      {small ? reversedChildren(children) : children}
     </div>
   );
 }
@@ -295,8 +309,10 @@ export function TextField({
 }) {
   const theme = useTheme();
   const [focused, setFocused] = useState(false);
+  // input.tsx: `h-8.5 sm:h-7.5` inside the border, `text-base sm:text-sm`.
+  const small = useSmallViewport();
   return (
-    <FieldFrame focused={focused} invalid={invalid}>
+    <FieldFrame focused={focused} invalid={invalid} {...(small ? { height: 36 } : {})}>
       <input
         ref={inputRef}
         testId={testId}
@@ -311,10 +327,10 @@ export function TextField({
         style={{
           flexGrow: 1,
           minWidth: 0,
-          height: 24,
+          height: small ? 28 : 24,
           paddingLeft: 8,
           paddingRight: 8,
-          fontSize: 14,
+          fontSize: small ? 16 : 14,
           color: theme.foreground,
           fontFamily: mono ? FONTS.mono : FONTS.sans,
         }}

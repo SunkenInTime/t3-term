@@ -12,6 +12,7 @@ import { ANTIGRAVITY_DEFAULT_MODEL } from "@t3tools/contracts";
 
 import { Popover, Tooltip } from "../../ui/overlay.tsx";
 import { alpha, useTheme } from "../../ui/theme.ts";
+import { useSmallViewport } from "../../ui/viewport.tsx";
 import { resolveModelPickerSelectedModel } from "../../web/components/chat/ModelPickerContent.logic.ts";
 import {
   getTriggerDisplayModelLabel,
@@ -194,7 +195,7 @@ function ModelPickerTriggerLabel({
   collapsed: boolean;
 }) {
   const theme = useTheme();
-  const style = composerControlLabelStyle(theme, size);
+  const style = composerControlLabelStyle(theme, size, undefined, undefined, useSmallViewport());
   return (
     <div
       style={{

@@ -3,6 +3,7 @@ import type { Props, StyleDesc } from "@gpuix/react";
 
 import { Icon, type IconName } from "./Icon.tsx";
 import { FONTS, RADIUS, TEXT, alpha, useTheme } from "./theme.ts";
+import { useSmallViewport } from "./viewport.tsx";
 
 export type Style = StyleDesc;
 
@@ -79,6 +80,16 @@ const BUTTON_SIZES = {
   xs: { height: 24, paddingX: 7, text: "xs", icon: 14 },
 } as const;
 
+/**
+ * button.tsx is mobile-first: below `sm` every size is 4px taller with text and icons a
+ * step up (`h-9 sm:h-8`, `text-base sm:text-sm`, `size-4.5 sm:size-4`).
+ */
+const BUTTON_SIZES_SMALL_VIEWPORT = {
+  default: { height: 36, paddingX: 11, text: "base", icon: 18 },
+  sm: { height: 32, paddingX: 9, text: "base", icon: 18 },
+  xs: { height: 28, paddingX: 7, text: "sm", icon: 16 },
+} as const;
+
 /** apps/web/src/components/ui/button.tsx */
 export function Button({
   children,
@@ -102,7 +113,7 @@ export function Button({
   testId?: string;
 }) {
   const theme = useTheme();
-  const dims = BUTTON_SIZES[size];
+  const dims = (useSmallViewport() ? BUTTON_SIZES_SMALL_VIEWPORT : BUTTON_SIZES)[size];
   const palette = buttonPalette(theme, variant);
   return (
     <div
@@ -174,11 +185,17 @@ function buttonPalette(theme: ReturnType<typeof useTheme>, variant: ButtonVarian
   }
 }
 
-/** Square icon-only button: icon (32), icon-sm (28), icon-xs (24), icon-micro (20). */
+/**
+ * Square icon-only button: icon (32), icon-sm (28), icon-xs (24), icon-micro (20).
+ * `responsive` follows button.tsx below `sm`: icon 36, icon-sm 32, icon-xs 28
+ * (icon-micro keeps 20). Off by default because many call sites pin web's
+ * explicit `size-*` overrides.
+ */
 export function IconButton({
   icon,
-  size = 28,
+  size: baseSize = 28,
   iconSize = 16,
+  responsive,
   color,
   pressed,
   disabled,
@@ -197,8 +214,11 @@ export function IconButton({
   testId?: string;
   style?: Style;
   hoverBg?: string;
+  responsive?: boolean;
 }) {
   const theme = useTheme();
+  const small = useSmallViewport();
+  const size = responsive && small && baseSize > 20 ? baseSize + 4 : baseSize;
   return (
     <div
       testId={testId}
