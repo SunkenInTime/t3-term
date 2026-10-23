@@ -5,8 +5,8 @@
 // Not ported: the "Show where … is used" tooltips. On the web a selected role
 // highlights its uses in the DOM; gpuix paints resolved colors with no record
 // of which role produced them, so there is nothing to highlight.
-import type { EventPayload } from "@gpuix/react";
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { useWindowSize, type EventPayload } from "@gpuix/react";
+import { createContext, memo, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { Popover } from "../../ui/overlay.tsx";
 import { Text } from "../../ui/primitives.tsx";
@@ -21,6 +21,17 @@ import {
   themeRgbValue,
 } from "../../web/components/settings/ThemeEditorPanel.logic.ts";
 import { isThemeColor, themeColorToHex, type ThemeColorRole } from "../../web/themePalette.ts";
+
+/**
+ * web's --ring under the editor's preview: the draft's focus role. The Palette
+ * has no ring token (primary is the message action), so the panel provides it.
+ */
+export const ThemeEditorRingContext = createContext<string | null>(null);
+
+export function useEditorRing(): string {
+  const theme = useTheme();
+  return useContext(ThemeEditorRingContext) ?? theme.primary;
+}
 
 function clamp(value: number) {
   return Math.min(1, Math.max(0, value));
@@ -106,6 +117,7 @@ function ColorSaturationValuePlane({
         borderRadius: RADIUS.lg,
         backgroundColor: hsvToHex(value.h, 1, 1),
         cursor: "crosshair",
+        userSelect: "none",
         flexShrink: 0,
       }}
     >
@@ -181,7 +193,7 @@ function ColorHueSlider({
         const next = readBounds(event)?.width;
         if (next && Math.abs(next - width) > 0.5) setWidth(next);
       }}
-      style={{ position: "relative", display: "flex", flexDirection: "row", alignItems: "center", height: 24, cursor: "pointer", flexShrink: 0 }}
+      style={{ position: "relative", display: "flex", flexDirection: "row", alignItems: "center", height: 24, cursor: "pointer", userSelect: "none", flexShrink: 0 }}
     >
       <div
         style={{
@@ -253,6 +265,7 @@ function PickerTextField({
   grow: number;
 }) {
   const theme = useTheme();
+  const ring = useEditorRing();
   const [focused, setFocused] = useState(false);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4, flexGrow: grow, flexBasis: 0, minWidth: 0 }}>
@@ -272,7 +285,7 @@ function PickerTextField({
           paddingRight: 8,
           borderRadius: RADIUS.lg,
           borderWidth: 1,
-          borderColor: focused ? theme.primary : theme.input,
+          borderColor: focused ? ring : theme.input,
           backgroundColor: theme.background,
         }}
       >
@@ -470,6 +483,9 @@ function ThemeColorPickerPanel({
   );
 }
 
+/** ThemeColorPickerPanel's height: header, plane, hue slider, HEX/RGB fields. */
+const PICKER_HEIGHT = 330;
+
 function ThemeColorPicker({
   label,
   value,
@@ -484,10 +500,19 @@ function ThemeColorPicker({
   testId?: string;
 }) {
   const theme = useTheme();
+  const windowHeight = useWindowSize().height;
   const [open, setOpen] = useState(false);
+  const [swatchTop, setSwatchTop] = useState<number | null>(null);
+  // The web popup flips above the swatch when it would leave the window;
+  // FloatingLayer only slides it back inside, over the swatch, so the side is
+  // chosen here.
+  const side = swatchTop !== null && swatchTop + 24 + 10 + PICKER_HEIGHT > windowHeight ? "top" : "bottom";
   const swatch: ReactNode = (
     <div
       testId={testId}
+      onLayout={(event: EventPayload) => {
+        if (typeof event.y === "number") setSwatchTop(event.y);
+      }}
       onClick={() => {
         onInteract?.();
         setOpen(!open);
@@ -509,7 +534,7 @@ function ThemeColorPicker({
       open={open}
       onOpenChange={setOpen}
       trigger={swatch}
-      side="bottom"
+      side={side}
       align="end"
       sideOffset={10}
       testId={testId ? `${testId}-popover` : undefined}
@@ -535,6 +560,7 @@ function HexInput({
   testId?: string;
 }) {
   const theme = useTheme();
+  const ring = useEditorRing();
   const [focused, setFocused] = useState(false);
   const dark = theme.appearance === "dark";
   return (
@@ -552,7 +578,7 @@ function HexInput({
         borderColor: focused
           ? invalid
             ? alpha(theme.error, 0.64)
-            : theme.primary
+            : ring
           : invalid
             ? alpha(theme.error, 0.36)
             : theme.input,
@@ -594,6 +620,7 @@ export const ThemeColorField = memo(function ThemeColorField({
   label?: string;
 }) {
   const theme = useTheme();
+  const ring = useEditorRing();
   const [labelHovered, setLabelHovered] = useState(false);
   const label = customLabel ?? getThemeRoleLabel(role);
   const isColorValue = isThemeColor(value);
@@ -616,7 +643,7 @@ export const ThemeColorField = memo(function ThemeColorField({
         paddingBottom: 6,
         borderRadius: RADIUS.lg,
         borderWidth: 1,
-        borderColor: selected ? theme.primary : "#00000000",
+        borderColor: selected ? ring : "#00000000",
         backgroundColor: selected ? alpha(theme.accent, 0.6) : "#00000000",
       }}
     >

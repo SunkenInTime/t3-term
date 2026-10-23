@@ -6,7 +6,7 @@
 // Not ported: "Inspect" (click an element to jump to its color role) and the
 // "· N uses" count. Both read the DOM's computed styles; gpuix paints resolved
 // colors with no record of which theme role produced them.
-import { useWindowSize, type EventPayload } from "@gpuix/react";
+import { useGpuixRequired, useWindowSize, type EventPayload, type PublicInstance } from "@gpuix/react";
 import { useEffect, useRef, useState } from "react";
 
 import { setThemePreview } from "../../state/clientSettings.ts";
@@ -34,6 +34,7 @@ import {
   installCustomTheme,
   isThemeColor,
   parseThemeFile,
+  themeColorToHex,
   removeCustomTheme,
   themeIdFromName,
   updateCustomTheme,
@@ -43,7 +44,7 @@ import {
   type ThemeColors,
   type ThemeDefinition,
 } from "../../web/themePalette.ts";
-import { ThemeColorField } from "./ThemeColorPicker.tsx";
+import { ThemeColorField, ThemeEditorRingContext, useEditorRing } from "./ThemeColorPicker.tsx";
 
 const PANEL_MARGIN = 8;
 const MIN_WIDTH = 280;
@@ -90,6 +91,10 @@ export function ThemeEditorPanel({
   const theme = useTheme();
   const windowSize = useWindowSize();
   const isEditing = editingTheme !== null;
+  // The body scrolls only when its content overflows; a gpuix scroller draws
+  // its bar even when everything fits.
+  const [bodyHeight, setBodyHeight] = useState(0);
+  const [contentHeight, setContentHeight] = useState(0);
 
   // Seeded once per session (the host keys the panel by session id), like the
   // web's seed-during-render on open.
@@ -543,6 +548,7 @@ export function ThemeEditorPanel({
       : getThemeRoleLabel(selectedRole)
     : "Select a color below";
   const dark = theme.appearance === "dark";
+  const ringColor = themeColorToHex(colorsByAppearance[activeAppearance].focus)?.slice(0, 7) ?? theme.primary;
   const submitLabel = isEditing
     ? mergeTarget
       ? `Merge into “${mergeTarget.label}”`
@@ -553,6 +559,7 @@ export function ThemeEditorPanel({
 
   return (
     <anchored fill="window" deferred priority={0} occlude={false} style={{ backgroundColor: "transparent", pointerEvents: "none" }}>
+      <ThemeEditorRingContext.Provider value={ringColor}>
       <div
         testId="theme-editor-panel"
         onLayout={(event: EventPayload) => {
@@ -625,6 +632,7 @@ export function ThemeEditorPanel({
               minWidth: 0,
               height: 24,
               cursor: "grab",
+              userSelect: "none",
             }}
           >
             <Text weight={500} style={{ flexShrink: 0 }}>
@@ -650,31 +658,46 @@ export function ThemeEditorPanel({
           <>
             <div
               testId="theme-editor-body"
+              onLayout={(event: EventPayload) => {
+                const h = (event as EventPayload & { height?: number }).height;
+                if (typeof h === "number") setBodyHeight(h);
+              }}
               style={{
                 display: "flex",
                 flexDirection: "column",
-                gap: 12,
                 flexGrow: 1,
                 flexShrink: 1,
                 minHeight: 0,
-                overflowY: "scroll",
-                scrollbarColor: theme.scrollbar,
-                paddingTop: 12,
-                paddingBottom: 12,
-                paddingLeft: 12,
-                paddingRight: 6,
+                ...(contentHeight > bodyHeight + 0.5 ? { overflowY: "scroll", scrollbarColor: theme.scrollbar } : { overflow: "hidden" }),
               }}
             >
-              {renderNameField()}
-              {error ? (
-                <Text color={theme.errorForeground} testId="theme-editor-error">
-                  {error}
-                </Text>
-              ) : null}
-              {renderAppearanceButtons()}
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {renderColorsHeader()}
-                {renderColorFields()}
+              <div
+                onLayout={(event: EventPayload) => {
+                  const h = (event as EventPayload & { height?: number }).height;
+                  if (typeof h === "number") setContentHeight(h);
+                }}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 12,
+                  flexShrink: 0,
+                  paddingTop: 12,
+                  paddingBottom: 12,
+                  paddingLeft: 12,
+                  paddingRight: 6,
+                }}
+              >
+                {renderNameField()}
+                {error ? (
+                  <Text color={theme.errorForeground} testId="theme-editor-error">
+                    {error}
+                  </Text>
+                ) : null}
+                {renderAppearanceButtons()}
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {renderColorsHeader()}
+                  {renderColorFields()}
+                </div>
               </div>
             </div>
             <div
@@ -744,6 +767,7 @@ export function ThemeEditorPanel({
                 justifyContent: "flex-end",
                 padding: 4,
                 cursor: "nwse-resize",
+                userSelect: "none",
               }}
             >
               <svg
@@ -754,6 +778,7 @@ export function ThemeEditorPanel({
           </>
         )}
       </div>
+      </ThemeEditorRingContext.Provider>
     </anchored>
   );
 }
@@ -773,7 +798,18 @@ function SmallInput({
   testId?: string;
 }) {
   const theme = useTheme();
+  const ring = useEditorRing();
+  const renderer = useGpuixRequired();
+  const inputRef = useRef<PublicInstance | null>(null);
   const [focused, setFocused] = useState(false);
+  // autoFocus inside the deferred layer does not take the focus from the
+  // composer underneath, so focus explicitly. focusElement skips onFocus.
+  useEffect(() => {
+    if (!autoFocus || !inputRef.current) return;
+    const id = inputRef.current.id;
+    renderer.focusElement?.(id);
+    setFocused(renderer.getFocusedElementId?.() === id);
+  }, [autoFocus, renderer]);
   const dark = theme.appearance === "dark";
   return (
     <div
@@ -784,12 +820,13 @@ function SmallInput({
         height: 28,
         borderRadius: RADIUS.lg,
         borderWidth: 1,
-        borderColor: focused ? theme.primary : theme.input,
+        borderColor: focused ? ring : theme.input,
         backgroundColor: dark ? alpha(theme.input, 0.32) : theme.background,
-        boxShadow: focused ? { offsetX: 0, offsetY: 0, blurRadius: 0, spreadRadius: 2, color: alpha(theme.primary, 0.24) } : undefined,
+        boxShadow: focused ? { offsetX: 0, offsetY: 0, blurRadius: 0, spreadRadius: 2, color: alpha(ring, 0.24) } : undefined,
       }}
     >
       <input
+        ref={inputRef}
         testId={testId}
         value={value}
         placeholder={placeholder}

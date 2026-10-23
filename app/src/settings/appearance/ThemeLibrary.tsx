@@ -31,6 +31,7 @@ import {
   type ThemeDefinition,
 } from "../../ui/theme.ts";
 import { removeCustomThemes } from "../../web/themePalette.ts";
+import { claimClick, consumeClaimedClick } from "../../sidebar/clickGuard.ts";
 import { searchableSetting } from "../../web/components/settings/settingsSearch.ts";
 import { CustomThemeDialog } from "./CustomThemeDialog.tsx";
 import { applyStandardTheme, assignHalf, ownerOf, setTheme, setThemeHalf } from "./themeActions.ts";
@@ -103,7 +104,11 @@ function ThemeLibraryCard({
     >
       <div
         testId={`theme-card-${card.id}`}
-        onClick={onUse}
+        onClick={() => {
+          // web stops propagation on the card's buttons; gpuix clicks every hitbox under the pointer.
+          if (consumeClaimedClick()) return;
+          onUse();
+        }}
         style={{
           display: "flex",
           flexDirection: "column",
@@ -140,7 +145,7 @@ function ThemeLibraryCard({
               {card.label}
             </Text>
           </div>
-          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>
+          <div onMouseDown={claimClick} style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>
             <Tooltip content="Duplicate theme" side="top">
               <IconButton icon="copy" size={24} iconSize={14} onClick={onDuplicate} testId={`theme-duplicate-${card.id}`} />
             </Tooltip>
