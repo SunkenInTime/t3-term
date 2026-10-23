@@ -1,5 +1,7 @@
 // Port of apps/web/src/components/chat/ChatHeader.tsx (breadcrumb, title menu,
 // inline rename) with the panel toggles of PanelLayoutControls.tsx.
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { startNewThread } from "../../palette/actions.ts";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import type { EventPayload } from "@gpuix/native";
 import type { KeyEvent } from "@gpuix/react";
@@ -304,7 +306,7 @@ function ThreadBreadcrumb({
             testId="header-project"
             tooltip={`New thread in ${projectName}`}
             onClick={() =>
-              appAtomRegistry.set(routeAtom, { kind: "draft", environmentId: thread.environmentId, projectId: thread.projectId })
+              startNewThread(scopeProjectRef(thread.environmentId, thread.projectId))
             }
           >
             {(hovered) => (

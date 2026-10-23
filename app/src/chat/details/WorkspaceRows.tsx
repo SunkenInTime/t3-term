@@ -29,7 +29,10 @@ import { projectScriptMenuLabel, projectScriptTerminalInput, resolveProjectScrip
 import * as Option from "effect/Option";
 import { useState, type ReactNode } from "react";
 
+import { resolveNewThreadEnvMode, resolveProjectSettings } from "@t3tools/shared/projectSettings";
+
 import { appAtomRegistry } from "../../runtime/runtime.ts";
+import { composerDraftAtom, setDraftWorkspace } from "../../state/composer.ts";
 import { environmentCatalog, serverEnvironment, shellEnvironment } from "../../state/environment.ts";
 import {
   lastInvokedScriptPref,
@@ -190,24 +193,35 @@ function useEnvironmentLabel(environmentId: EnvironmentId): string {
 export function RunContextRow({
   environmentId,
   thread,
+  draftKey = "",
   project,
   envLocked,
 }: {
   environmentId: EnvironmentId;
-  thread: EnvironmentThreadShell;
+  /** Null for a new-thread draft, whose workspace lives on the composer draft (`draftKey`). */
+  thread: EnvironmentThreadShell | null;
+  draftKey?: string;
   project: OrchestrationProjectShell;
   envLocked: boolean;
 }) {
   const theme = useTheme();
   const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const environmentLabel = useEnvironmentLabel(environmentId);
-  const threadKey = `${environmentId}:${thread.id}`;
+  const threadKey = thread ? `${environmentId}:${thread.id}` : "";
   const pendingEnvMode = useAtomValue(pendingEnvModeAtom(threadKey));
+  const draft = useAtomValue(composerDraftAtom(draftKey));
   const [open, setOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
-  const activeWorktreePath = thread.worktreePath;
-  const effectiveEnvMode = activeWorktreePath ? "worktree" : (pendingEnvMode ?? "local");
-  const envModeLocked = envLocked || activeWorktreePath !== null;
+  const activeWorktreePath = thread ? thread.worktreePath : (draft.worktreePath ?? null);
+  // A draft that reuses an existing worktree counts as its current checkout (composer BranchToolbar).
+  const effectiveEnvMode = thread
+    ? activeWorktreePath
+      ? "worktree"
+      : (pendingEnvMode ?? "local")
+    : activeWorktreePath
+      ? "local"
+      : (draft.envMode ?? "local");
+  const envModeLocked = thread ? envLocked || activeWorktreePath !== null : false;
   const workspaceIcon: IconName = effectiveEnvMode === "worktree" ? "folder-git-2" : activeWorktreePath ? "folder-git" : "folder";
   const workspaceLabel = envModeLocked
     ? resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode)
@@ -252,7 +266,16 @@ export function RunContextRow({
   );
   const choose = (mode: "local" | "worktree") => {
     setOpen(false);
-    appAtomRegistry.set(pendingEnvModeAtom(threadKey), mode);
+    if (thread) {
+      appAtomRegistry.set(pendingEnvModeAtom(threadKey), mode);
+      return;
+    }
+    const projectSettings = config ? resolveProjectSettings(config.settings, project.id, project, null) : null;
+    setDraftWorkspace(draftKey, {
+      envMode: mode,
+      startFromOrigin: mode === "worktree" && (projectSettings?.settings.newWorktreesStartFromOrigin ?? false),
+      ...(mode === "worktree" && activeWorktreePath ? { worktreePath: null } : {}),
+    });
   };
   return (
     <div style={{ display: "flex", position: "relative", width: "100%", flexDirection: "column" }}>
@@ -482,7 +505,8 @@ export function ProjectScriptsRow({
   gitCwd,
 }: {
   environmentId: EnvironmentId;
-  thread: EnvironmentThreadShell;
+  /** Null for a draft: scripts open in a thread's terminal, so they run once the thread exists. */
+  thread: EnvironmentThreadShell | null;
   project: OrchestrationProjectShell;
   gitCwd: string | null;
 }) {
@@ -500,6 +524,10 @@ export function ProjectScriptsRow({
 
   const runScript = async (script: ProjectScript) => {
     setMenuOpen(false);
+    if (!thread) {
+      toast({ type: "info", title: `Send a message first to run "${script.name}"`, description: "Scripts run in the thread's terminal." });
+      return;
+    }
     if (!readEnvironmentScope(environmentId, AuthTerminalOperateScope)) {
       toast({ type: "error", title: "Cannot run scripts", description: "Pair this client again with permission to run terminal commands." });
       return;

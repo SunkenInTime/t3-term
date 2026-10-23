@@ -201,10 +201,14 @@ export function Composer({
   layout = target.kind === "thread" ? "overlay" : "inline",
 }: {
   target: ComposerTarget;
-  /** `overlay` pins the composer to the bottom of the chat canvas; `inline` leaves placement to the parent. */
-  layout?: "overlay" | "inline";
+  /**
+   * `overlay` pins the composer to the bottom of the chat canvas; `inline` centers it
+   * with the lane padding; `lane` fills a parent that is already a ChatLane.
+   */
+  layout?: "overlay" | "inline" | "lane";
 }) {
   const lane = <ComposerLane target={target} />;
+  if (layout === "lane") return <div style={{ display: "flex", flexDirection: "row", width: "100%" }}>{lane}</div>;
   return layout === "overlay" ? (
     <ComposerOverlay>{lane}</ComposerOverlay>
   ) : (

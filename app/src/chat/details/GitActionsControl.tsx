@@ -26,6 +26,7 @@ import { DismissableLayer } from "@gpuix/react";
 import { useEffect, useState } from "react";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
+import { readComposerDraft, setDraftWorkspace } from "../../state/composer.ts";
 import { threadEnvironment } from "../../state/environment.ts";
 import { openDiffSurface, vcsActionManager, vcsEnvironment } from "../../state/git.ts";
 import { Icon, type IconName } from "../../ui/Icon.tsx";
@@ -187,11 +188,14 @@ function TwoLine({ icon, iconColor, title, detail }: { icon: IconName; iconColor
 export function GitActionsControl({
   environmentId,
   thread,
+  draftKey = "",
   gitCwd,
   compact,
 }: {
   environmentId: EnvironmentId;
-  thread: EnvironmentThreadShell;
+  /** Null for a new-thread draft: a branch the action lands on goes to the draft (`draftKey`). */
+  thread: EnvironmentThreadShell | null;
+  draftKey?: string;
   gitCwd: string;
   compact: boolean;
 }) {
@@ -265,6 +269,11 @@ export function GitActionsControl({
 
   const syncThreadBranch = (result: GitRunStackedActionResult) => {
     const update = resolveThreadBranchUpdate(result);
+    if (!thread) {
+      const draft = readComposerDraft(draftKey);
+      if (update && draft.branch !== update.branch) setDraftWorkspace(draftKey, { branch: update.branch });
+      return;
+    }
     if (!update || thread.branch === update.branch) return;
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
     void runAtomCommand(appAtomRegistry, threadEnvironment.updateMetadata, {
@@ -307,7 +316,7 @@ export function GitActionsControl({
         ...(input.commitMessage ? { commitMessage: input.commitMessage } : {}),
         ...(input.featureBranch ? { featureBranch: true } : {}),
         ...(input.filePaths ? { filePaths: input.filePaths } : {}),
-        threadId: thread.id,
+        ...(thread ? { threadId: thread.id } : {}),
       },
       { reportFailure: false },
     )) as AtomCommandResult<GitRunStackedActionResult, unknown>;
@@ -558,7 +567,12 @@ export function GitActionsControl({
   return (
     <>
       {showGroup ? group : null}
-      <DetailsRow testId="git-changes" onClick={() => openDiffSurface({ environmentId, threadId: thread.id })}>
+      {/* web: a draft has no thread diff to open, so its Changes row is disabled. */}
+      <DetailsRow
+        testId="git-changes"
+        disabled={thread === null}
+        onClick={thread ? () => openDiffSurface({ environmentId, threadId: thread.id }) : undefined}
+      >
         <DetailsIcon name="file-diff" />
         <DetailsLabel>Changes</DetailsLabel>
         <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>

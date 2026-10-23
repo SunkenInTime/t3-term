@@ -68,6 +68,8 @@ export interface ComposerDraft {
   readonly attachments: ReadonlyArray<ComposerAttachmentDraft>;
   readonly modelSelectionByProvider: Readonly<Partial<Record<ProviderInstanceId, ModelSelection>>>;
   readonly activeProvider: ProviderInstanceId | null;
+  /** The user picked the model here (web modelSelectionExplicit); a carried-over model does not count. */
+  readonly modelSelectionExplicit?: boolean;
   readonly runtimeMode: RuntimeMode | null;
   readonly interactionMode: ProviderInteractionMode | null;
   /** New-thread drafts only: where the thread runs. */
@@ -258,18 +260,27 @@ export function restoreComposerContent(
 export function setComposerModelSelection(
   key: string,
   selection: ModelSelection,
-  options?: { readonly sticky?: boolean },
+  options?: {
+    readonly sticky?: boolean;
+    /** False for a model carried into a new draft rather than picked by the user. */
+    readonly explicit?: boolean;
+    /** Take the selection's options as they are (web setModelSelection replaceOptions). */
+    readonly replaceOptions?: boolean;
+  },
 ): void {
   updateComposerDraft(key, (draft) => ({
     ...draft,
     activeProvider: selection.instanceId,
+    modelSelectionExplicit: options?.explicit ?? true,
     modelSelectionByProvider: {
       ...draft.modelSelectionByProvider,
-      [selection.instanceId]: {
-        ...selection,
-        // A model switch keeps the options the user chose for that instance.
-        options: selection.options ?? draft.modelSelectionByProvider[selection.instanceId]?.options,
-      },
+      [selection.instanceId]: options?.replaceOptions
+        ? selection
+        : {
+            ...selection,
+            // A model switch keeps the options the user chose for that instance.
+            options: selection.options ?? draft.modelSelectionByProvider[selection.instanceId]?.options,
+          },
     },
   }));
   if (options?.sticky !== false) {

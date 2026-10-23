@@ -22,6 +22,7 @@ import {
 import { useState, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
+import { composerDraftAtom, setDraftWorkspace } from "../../state/composer.ts";
 import { threadEnvironment } from "../../state/environment.ts";
 import { pendingEnvModeAtom, vcsEnvironment } from "../../state/git.ts";
 import { surfaceStyle } from "../../ui/overlay.tsx";
@@ -36,6 +37,7 @@ import {
   resolveBranchTriggerLabel,
   sanitizeNewRefName,
   shouldIncludeBranchPickerItem,
+  resolveDraftEnvModeAfterBranchChange,
 } from "../../web/components/BranchToolbar.logic.ts";
 import { useEnvironmentQuery } from "../../web/state/query.ts";
 import { readEnvironmentScope, useEnvironmentScope } from "../../web/state/session.ts";
@@ -55,19 +57,29 @@ function errorMessage(error: unknown): string {
 export function BranchRow({
   environmentId,
   thread,
+  draftKey = "",
   projectCwd,
 }: {
   environmentId: EnvironmentId;
-  thread: EnvironmentThreadShell;
+  /** Null for a new-thread draft: the branch is stored on the composer draft (`draftKey`). */
+  thread: EnvironmentThreadShell | null;
+  draftKey?: string;
   projectCwd: string;
 }) {
   const theme = useTheme();
   const canWrite = useEnvironmentScope(environmentId, AuthSourceControlWriteScope);
   const canOperate = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
-  const threadKey = `${environmentId}:${thread.id}`;
+  const threadKey = thread ? `${environmentId}:${thread.id}` : "";
   const pendingEnvMode = useAtomValue(pendingEnvModeAtom(threadKey));
-  const activeWorktreePath = thread.worktreePath;
-  const effectiveEnvMode = activeWorktreePath ? "worktree" : (pendingEnvMode ?? "local");
+  const draft = useAtomValue(composerDraftAtom(draftKey));
+  const activeWorktreePath = thread ? thread.worktreePath : (draft.worktreePath ?? null);
+  const effectiveEnvMode = thread
+    ? activeWorktreePath
+      ? "worktree"
+      : (pendingEnvMode ?? "local")
+    : activeWorktreePath
+      ? "local"
+      : (draft.envMode ?? "local");
   const branchCwd = activeWorktreePath ?? projectCwd;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -97,7 +109,7 @@ export function BranchRow({
   const canonical = resolveBranchToolbarValue({
     envMode: effectiveEnvMode,
     activeWorktreePath,
-    activeThreadBranch: thread.branch,
+    activeThreadBranch: thread ? thread.branch : (draft.branch ?? null),
     currentGitBranch,
   });
   const resolvedActiveBranch = pending && optimistic !== null ? optimistic : canonical;
@@ -140,6 +152,19 @@ export function BranchRow({
         : null;
 
   const setThreadBranch = (branch: string | null, worktreePath: string | null) => {
+    if (!thread) {
+      // composer BranchToolbarBranchSelector setDraftBranch
+      setDraftWorkspace(draftKey, {
+        branch,
+        worktreePath,
+        envMode: resolveDraftEnvModeAfterBranchChange({
+          nextWorktreePath: worktreePath,
+          currentWorktreePath: activeWorktreePath,
+          effectiveEnvMode,
+        }),
+      });
+      return;
+    }
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
     if (thread.runtime && worktreePath !== activeWorktreePath) {
       void runAtomCommand(appAtomRegistry, threadEnvironment.stopSession, { environmentId, input: { threadId: thread.id } } as never);
