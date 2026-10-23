@@ -11,6 +11,7 @@ import type {
 import { ANTIGRAVITY_DEFAULT_MODEL } from "@t3tools/contracts";
 
 import { Popover, Tooltip } from "../../ui/overlay.tsx";
+import { ChatGptSharingControl } from "./ChatGptSharingControl.tsx";
 import { alpha, useTheme } from "../../ui/theme.ts";
 import { useSmallViewport } from "../../ui/viewport.tsx";
 import { resolveModelPickerSelectedModel } from "../../web/components/chat/ModelPickerContent.logic.ts";
@@ -174,6 +175,7 @@ export function ProviderModelPicker(props: ProviderModelPickerProps) {
         getModelDisabledReason={props.getModelDisabledReason}
         onInstanceModelChange={handleInstanceModelChange}
       />
+      <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} />
     </Popover>
   );
 }
