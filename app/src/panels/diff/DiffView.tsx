@@ -96,6 +96,8 @@ export interface DiffViewProps {
   readonly scrollRequest?: { readonly index: number; readonly nonce: number } | null;
   /** The last rows came on screen: time to ask for the next page of a paged diff. */
   readonly onReachEnd?: () => void;
+  /** Inline only: no file header rows, for a diff drawn under a row that already names the file. */
+  readonly hideFileHeaders?: boolean;
 }
 
 /** What DiffView's row callbacks need beyond the row itself, passed once instead of per prop. */
@@ -231,7 +233,7 @@ export function DiffView(props: DiffViewProps) {
       {probe}
       {width > 0 && props.inline ? (
         <div style={{ display: "flex", flexDirection: "column", width: "100%" }}>
-          {rows.map((row) => (
+          {(props.hideFileHeaders ? rows.filter((row) => row.type !== "header") : rows).map((row) => (
             <DiffRowView
               key={row.key}
               row={row}
