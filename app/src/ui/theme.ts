@@ -1,6 +1,12 @@
 // Design tokens transcribed from apps/web/src/index.css (default theme, contrast 100).
 // Alpha colors are written as #RRGGBBAA; GPUI blends them like the browser does.
 import { createContext, useContext } from "react";
+import {
+  BUILT_IN_THEMES,
+  type ThemeAppearance,
+  type ThemeColors,
+  type ThemeDefinition,
+} from "@t3tools/shared/themePalettes";
 
 export interface Palette {
   readonly appearance: "dark" | "light";
@@ -192,4 +198,129 @@ export const ThemeContext = createContext<Palette>(DARK);
 
 export function useTheme(): Palette {
   return useContext(ThemeContext);
+}
+
+// ── Built-in themes (packages/shared/src/themePalettes.ts) ──────────────
+// Theme files are written in app color roles (index.css:1256-1321 maps them
+// onto the semantic tokens). paletteFromThemeColors does the same mapping
+// onto Palette; info, success and indigo stay with the standard palette, as
+// they do on the web.
+
+export type { ThemeAppearance, ThemeColors, ThemeDefinition };
+
+export const BUILT_IN_THEME_DEFINITIONS: ReadonlyArray<ThemeDefinition> = BUILT_IN_THEMES;
+
+const LEGACY_THEME_ID_ALIASES: Readonly<Record<string, string>> = {
+  "t3-chat-dark": "t3-chat",
+  "t3-grove": "grove",
+  "t3-ocean": "ocean",
+  "t3-ember": "ember",
+  "t3-iris": "iris",
+};
+
+export function getThemeDefinition(themeId: string): ThemeDefinition | null {
+  const id = LEGACY_THEME_ID_ALIASES[themeId] ?? themeId;
+  return BUILT_IN_THEME_DEFINITIONS.find((definition) => definition.id === id) ?? null;
+}
+
+export function getThemeColorsForMode(theme: ThemeDefinition, mode: ThemeAppearance): ThemeColors | null {
+  if (mode === theme.appearance) return theme.colors;
+  return theme.variants?.[mode] ?? null;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function linearToSrgb(value: number): number {
+  return value <= 0.0031308 ? 12.92 * value : 1.055 * value ** (1 / 2.4) - 0.055;
+}
+
+function hexByte(value: number): string {
+  return Math.round(clamp01(value) * 255)
+    .toString(16)
+    .padStart(2, "0");
+}
+
+/** CSS color (oklch(), #rgb, #rrggbb, #rrggbbaa) → #rrggbb[aa]. */
+export function cssColorToHex(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("#")) {
+    if (trimmed.length === 4) {
+      return `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}`;
+    }
+    return trimmed.toLowerCase();
+  }
+  const match = /^oklch\(\s*([\d.]+)(%?)\s+([\d.]+)\s+([\d.]+)(?:deg)?\s*(?:\/\s*([\d.]+)(%?))?\s*\)$/i.exec(trimmed);
+  if (!match) return "#000000";
+  const lightness = Number(match[1]) / (match[2] ? 100 : 1);
+  const chroma = Number(match[3]);
+  const hue = (Number(match[4]) * Math.PI) / 180;
+  const a = chroma * Math.cos(hue);
+  const b = chroma * Math.sin(hue);
+  const l_ = lightness + 0.3963377774 * a + 0.2158037573 * b;
+  const m_ = lightness - 0.1055613458 * a - 0.0638541728 * b;
+  const s_ = lightness - 0.0894841775 * a - 1.291485548 * b;
+  const l = l_ ** 3;
+  const m = m_ ** 3;
+  const s = s_ ** 3;
+  const red = linearToSrgb(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s);
+  const green = linearToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s);
+  const blue = linearToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s);
+  const alphaValue = match[5] === undefined ? 1 : Number(match[5]) / (match[6] ? 100 : 1);
+  return `#${hexByte(red)}${hexByte(green)}${hexByte(blue)}${alphaValue < 1 ? hexByte(alphaValue) : ""}`;
+}
+
+/** color-mix(in srgb, a weight, b) for opaque colors. */
+export function mixColors(a: string, b: string, weight: number): string {
+  const channel = (hex: string, index: number) => Number.parseInt(hex.slice(1 + index * 2, 3 + index * 2), 16) / 255;
+  const out = [0, 1, 2].map((index) => hexByte(channel(a, index) * weight + channel(b, index) * (1 - weight)));
+  return `#${out.join("")}`;
+}
+
+export function paletteFromThemeColors(raw: ThemeColors, appearance: ThemeAppearance): Palette {
+  const c = Object.fromEntries(Object.entries(raw).map(([role, value]) => [role, cssColorToHex(value)])) as Record<
+    keyof ThemeColors,
+    string
+  >;
+  const base = appearance === "dark" ? DARK : LIGHT;
+  return {
+    ...base,
+    appearance,
+    background: c.canvas,
+    foreground: c.text,
+    card: c.surface,
+    popover: c.surfaceOverlay,
+    primary: c.messageAction,
+    primaryForeground: c.messageActionForeground,
+    messageAction: c.messageAction,
+    secondary: c.secondary,
+    muted: c.muted,
+    mutedForeground: c.mutedForeground,
+    accent: c.accentSurface,
+    accentForeground: c.accentSurfaceForeground,
+    messageSurface: c.messageSurface,
+    border: c.border,
+    input: c.input,
+    error: c.error,
+    errorForeground: c.errorForeground,
+    toolError: c.errorForeground,
+    warning: c.warning,
+    warningForeground: c.warningForeground,
+    codeBackground: c.codeBackground,
+    scrollbar: c.border,
+    overlay: alpha(c.canvas, appearance === "dark" ? 0.64 : 0.6),
+    sidebar: {
+      background: c.sidebar,
+      foreground: c.sidebarForeground,
+      mutedForeground: c.sidebarMutedForeground,
+      accent: c.sidebarControlSurface,
+      rowHover: c.sidebarRowHover,
+      rowActive: c.sidebarRowActive,
+      rowSelected: c.sidebarRowSelected,
+      border: c.sidebarBorder,
+      icon: mixColors(c.sidebarMutedForeground.slice(0, 7), c.sidebar.slice(0, 7), 0.6),
+      input: c.input,
+    },
+  };
 }

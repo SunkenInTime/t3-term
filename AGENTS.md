@@ -77,6 +77,10 @@ docs/                   specs: web-ui-spec.md, client-runtime.md, gpuix-notes.md
   mints a session token there through its CLI. In agent shells that is the live
   install. Always pass `--url ... --token ...`, or set `T3TERM_NO_LOCAL=1`.
 - Never kill processes by name or pattern. Stop only PIDs you started.
+- The web reference UI (localhost:5733) and t3-term both drive the same real
+  machine. Never click Update, Install, Sign in, Run now, Publish, Merge, or
+  any provider/CLI management button in either app: "Update all" on the
+  Providers page once updated the global Codex CLI that Dara's live T3 uses.
 - Provider runs started from t3-term are real agent runs. Only send messages
   in threads of the **t3term-sandbox** project (`E:\w\t3term-sandbox`), with
   short harmless prompts. Never send in seeded threads: their projects are

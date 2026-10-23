@@ -170,6 +170,41 @@ export function openSingleton(current: ThreadRightPanelState, kind: SingletonKin
   return upsertSurface(current, singletonSurface(kind));
 }
 
+/** web: `openBrowser`. A real tab replaces the "browser:new" placeholder. */
+export function openBrowser(current: ThreadRightPanelState, tabId: string | null): ThreadRightPanelState {
+  const surface = browserSurface(tabId);
+  const withoutPlaceholder = tabId ? current.surfaces.filter((entry) => entry.id !== "browser:new") : current.surfaces;
+  return upsertSurface({ ...current, surfaces: withoutPlaceholder }, surface);
+}
+
+/**
+ * web: `reconcileBrowserSurfaces`. Browser tabs follow the server's preview
+ * sessions, so a tab an agent opened appears and a closed one goes away.
+ */
+export function reconcileBrowserSurfaces(
+  current: ThreadRightPanelState,
+  tabIds: ReadonlyArray<string>,
+  hiddenTabIds?: ReadonlySet<string>,
+): ThreadRightPanelState {
+  const validIds = new Set(tabIds.map((tabId) => `browser:${tabId}`));
+  const kept = current.surfaces.filter(
+    (surface) => surface.kind !== "preview" || (surface.id !== "browser:new" && validIds.has(surface.id)),
+  );
+  const knownIds = new Set(kept.map((surface) => surface.id));
+  const added = tabIds
+    .filter((tabId) => !knownIds.has(`browser:${tabId}`) && !hiddenTabIds?.has(tabId))
+    .map((tabId) => browserSurface(tabId));
+  if (added.length === 0 && kept.length === current.surfaces.length) return current;
+  const surfaces = [...kept, ...added];
+  const activeStillExists = surfaces.some((surface) => surface.id === current.activeSurfaceId);
+  const fallbackBrowser = surfaces.find((surface) => surface.kind === "preview");
+  return {
+    ...current,
+    surfaces,
+    activeSurfaceId: activeStillExists ? current.activeSurfaceId : (fallbackBrowser?.id ?? surfaces[0]?.id ?? null),
+  };
+}
+
 export function openPullRequest(
   current: ThreadRightPanelState,
   target: Parameters<typeof pullRequestSurface>[0],
