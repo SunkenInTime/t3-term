@@ -326,6 +326,21 @@ function updateJumpHints(event: KeyEvent, down: boolean): void {
   }
 }
 
+/**
+ * useEscapeToGoBack (hooks/useNavigateBack.ts) on the Usage and Pull requests
+ * pages: an Escape nothing else claimed goes back, or home without history.
+ */
+function handleEscapeToGoBack(event: KeyEvent): boolean {
+  if (event.key !== "escape" || event.isHeld || event.modifiers?.ctrl || event.modifiers?.cmd || event.modifiers?.alt) {
+    return false;
+  }
+  const kind = appAtomRegistry.get(routeAtom).kind;
+  if ((kind !== "usage" && kind !== "pull-requests") || isCommandPaletteOpen()) return false;
+  event.preventDefault();
+  if (!navigateBack()) appAtomRegistry.set(routeAtom, { kind: "home" });
+  return true;
+}
+
 export function handleGlobalKeyUp(event: KeyEvent): void {
   updateJumpHints(event, false);
 }
@@ -333,6 +348,7 @@ export function handleGlobalKeyUp(event: KeyEvent): void {
 export function handleGlobalKeyDown(event: KeyEvent): void {
   updateJumpHints(event, true);
   if (event.defaultPrevented) return;
+  if (handleEscapeToGoBack(event)) return;
   const command = resolveKeyEventCommand(event);
   if (command === null) return;
 
