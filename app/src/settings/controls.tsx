@@ -66,7 +66,8 @@ export function SettingsSelect<V extends string>({
   disabled?: boolean;
   testId?: string;
   align?: FloatingAlign;
-  size?: "sm" | "default";
+  /** `xs`: SelectTrigger size="xs" (h-6, rounded-md, text-xs). */
+  size?: "xs" | "sm" | "default";
   menuWidth?: number;
 }) {
   const theme = useTheme();
@@ -76,7 +77,7 @@ export function SettingsSelect<V extends string>({
   const small = useSmallViewport();
   // In a stacked row the trigger spans it (measured in Chrome at 480 and 800 wide).
   const fill = useContext(SettingsRowStackedContext) && width !== "auto";
-  const height = (size === "sm" ? 28 : 32) + (small ? 4 : 0);
+  const height = (size === "xs" ? 24 : size === "sm" ? 28 : 32) + (small ? 4 : 0);
   return (
     <Menu
       align={align}
@@ -91,12 +92,12 @@ export function SettingsSelect<V extends string>({
             display: "flex",
             flexDirection: "row",
             alignItems: "center",
-            gap: 6,
+            gap: size === "xs" ? 4 : 6,
             height,
             ...(fill ? { flexGrow: 1, minWidth: 0 } : width === "auto" ? {} : { width }),
-            paddingLeft: 9,
-            paddingRight: 8,
-            borderRadius: RADIUS.lg,
+            paddingLeft: size === "xs" ? 7 : 9,
+            paddingRight: size === "xs" ? 7 : 8,
+            borderRadius: size === "xs" ? RADIUS.md : RADIUS.lg,
             borderWidth: 1,
             borderColor: theme.input,
             backgroundColor: fieldBackground(theme),
@@ -108,7 +109,7 @@ export function SettingsSelect<V extends string>({
           {icon ?? selected?.icon ? (
             <Icon name={(icon ?? selected?.icon)!} size={16} color={alpha(theme.mutedForeground, 0.8)} />
           ) : null}
-          <Text size={small ? "base" : "sm"} truncate style={{ flexGrow: 1 }}>
+          <Text size={size === "xs" ? (small ? "sm" : "xs") : small ? "base" : "sm"} truncate style={{ flexGrow: 1 }}>
             {text}
           </Text>
           <Icon name="chevron-down" size={12} color={alpha(theme.foreground, 0.5)} />
