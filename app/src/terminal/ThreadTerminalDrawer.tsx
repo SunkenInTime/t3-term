@@ -564,8 +564,10 @@ export function TabCloseButton(props: { visible: boolean; label: string; onClose
   return (
     <div
       testId={props.testId}
-      onClick={() => {
-        if (props.visible) props.onClose();
+      // Acts on press: right-panel tabs capture the pointer for drag-reorder,
+      // which swallows a child's release, so onClick never fires there.
+      onMouseDown={(event) => {
+        if (props.visible && (event.button ?? 0) === 0) props.onClose();
       }}
       style={{
         display: "flex",
