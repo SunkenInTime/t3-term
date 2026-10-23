@@ -11,6 +11,7 @@ import { render } from "@gpuix/react";
 
 import { App } from "./app/App.tsx";
 import { bootstrapConnections, parseArgs } from "./connect/bootstrap.ts";
+import { installPerfProbe, perfOnEvent, perfProbeEnabled } from "./dev/perfProbe.ts";
 import { handleGlobalKeyDown, handleGlobalKeyUp } from "./keybindings/useGlobalKeybindings.ts";
 
 const args = parseArgs(process.argv.slice(2));
@@ -33,6 +34,7 @@ render(<App boot={boot} />, {
   keyboardFocusDim: false,
   // T3TERM_DEBUG_FRAMES=minimal|full paints GPUI draw times into the window.
   ...(process.env.T3TERM_DEBUG_FRAMES ? { debugFrameOverlay: process.env.T3TERM_DEBUG_FRAMES as "minimal" | "full" } : {}),
+  ...(perfProbeEnabled ? { onEvent: perfOnEvent } : {}),
   onKeyDown: (event) => handleGlobalKeyDown(event),
   onKeyUp: (event) => handleGlobalKeyUp(event),
   titlebarTransparent: process.platform === "darwin",
@@ -43,3 +45,4 @@ render(<App boot={boot} />, {
   trafficLightX: 16,
   trafficLightY: 18,
 });
+installPerfProbe();
