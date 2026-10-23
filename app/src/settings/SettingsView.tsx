@@ -5,7 +5,8 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useState, type ComponentType, type ReactNode } from "react";
 
-import { sidebarOpenAtom, type SettingsPage } from "../state/ui.ts";
+import { setSidebarVisible, sidebarVisibleAtom, type SettingsPage } from "../state/ui.ts";
+import { useHeaderInset } from "../app/MainView.tsx";
 import { useEnvironments } from "../state/settings.ts";
 import { Dialog } from "../ui/overlay.tsx";
 import { Button, IconButton, Text } from "../ui/primitives.tsx";
@@ -75,8 +76,8 @@ export function SettingsView({ page }: { page: SettingsPage }) {
 function SettingsContentLayout({ page }: { page: SettingsPage }) {
   const theme = useTheme();
   const { search, environment } = useSettingsScope();
-  const sidebarOpen = useAtomValue(sidebarOpenAtom);
-  const setSidebarOpen = useAtomSet(sidebarOpenAtom);
+  const inset = useHeaderInset();
+  const sidebarVisible = useAtomValue(sidebarVisibleAtom);
   const [restoreSignal, setRestoreSignal] = useState(0);
   // Pages remount when the scope changes, like the web app's keyed outlet.
   const contentScopeKey =
@@ -93,7 +94,7 @@ function SettingsContentLayout({ page }: { page: SettingsPage }) {
         const isSlash = event.keyChar === "/" && !modifiers.ctrl && !modifiers.cmd && !modifiers.alt;
         if ((isFind || isSlash) && !(isSlash && isTextEntryFocused())) {
           event.preventDefault();
-          if (!sidebarOpen) setSidebarOpen(true);
+          if (!sidebarVisible) setSidebarVisible(true);
           requestSettingsSearchFocus();
           return;
         }
@@ -111,13 +112,14 @@ function SettingsContentLayout({ page }: { page: SettingsPage }) {
           alignItems: "center",
           gap: 12,
           height: LAYOUT.topbar,
-          paddingLeft: sidebarOpen ? 20 : 12,
-          paddingRight: 20,
+          paddingLeft: inset.paddingLeft,
+          paddingRight: inset.gutter,
           flexShrink: 0,
+          position: "relative",
         }}
       >
-        {sidebarOpen ? null : <IconButton icon="panel-left" onClick={() => setSidebarOpen(true)} testId="settings-open-sidebar" />}
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 12, flexGrow: 1, minWidth: 0 }}>
+        {inset.toggle}
+        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: inset.crumbGap, flexGrow: 1, minWidth: 0 }}>
           <Text weight={500} color={theme.mutedForeground}>
             Settings
           </Text>

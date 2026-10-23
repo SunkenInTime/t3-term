@@ -29,6 +29,7 @@ import {
   rightPanelSurfaceAtom,
   routeAtom,
   sidebarOpenAtom,
+  toggleSidebar,
   terminalOpenAtom,
 } from "../state/ui.ts";
 import { toast } from "../ui/toast.tsx";
@@ -291,7 +292,7 @@ function runBuiltIn(command: KeybindingCommand, event: KeyEvent): boolean {
   const route = appAtomRegistry.get(routeAtom);
   switch (command) {
     case "sidebar.toggle":
-      toggle(sidebarOpenAtom);
+      toggleSidebar();
       return true;
     case "navigation.back":
       navigateBack();

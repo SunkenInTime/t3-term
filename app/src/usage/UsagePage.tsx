@@ -45,7 +45,7 @@ import {
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { serverEnvironment } from "../state/environment.ts";
 import { activeKeybindingsAtom } from "../state/keybindings.ts";
-import { sidebarOpenAtom } from "../state/ui.ts";
+import { useHeaderInset } from "../app/MainView.tsx";
 import {
   environmentPresentations,
   selectUsageMetric,
@@ -127,7 +127,7 @@ function windowFor(days: number): UsageSummaryInput {
 export function UsagePage() {
   const theme = useTheme();
   const { width: viewportWidth } = useWindowSize();
-  const [sidebarOpen, setSidebarOpen] = useAtom(sidebarOpenAtom);
+  const inset = useHeaderInset();
   const preferences = useAtomValue(usagePagePreferencesAtom);
   const keybindings = useAtomValue(activeKeybindingsAtom);
   const hour12 = resolveHour12("locale");
@@ -323,12 +323,13 @@ export function UsagePage() {
           height: LAYOUT.topbar,
           flexShrink: 0,
           gap: 12,
-          paddingLeft: sidebarOpen ? 20 : 12,
-          paddingRight: 20,
+          paddingLeft: inset.paddingLeft,
+          paddingRight: inset.gutter,
+          position: "relative",
         }}
       >
-        {sidebarOpen ? null : <IconButton icon="panel-left" testId="usage-open-sidebar" onClick={() => setSidebarOpen(true)} />}
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 12, minWidth: 0, flexShrink: 1 }}>
+        {inset.toggle}
+        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: inset.crumbGap, minWidth: 0, flexShrink: 1 }}>
           <div style={{ flexShrink: 0 }}>
             <Text weight={500} color={theme.mutedForeground}>
               Usage

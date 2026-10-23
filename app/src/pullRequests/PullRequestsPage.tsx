@@ -33,7 +33,8 @@ import {
   type EnvironmentQueryTarget,
   type PullRequestSurface,
 } from "../state/pullRequests.ts";
-import { commandPaletteOpenAtom, sidebarOpenAtom } from "../state/ui.ts";
+import { commandPaletteOpenAtom } from "../state/ui.ts";
+import { useHeaderInset } from "../app/MainView.tsx";
 import { Icon } from "../ui/Icon.tsx";
 import { Tooltip } from "../ui/overlay.tsx";
 import { IconButton, Text } from "../ui/primitives.tsx";
@@ -1099,7 +1100,7 @@ function PullRequestsColumn({
   onContainerWidth: (width: number) => void;
 }) {
   const theme = useTheme();
-  const [sidebarOpen, setSidebarOpen] = useAtom(sidebarOpenAtom);
+  const inset = useHeaderInset();
   const [searchOpen, setSearchOpen] = useState(false);
   const searchExpanded = searchOpen || searchValue.length > 0;
   if (!condensed && searchOpen) setSearchOpen(false);
@@ -1144,13 +1145,12 @@ function PullRequestsColumn({
           gap: 12,
           height: LAYOUT.topbar,
           flexShrink: 0,
-          paddingLeft: sidebarOpen ? 20 : 12,
+          paddingLeft: inset.paddingLeft,
           paddingRight: 12,
+          position: "relative",
         }}
       >
-        {sidebarOpen ? null : (
-          <IconButton icon="panel-left" onClick={() => setSidebarOpen(true)} testId="pr-open-sidebar" />
-        )}
+        {inset.toggle}
         {condensed ? (
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 12, minWidth: 0, overflow: "hidden" }}>
             {searchExpanded ? null : (
