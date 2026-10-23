@@ -1044,64 +1044,31 @@ function SettleButton({ onActivate, testId }: { onActivate: () => void; testId?:
 
 // ── Search result row ───────────────────────────────────────────────────
 
-function foldAsciiCase(value: string): string {
-  return value.replace(/[A-Z]/g, (character) => character.toLowerCase());
-}
-
-/** ThreadSearchMatch.tsx HighlightedSearchText: bold the query occurrences. */
-function highlightParts(text: string, query: string) {
-  const trimmed = query.trim();
-  if (trimmed.length === 0) return [{ text, highlighted: false }];
-  const normalizedText = foldAsciiCase(text);
-  const normalizedQuery = foldAsciiCase(trimmed);
-  const parts: Array<{ text: string; highlighted: boolean }> = [];
-  let cursor = 0;
-  while (cursor < text.length) {
-    const matchIndex = normalizedText.indexOf(normalizedQuery, cursor);
-    if (matchIndex === -1) {
-      parts.push({ text: text.slice(cursor), highlighted: false });
-      break;
-    }
-    if (matchIndex > cursor) parts.push({ text: text.slice(cursor, matchIndex), highlighted: false });
-    parts.push({ text: text.slice(matchIndex, matchIndex + trimmed.length), highlighted: true });
-    cursor = matchIndex + trimmed.length;
-  }
-  return parts;
-}
-
 function SearchMatchExcerpt({ match, query }: { match: EnvironmentThreadSearchMatch; query: string }) {
   const theme = useTheme();
   const isUser = match.source === "user";
-  const parts = highlightParts(match.snippet, query);
-  // gpuix lays adjacent <text> siblings out as one paragraph of styled runs;
-  // the first run's box style (nowrap + ellipsis) applies to the whole line.
-  const base = {
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: FONTS.sans,
-    whiteSpace: "nowrap" as const,
-    textOverflow: "ellipsis" as const,
-    overflow: "hidden" as const,
-    minWidth: 0,
-    flexShrink: 1,
-  };
+  // gpuix has no inline runs: sibling <text> nodes are separate flex items,
+  // so the snippet is one truncating line and the query is not bolded.
+  void query;
+  const base = { fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans, whiteSpace: "nowrap" as const };
   return (
     <div style={{ display: "flex", flexDirection: "row", minWidth: 0, overflow: "hidden", height: 16 }}>
-      <text style={{ ...base, color: isUser ? theme.infoForeground : theme.successForeground }}>
-        {isUser ? "You: " : "Agent: "}
+      <text style={{ ...base, flexShrink: 0, color: isUser ? theme.infoForeground : theme.successForeground }}>
+        {isUser ? "You:" : "Agent:"}
       </text>
-      {parts.map((part, index) => (
-        <text
-          key={index}
-          style={{
-            ...base,
-            color: part.highlighted ? theme.foreground : alpha(theme.mutedForeground, 0.85),
-            ...(part.highlighted ? { fontWeight: 600 } : {}),
-          }}
-        >
-          {part.text}
-        </text>
-      ))}
+      <text
+        style={{
+          ...base,
+          paddingLeft: 3,
+          flexShrink: 1,
+          minWidth: 0,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          color: alpha(theme.mutedForeground, 0.85),
+        }}
+      >
+        {match.snippet}
+      </text>
     </div>
   );
 }
