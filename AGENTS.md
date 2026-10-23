@@ -73,6 +73,9 @@ docs/                   specs: web-ui-spec.md, client-runtime.md, gpuix-notes.md
 - `T3CODE_HOME` in agent shells points at Dara's **live** T3 install (`E:\.t3`).
   Never start a T3 server or CLI command without overriding it
   (`T3CODE_HOME='E:\w\ref\t3home-dev'`). Never touch the live server on :3773.
+- t3-term with no `--url` auto-connects to the T3 server in `$T3CODE_HOME` and
+  mints a session token there through its CLI. In agent shells that is the live
+  install. Always pass `--url ... --token ...`, or set `T3TERM_NO_LOCAL=1`.
 - Never kill processes by name or pattern. Stop only PIDs you started.
 - Provider runs started from t3-term are real agent runs. Only send messages
   in threads of the **t3term-sandbox** project (`E:\w\t3term-sandbox`), with
@@ -111,3 +114,16 @@ not translated and lands in `E:\e\w\...`.
 
 Done means: typecheck clean, and you compared your screenshots against the
 web reference for every state you built, at 1440×900.
+
+## Terminal-mode verification
+
+gpuix's kitty renderer runs on macOS and Linux only. Windows development uses
+the native window, which renders the same React tree. To check terminal mode:
+
+- **Headless:** `python3 app/scripts/fake-kitty.py <out-dir> <steps.json> -- bun src/main.tsx --terminal ...`
+  on a Linux/macOS box. It answers the terminal queries, forces inline frames
+  (the SSH path), writes PNGs, and injects SGR pixel mouse and kitty keys.
+- **Real terminal:** a boat VM (`boat new`), `sudo apt-get install kitty
+  imagemagick xdotool mesa-vulkan-drivers`, run t3-term in `kitty` on `DISPLAY=:0`,
+  drive it with `xdotool`, capture with `import -window root`. To reach the
+  reference server from the VM: `boat forward <id> --reverse --local 13773`.

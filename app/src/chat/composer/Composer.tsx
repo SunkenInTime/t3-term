@@ -1,75 +1,1414 @@
-// OWNER: composer agent. First-pass visual; replace with the port of
-// apps/web/src/components/chat/ChatComposer.tsx and friends.
-import type { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
-import { useState } from "react";
+// The composer: port of apps/web/src/components/chat/ChatComposer.tsx and the ChatView
+// wiring it depends on (provider/model resolution, send, interrupt, resume, plan follow-up).
+//
+// Layout (ChatComposer.tsx:3412-3990, spec C4):
+//   banner dock (approvals, questions, plan follow-up, queued runs) overlapping 17px
+//   surface: radius 22, #111 glass (opaque here: GPUI has no backdrop blur), white/5 outline
+//     body  pt 16 px 16 pb 8: attachments, editor 14/23 (min 3 rows), command menu above
+//     footer px 16 pb 16: model · traits · mode … attach · meter · send
+//   context strip below (new-thread drafts) or the resting model strip
+//
+// Keyboard (gpuix textarea limits, docs/gpuix-notes.md): GPUI's editor actions consume
+// Enter, Up/Down and Backspace before onKeyDown, so the command menu uses:
+//   Enter (textarea onSubmit) or Tab  → select the highlighted item
+//   Ctrl+N / Ctrl+J, Ctrl+P / Ctrl+K   → move the highlight down / up (Up/Down never arrive)
+//   Shift+Tab                           → move the highlight up while the menu is open,
+//                                         otherwise toggle Build/Plan (web parity)
+//   Escape                              → dismiss the menu
+// Ctrl+Enter sends with the alternate dispatch (queue ↔ steer) while a turn runs.
+// The caret position is not exposed by gpuix, so trigger detection uses the caret implied
+// by each edit (the end of the inserted text, or the deletion point).
+import { useAtomValue } from "@effect/atom-react";
+import { useGpuixRequired, type KeyEvent } from "@gpuix/react";
+import {
+  type ComposerDispatchMode,
+  resolveComposerDispatchMode,
+} from "@t3tools/client-runtime/state/composer-dispatch";
+import { resolveProviderSkillsForCwd, resolveProviderSlashCommandsForCwd } from "@t3tools/client-runtime/providerSkills";
+import {
+  deriveReportedModelSelection,
+  deriveThreadStructureRuntime,
+  threadRuntimeHasInterruptibleRun,
+} from "@t3tools/client-runtime/state/thread-execution";
+import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import {
+  type EnvironmentId,
+  type ModelSelection,
+  type ProjectId,
+  type ProviderInstanceId,
+  type ProviderInteractionMode,
+  type RuntimeMode,
+  type ServerProvider,
+  type ThreadId,
+} from "@t3tools/contracts";
+import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
+import { createModelSelection } from "@t3tools/shared/model";
+import { proposedPlanTitle } from "@t3tools/shared/proposedPlanText";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/reactivity";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
-import { Icon } from "../../ui/Icon.tsx";
-import { Text, VSeparator } from "../../ui/primitives.tsx";
+import { appAtomRegistry } from "../../runtime/runtime.ts";
+import {
+  type ComposerAttachmentDraft,
+  type ComposerTarget,
+  addComposerAttachments,
+  composerDraftAtom,
+  composerEffortStepAtom,
+  composerFocusRequestAtom,
+  composerMenuOpenAtom,
+  composerSettingsAtom,
+  composerTargetKey,
+  readComposerDraft,
+  removeComposerAttachment,
+  setComposerInteractionMode,
+  setComposerModelOptions,
+  setComposerModelSelection,
+  setComposerPrompt,
+  setComposerRuntimeMode,
+  stickyModelAtom,
+} from "../../state/composer.ts";
+import {
+  environmentSession,
+  environmentThreadShells,
+  environmentThreads,
+  projectIndexAtom,
+  serverEnvironment,
+  threadEnvironment,
+} from "../../state/environment.ts";
+import { modelPickerOpenAtom, routeAtom } from "../../state/ui.ts";
+import { toast } from "../../ui/toast.tsx";
 import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
+import { Text } from "../../ui/primitives.tsx";
+import {
+  type ComposerTrigger,
+  detectComposerTrigger,
+  extendReplacementRangeForTrailingSpace,
+  parseStandaloneComposerSlashCommand,
+  replaceTextRange,
+} from "../../web/composer-logic.ts";
+import { DISCONNECTED_COMPOSER_PLACEHOLDER } from "../../web/composerPlaceholder.ts";
+import {
+  deriveComposerSendState,
+  deriveLockedProvider,
+  formatOutgoingPrompt,
+  getAntigravitySendBlockReason,
+  makeModelDisabledReason,
+  resolveComposerInteractionMode,
+  shouldShowPlanFollowUpPrompt,
+  threadShellHasStarted,
+} from "../../web/components/ChatView.logic.ts";
+import type { ComposerCommandItem } from "../../web/components/chat/ComposerCommandMenu.ts";
+import { resolveComposerMenuActiveItemId } from "../../web/components/chat/composerMenuHighlight.ts";
+import {
+  getComposerPromptInjectionState,
+  getComposerReasoningStep,
+  withImplicitFastModeDefault,
+} from "../../web/components/chat/composerProviderState.ts";
+import { getComposerSubmissionValidationMessage } from "../../web/components/chat/composerSubmission.ts";
+import {
+  providerSupportsManualCompaction,
+  resolveContextWindowModelDisplayName,
+} from "../../web/components/chat/ContextWindowMeter.logic.ts";
+import { readPromptUltrathink, shouldRenderTraitsControls } from "../../web/components/chat/TraitsPicker.logic.ts";
+import { runtimeModeConfig, runtimeModeOptions as runtimeModes } from "../../web/components/chat/runtimeModeConfig.ts";
+import { deriveLatestContextWindowSnapshot, latestProviderTurnTokenUsage } from "../../web/lib/contextWindow.ts";
+import { type AppModelOption, getAppModelOptionsForInstance, resolveAppModelSelectionForInstance } from "../../web/modelSelection.ts";
+import { shortcutLabelForCommand } from "../../web/keybindings.ts";
+import { getProviderModelCapabilities } from "../../web/providerModels.ts";
+import { resolvePlanFollowUpSubmission } from "../../web/proposedPlan.ts";
+import { derivePhase, findLatestProposedPlan, hasActionableProposedPlan } from "../../web/session-logic.ts";
+import { BranchToolbar } from "./BranchToolbar.tsx";
+import {
+  ComposerAttachButton,
+  ComposerAttachmentFileList,
+  ComposerAttachmentMediaRow,
+} from "./ComposerAttachmentStrip.tsx";
+import { ComposerTopBanners } from "./ComposerBanner.tsx";
+import { ComposerCommandMenu, ComposerCommandMenuLayer } from "./ComposerCommandMenu.tsx";
+import { ComposerControlSeparator } from "./ComposerControl.tsx";
+import { ComposerFooterModeControls, type RuntimeModeOption } from "./ComposerFooterControls.tsx";
+import { ComposerPrimaryActions } from "./ComposerPrimaryActions.tsx";
+import {
+  composerSendErrorAtom,
+  composerSendingAtom,
+  interruptComposerTurn,
+  sendComposerMessage,
+  type ComposerSendTarget,
+} from "./composerSend.ts";
+import { attachmentsFromPaths } from "./composerAttachmentPaths.ts";
+import { ContextWindowMeter } from "./ContextWindowMeter.tsx";
+import { ProviderModelPicker } from "./ProviderModelPicker.tsx";
+import { QueuedRunsControl } from "./QueuedRunsControl.tsx";
+import { TraitsPicker } from "./TraitsPicker.tsx";
+import { resolveComposerProviderModel } from "./useComposerProviderModel.ts";
+import { useComposerMenuItems } from "./useComposerMenuItems.ts";
+import { usePendingThreadRequests } from "./usePendingThreadRequests.ts";
+import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
+import { composerRestingAtom } from "./composerResting.ts";
 
-export type ComposerTarget =
-  | { readonly kind: "thread"; readonly environmentId: EnvironmentId; readonly threadId: ThreadId }
-  | { readonly kind: "draft"; readonly environmentId: EnvironmentId | null; readonly projectId: ProjectId | null };
+export type { ComposerTarget } from "../../state/composer.ts";
 
-export function Composer(_props: { target: ComposerTarget }) {
-  const theme = useTheme();
-  const [draft, setDraft] = useState("");
+const NO_THREAD_SHELL_ATOM = Atom.make<EnvironmentThreadShell | null>(null);
+const NO_THREAD_STATE_ATOM = Atom.make(
+  AsyncResult.initial() as ReturnType<typeof environmentThreads.stateAtom> extends Atom.Atom<infer T> ? T : never,
+);
+
+const ALL_RUNTIME_MODE_OPTIONS: ReadonlyArray<RuntimeModeOption> = runtimeModes.map((mode) => ({
+  mode,
+  ...runtimeModeConfig[mode],
+}));
+const NO_SKILLS: ServerProvider["skills"] = [];
+const NO_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
+const DEFAULT_PLACEHOLDER = "Ask anything, @tag files/folders, $use skills, or / for commands";
+const PROMPT_LINE_HEIGHT = 23;
+
+/** Where the caret sits after an edit from `previous` to `next`: the end of what changed. */
+function caretAfterEdit(previous: string, next: string): number {
+  let start = 0;
+  const max = Math.min(previous.length, next.length);
+  while (start < max && previous[start] === next[start]) start++;
+  let end = 0;
+  while (
+    end < max - start &&
+    previous[previous.length - 1 - end] === next[next.length - 1 - end]
+  ) {
+    end++;
+  }
+  return next.length - end;
+}
+
+/** Mixes `color` over `base` at `amount`, for opaque stand-ins of web's translucent glass. */
+function mix(color: string, base: string, amount: number): string {
+  const channel = (hex: string, index: number) => Number.parseInt(hex.slice(1 + index * 2, 3 + index * 2), 16);
+  const out = [0, 1, 2]
+    .map((index) => Math.round(channel(color, index) * amount + channel(base, index) * (1 - amount)))
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+  return `#${out}`;
+}
+
+export function Composer({
+  target,
+  layout = target.kind === "thread" ? "overlay" : "inline",
+}: {
+  target: ComposerTarget;
+  /** `overlay` pins the composer to the bottom of the chat canvas; `inline` leaves placement to the parent. */
+  layout?: "overlay" | "inline";
+}) {
+  const lane = <ComposerLane target={target} />;
+  return layout === "overlay" ? (
+    <div
+      style={{
+        position: "absolute",
+        left: 0,
+        right: 0,
+        bottom: 0,
+        display: "flex",
+        flexDirection: "row",
+        justifyContent: "center",
+        paddingTop: 8,
+        paddingLeft: LAYOUT.chatLanePadding,
+        paddingRight: LAYOUT.chatLanePadding,
+        paddingBottom: 20,
+        pointerEvents: "none",
+      }}
+    >
+      {lane}
+    </div>
+  ) : (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        justifyContent: "center",
+        width: "100%",
+        paddingLeft: LAYOUT.chatLanePadding,
+        paddingRight: LAYOUT.chatLanePadding,
+      }}
+    >
+      {lane}
+    </div>
+  );
+}
+
+function ComposerLane({ target }: { target: ComposerTarget }) {
+  const environmentId = target.environmentId;
+  if (environmentId === null || (target.kind === "draft" && target.projectId === null)) {
+    return <ComposerShellPlaceholder text="Choose a project above to start a thread" />;
+  }
   return (
-    <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, display: "flex", flexDirection: "row", justifyContent: "center", paddingLeft: LAYOUT.chatLanePadding, paddingRight: LAYOUT.chatLanePadding, paddingBottom: 20 }}>
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          width: "100%",
-          maxWidth: LAYOUT.chatMaxWidth,
-          borderRadius: RADIUS["3xl"],
-          borderWidth: 1,
-          borderColor: alpha("#ffffff", 0.05),
-          backgroundColor: alpha(theme.card, 0.94),
-          pointerEvents: "auto",
-        }}
-      >
-        <div style={{ paddingTop: 16, paddingLeft: 16, paddingRight: 16, paddingBottom: 8 }}>
-          <textarea
-            value={draft}
-            placeholder="Ask anything, @tag files/folders, $use skills, or / for commands"
-            minRows={2}
-            maxRows={10}
-            testId="composer"
-            theme={{ caret: theme.foreground }}
-            style={{ fontSize: 14, lineHeight: 23, color: theme.foreground, fontFamily: FONTS.sans }}
-            onChange={(e) => setDraft(e.value ?? "")}
-          />
-        </div>
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingLeft: 16, paddingRight: 16, paddingBottom: 16 }}>
-          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 2, marginLeft: -10 }}>
-            <ComposerControl icon="sparkles" label="GPT-6-Astra" />
-            <VSeparator />
-            <ComposerControl icon="brain" label="Medium" />
-            <VSeparator />
-            <ComposerControl icon="lock-open" label="Full access" />
-          </div>
-          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Icon name="paperclip" size={16} color={theme.mutedForeground} />
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, borderRadius: 16, backgroundColor: theme.messageAction, opacity: draft.trim() ? 1 : 0.64 }}>
-              <Icon name="arrow-up" size={14} strokeWidth={1.8} color="#ffffff" />
-            </div>
-          </div>
-        </div>
+    <ComposerBody
+      key={composerTargetKey(target)}
+      target={target}
+      environmentId={environmentId}
+      threadId={target.kind === "thread" ? target.threadId : null}
+      draftProjectId={target.kind === "draft" ? target.projectId : null}
+    />
+  );
+}
+
+/** A disabled composer for drafts without a project (web: projectSelectionRequired, opacity 75%). */
+function ComposerShellPlaceholder({ text }: { text: string }) {
+  const theme = useTheme();
+  return (
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", maxWidth: LAYOUT.chatMaxWidth, pointerEvents: "auto", opacity: 0.75 }}>
+      <div style={{ ...surfaceStyle(theme), paddingTop: 16, paddingLeft: 16, paddingRight: 16, paddingBottom: 60 }}>
+        <Text color={alpha(theme.mutedForeground, 0.75)} style={{ lineHeight: PROMPT_LINE_HEIGHT }}>
+          {text}
+        </Text>
       </div>
     </div>
   );
 }
 
-function ComposerControl({ icon, label }: { icon: Parameters<typeof Icon>[0]["name"]; label: string }) {
+function surfaceStyle(theme: ReturnType<typeof useTheme>) {
+  const glass = mix(theme.card, theme.background, 0.8);
+  return {
+    display: "flex" as const,
+    flexDirection: "column" as const,
+    width: "100%" as const,
+    borderRadius: RADIUS["3xl"],
+    borderWidth: 1,
+    borderColor: theme.appearance === "dark" ? alpha("#ffffff", 0.05) : "#00000014",
+    backgroundColor: glass,
+    ...(theme.appearance === "dark"
+      ? {}
+      : { boxShadow: { offsetX: 0, offsetY: 12, blurRadius: 28, spreadRadius: -18, color: "#00000066" } }),
+  };
+}
+
+/** web `dark:inset-shadow-2xs` (white 3%) under the top outline; GPUI's inset shadow paints over the border. */
+function SurfaceHighlight() {
+  const theme = useTheme();
+  if (theme.appearance !== "dark") return null;
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 0,
+        left: 12,
+        right: 12,
+        height: 1,
+        backgroundColor: alpha("#ffffff", 0.03),
+        pointerEvents: "none",
+      }}
+    />
+  );
+}
+
+function ComposerBody({
+  target,
+  environmentId,
+  threadId,
+  draftProjectId,
+}: {
+  target: ComposerTarget;
+  environmentId: EnvironmentId;
+  threadId: ThreadId | null;
+  draftProjectId: ProjectId | null;
+}) {
+  const theme = useTheme();
+  const renderer = useGpuixRequired();
+  const draftKey = composerTargetKey(target);
+  const draft = useAtomValue(composerDraftAtom(draftKey));
+  // Editing a queued message repurposes the editor: its text lives in a per-run draft and
+  // submit saves it in place (web useQueuedRunEdit). Model and mode stay the thread's.
+  const queuedEdit = useQueuedRunEdit({ environmentId, threadId });
+  const promptKey = queuedEdit.isEditing ? queuedEdit.draftKey ?? draftKey : draftKey;
+  const promptDraft = useAtomValue(composerDraftAtom(promptKey));
+  const sticky = useAtomValue(stickyModelAtom);
+  const settings = useAtomValue(composerSettingsAtom(environmentId));
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const projects = useAtomValue(projectIndexAtom);
+  // Drafts have no thread yet; an empty thread id fails the ref schema, so read constants.
+  const shell = useAtomValue(
+    threadId ? environmentThreadShells.threadShellAtom({ environmentId, threadId }) : NO_THREAD_SHELL_ATOM,
+  );
+  const threadState = useAtomValue(
+    threadId ? environmentThreads.stateAtom(environmentId, threadId) : NO_THREAD_STATE_ATOM,
+  );
+  const projection = Option.getOrNull(Option.flatMap(AsyncResult.value(threadState), (state) => state.data));
+  const projectId = threadId ? (shell?.projectId ?? null) : draftProjectId;
+  const project = projectId ? (projects.get(`${environmentId}:${projectId}`) ?? null) : null;
+  // Keeps the prepared connection mounted: attachment uploads read its base URL at send time.
+  useAtomValue(environmentSession.preparedConnectionValueAtom(environmentId));
+  const sending = useAtomValue(composerSendingAtom(draftKey));
+  const sendError = useAtomValue(composerSendErrorAtom(draftKey));
+  const [modelPickerOpen, setModelPickerOpen] = [
+    useAtomValue(modelPickerOpenAtom),
+    (open: boolean) => appAtomRegistry.set(modelPickerOpenAtom, open),
+  ] as const;
+  const menuOpen = useAtomValue(composerMenuOpenAtom);
+  const setMenuOpen = (menu: typeof menuOpen) => appAtomRegistry.set(composerMenuOpenAtom, menu);
+  const restingRequested = useAtomValue(composerRestingAtom(draftKey));
+
+  // ── Thread runtime ────────────────────────────────────────────────────
+  const runtime = projection ? deriveThreadStructureRuntime(projection) : null;
+  const phase = threadId ? derivePhase(runtime) : "ready";
+  const isRunning = phase === "running";
+  const canInterrupt = threadId !== null && (isRunning || threadRuntimeHasInterruptibleRun(runtime));
+  const reportedModelSelection = projection ? deriveReportedModelSelection(projection) : null;
+  const environmentUnavailable = serverConfig === null;
+  const providerStatuses: ReadonlyArray<ServerProvider> = serverConfig?.providers ?? [];
+  const keybindings = serverConfig?.keybindings;
+  const cwd = shell?.worktreePath ?? project?.workspaceRoot ?? null;
+
+  // ── Provider + model ──────────────────────────────────────────────────
+  const prompt = promptDraft.prompt;
+  const lockedProvider = deriveLockedProvider({
+    thread: shell
+      ? { latestRun: shell.latestRun, itemCount: shell.itemCount, runtime: shell.runtime }
+      : null,
+    selectedProvider: draft.activeProvider,
+    threadProvider: shell?.modelSelection.instanceId ?? null,
+    providers: providerStatuses,
+  });
+  const draftThreadModelSelection: ModelSelection | null =
+    (sticky.activeProvider ? (sticky.modelSelectionByProvider[sticky.activeProvider] ?? null) : null) ??
+    settings.defaultModelSelection ??
+    null;
+  const threadModelSelection = threadId ? (shell?.modelSelection ?? null) : draftThreadModelSelection;
+  const projectModelSelection = project?.defaultModelSelection ?? null;
+  const provider = resolveComposerProviderModel({
+    providerStatuses,
+    settings,
+    activeProjectId: projectId,
+    draft,
+    threadModelSelection,
+    projectModelSelection,
+    promptInjectionState: getComposerPromptInjectionState(prompt),
+    candidateInstanceIds: [
+      draft.activeProvider,
+      shell?.runtime?.providerInstanceId,
+      threadModelSelection?.instanceId,
+      projectModelSelection?.instanceId,
+    ],
+    lockedProvider,
+    lockedInstanceId: shell?.runtime?.providerInstanceId ?? shell?.modelSelection.instanceId,
+  });
+  const {
+    providerInstanceEntries,
+    selectedProviderEntry,
+    lockedContinuationGroupKey,
+    selectedInstanceId,
+    selectedProvider,
+    selectedProviderModels,
+    composerModelOptions,
+    selectedModel,
+    composerProviderState,
+  } = provider;
+  const noProviderAvailable = selectedProviderEntry === undefined;
+  const providerCatalogPending = noProviderAvailable && serverConfig === null;
+  const showProviderUnavailable = noProviderAvailable && !providerCatalogPending;
+  const selectedProviderStatus = selectedProviderEntry?.snapshot ?? null;
+  const modelOptionsByInstance = useMemo(() => {
+    const map = new Map<ProviderInstanceId, ReadonlyArray<AppModelOption>>();
+    for (const entry of providerInstanceEntries) {
+      map.set(
+        entry.instanceId,
+        getAppModelOptionsForInstance(settings, entry, entry.instanceId === selectedInstanceId ? selectedModel : null),
+      );
+    }
+    return map;
+  }, [providerInstanceEntries, settings, selectedInstanceId, selectedModel]);
+  const selectedModelOptions = composerModelOptions?.[selectedInstanceId];
+  const selectedModelSelection = createModelSelection(
+    selectedInstanceId,
+    selectedModel,
+    composerProviderState.modelOptionsForDispatch,
+  );
+  const traitsModelOptions = withImplicitFastModeDefault(
+    getProviderModelCapabilities(selectedProviderModels, selectedModel, selectedProvider, settings.planModeEnabled),
+    selectedModelOptions,
+  );
+
+  // ── Modes ─────────────────────────────────────────────────────────────
+  const requestedRuntimeMode: RuntimeMode =
+    draft.runtimeMode ?? shell?.runtimeMode ?? settings.defaultRuntimeMode ?? "full-access";
+  const requestedInteractionMode: ProviderInteractionMode =
+    draft.interactionMode ?? shell?.interactionMode ?? "default";
+  const { enabled: planModeUiEnabled, interactionMode } = resolveComposerInteractionMode({
+    planModeEnabled: settings.planModeEnabled,
+    provider: selectedProviderStatus,
+    interactionMode: requestedInteractionMode,
+  });
+  const supportedRuntimeModes = selectedProviderStatus?.supportedRuntimeModes;
+  const compatibleRuntimeModeOptions =
+    supportedRuntimeModes && supportedRuntimeModes.length > 0
+      ? ALL_RUNTIME_MODE_OPTIONS.filter((option) => supportedRuntimeModes.includes(option.mode))
+      : ALL_RUNTIME_MODE_OPTIONS;
+  const runtimeMode = compatibleRuntimeModeOptions.some((option) => option.mode === requestedRuntimeMode)
+    ? requestedRuntimeMode
+    : (compatibleRuntimeModeOptions[0]?.mode ?? requestedRuntimeMode);
+
+  // ── Pending requests and plan follow-up ──────────────────────────────
+  const requests = usePendingThreadRequests({ environmentId, threadId });
+  const activePendingProgress = requests.activePendingProgress;
+  const isComposerApprovalState = requests.activePendingApproval !== null;
+  const latestProposedPlan = projection ? findLatestProposedPlan(projection, shell?.latestRun?.runId ?? null) : null;
+  const showPlanFollowUpPrompt =
+    threadId !== null &&
+    planModeUiEnabled &&
+    shouldShowPlanFollowUpPrompt({
+      pendingUserInputCount: requests.pendingUserInputs.length,
+      interactionMode,
+      latestTurnSettled: !isRunning && phase !== "connecting",
+      hasActionableProposedPlan: hasActionableProposedPlan(latestProposedPlan),
+      hasComposerAttachments: draft.attachments.length > 0,
+    });
+  const resumableRunId = (() => {
+    if (!projection) return null;
+    const run = projection.runs.findLast(
+      (candidate) => candidate.status !== "queued" && candidate.status !== "preparing",
+    );
+    return run?.status === "interrupted" ? run.id : null;
+  })();
+  const hasHeldQueuedRuns = projection?.runs.some((run) => run.status === "queued" && run.queueHeld === true) === true;
+  const canResume = resumableRunId !== null || hasHeldQueuedRuns;
+
+  // ── Editor value ──────────────────────────────────────────────────────
+  const editorValue = activePendingProgress ? activePendingProgress.customAnswer : prompt;
+  const isChoiceOnlyPendingQuestion = activePendingProgress?.activeQuestion?.allowCustomAnswer === false;
+  const caretRef = useRef(editorValue.length);
+  const valueRef = useRef(editorValue);
+  const editorRef = useRef<{ id: number } | null>(null);
+  const [trigger, setTriggerState] = useState<ComposerTrigger | null>(null);
+  const dismissedTriggerRef = useRef<ComposerTrigger | null>(null);
+  const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null);
+  const [highlightedSearchKey, setHighlightedSearchKey] = useState<string | null>(null);
+  const [focused, setFocused] = useState(false);
+  const [surfaceWidth, setSurfaceWidth] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (valueRef.current !== editorValue) {
+      valueRef.current = editorValue;
+      caretRef.current = editorValue.length;
+    }
+  }, [editorValue]);
+
+  const resolveTrigger = (candidate: ComposerTrigger | null) => {
+    const dismissed = dismissedTriggerRef.current;
+    return candidate && dismissed && candidate.kind === dismissed.kind && candidate.rangeStart === dismissed.rangeStart
+      ? null
+      : candidate;
+  };
+  const setTrigger = (candidate: ComposerTrigger | null) => {
+    const active = resolveTrigger(candidate);
+    if (candidate === null || active !== null) dismissedTriggerRef.current = null;
+    setTriggerState(active);
+  };
+  const dismissTrigger = () => {
+    dismissedTriggerRef.current = trigger;
+    setTriggerState(null);
+  };
+
+  const focusEditor = () => {
+    if (editorRef.current) renderer.focusElement?.(editorRef.current.id);
+  };
+  const focusRequest = useAtomValue(composerFocusRequestAtom);
+  const lastFocusRequestRef = useRef(focusRequest);
+  useEffect(() => {
+    if (focusRequest === lastFocusRequestRef.current) return;
+    lastFocusRequestRef.current = focusRequest;
+    focusEditor();
+  });
+
+  // ── Command menu ──────────────────────────────────────────────────────
+  const selectedProviderSkills = selectedProviderStatus
+    ? resolveProviderSkillsForCwd(selectedProviderStatus, cwd)
+    : NO_SKILLS;
+  const selectedProviderSlashCommands = selectedProviderStatus
+    ? resolveProviderSlashCommandsForCwd(selectedProviderStatus, cwd)
+    : NO_SLASH_COMMANDS;
+  const compactSlashCommandAvailable =
+    trigger?.kind === "slash-command" &&
+    prompt.slice(0, trigger.rangeStart).trim() === "" &&
+    prompt.slice(trigger.rangeEnd).trim() === "" &&
+    draft.attachments.length === 0 &&
+    threadId !== null &&
+    threadShellHasStarted(shell);
+  const menu = useComposerMenuItems({
+    composerTrigger: activePendingProgress && isChoiceOnlyPendingQuestion ? null : trigger,
+    environmentId,
+    gitCwd: cwd,
+    activeThreadId: threadId,
+    planModeUiEnabled,
+    compactSlashCommandAvailable,
+    selectedProvider,
+    selectedProviderSkills,
+    selectedProviderSlashCommands,
+    showSkillsInSlashMenu: settings.showSkillsInSlashMenu,
+  });
+  const menuIsOpen = trigger !== null;
+  const menuSearchKey = trigger ? `${draftKey}:${trigger.kind}:${trigger.query.trim().toLowerCase()}` : null;
+  const activeMenuItemId = resolveComposerMenuActiveItemId({
+    items: menu.items as never,
+    highlightedItemId,
+    currentSearchKey: menuSearchKey,
+    highlightedSearchKey,
+  });
+  const activeMenuItem = menu.items.find((item) => item.id === activeMenuItemId) ?? null;
+
+  // ── Editing ───────────────────────────────────────────────────────────
+  const writeEditorValue = (next: string) => {
+    if (activePendingProgress?.activeQuestion) {
+      requests.onChangeActivePendingUserInputCustomAnswer(activePendingProgress.activeQuestion.id, next);
+    } else {
+      setComposerPrompt(promptKey, next);
+    }
+  };
+
+  const onEditorChange = (nextValue: string) => {
+    const caret = caretAfterEdit(valueRef.current, nextValue);
+    valueRef.current = nextValue;
+    caretRef.current = caret;
+    setSubmissionError(null);
+    if (isChoiceOnlyPendingQuestion) return;
+    writeEditorValue(nextValue);
+    if (restingRequested) appAtomRegistry.set(composerRestingAtom(draftKey), false);
+    setTrigger(activePendingProgress?.activeQuestion?.initialAnswer !== undefined ? null : detectComposerTrigger(nextValue, caret));
+  };
+
+  const applyPromptReplacement = (rangeStart: number, rangeEnd: number, replacement: string) => {
+    const current = valueRef.current;
+    const next = replaceTextRange(current, rangeStart, rangeEnd, replacement);
+    valueRef.current = next.text;
+    caretRef.current = next.cursor;
+    writeEditorValue(next.text);
+    setTrigger(detectComposerTrigger(next.text, next.cursor));
+    setHighlightedItemId(null);
+    focusEditor();
+  };
+
+  const handleInteractionModeChange = (mode: ProviderInteractionMode) => {
+    if (mode === "plan" && !planModeUiEnabled) return;
+    setComposerInteractionMode(draftKey, mode);
+  };
+  const toggleInteractionMode = () => {
+    if (!planModeUiEnabled) return;
+    handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
+  };
+
+  const onSelectMenuItem = (item: ComposerCommandItem) => {
+    const current = valueRef.current;
+    const active = trigger ?? detectComposerTrigger(current, caretRef.current);
+    if (!active) return;
+    if (item.type === "path") {
+      // web serializes mentions as markdown file links; tiptap shows them as chips, the
+      // plain textarea shows the link text.
+      const replacement = `${serializeComposerFileLink(item.path)} `;
+      const end = extendReplacementRangeForTrailingSpace(current, active.rangeEnd, replacement);
+      applyPromptReplacement(active.rangeStart, end, replacement);
+      return;
+    }
+    if (item.type === "slash-command") {
+      applyPromptReplacement(active.rangeStart, active.rangeEnd, "");
+      if (item.command === "model") {
+        setTriggerState(null);
+        setModelPickerOpen(true);
+        return;
+      }
+      handleInteractionModeChange(item.command === "plan" ? "plan" : "default");
+      return;
+    }
+    if (item.type === "provider-slash-command") {
+      const replacement = `/${item.command.name} `;
+      const end = extendReplacementRangeForTrailingSpace(current, active.rangeEnd, replacement);
+      applyPromptReplacement(active.rangeStart, end, replacement);
+      return;
+    }
+    if (item.type === "skill") {
+      const replacement = `$${item.skill.name} `;
+      const end = extendReplacementRangeForTrailingSpace(current, active.rangeEnd, replacement);
+      applyPromptReplacement(active.rangeStart, end, replacement);
+      return;
+    }
+  };
+
+  const nudgeMenuHighlight = (direction: 1 | -1) => {
+    if (menu.items.length === 0) return;
+    const index = menu.items.findIndex((item) => item.id === activeMenuItemId);
+    const normalized = index >= 0 ? index : direction > 0 ? -1 : 0;
+    const next = menu.items[(normalized + direction + menu.items.length) % menu.items.length];
+    setHighlightedItemId(next?.id ?? null);
+    setHighlightedSearchKey(menuSearchKey);
+  };
+
+  // ── Send ──────────────────────────────────────────────────────────────
+  const composerSendState = deriveComposerSendState({
+    prompt,
+    imageCount: draft.attachments.length,
+    terminalContexts: [],
+  });
+  const providerSendBlockReason = getAntigravitySendBlockReason(selectedProviderStatus, selectedModel);
+  const sendDisabledReason = providerSendBlockReason;
+  const followUpBehavior: "queue" | "steer" =
+    requests.pendingApprovals.length > 0 ? "steer" : settings.followUpBehavior;
+  const isCompacting = false;
+
+  const submit = (dispatchMode?: ComposerDispatchMode) => {
+    if (activePendingProgress) {
+      requests.onAdvanceActivePendingUserInput();
+      return;
+    }
+    if (sending || noProviderAvailable || sendDisabledReason !== null || environmentUnavailable) return;
+    const promptAtSend = readComposerDraft(promptKey).prompt;
+    if (queuedEdit.isEditing) {
+      void queuedEdit.saveEdit(promptAtSend);
+      return;
+    }
+    const attachments = readComposerDraft(draftKey).attachments;
+    const trimmed = promptAtSend.trim();
+    // Plan follow-up: blank implements the plan, text refines it (web submitPlanFollowUp).
+    if (showPlanFollowUpPrompt && latestProposedPlan && attachments.length === 0 && threadId) {
+      const followUp = resolvePlanFollowUpSubmission({ draftText: promptAtSend, planMarkdown: latestProposedPlan.planMarkdown });
+      void dispatchSend({
+        prompt: promptAtSend,
+        text: followUp.text,
+        attachments: [],
+        interactionMode: followUp.interactionMode,
+        dispatchMode: "auto",
+        ...(followUp.interactionMode === "default"
+          ? { sourceProposedPlan: { threadId, planId: latestProposedPlan.id } }
+          : {}),
+      });
+      return;
+    }
+    const standalone = planModeUiEnabled && attachments.length === 0 ? parseStandaloneComposerSlashCommand(trimmed) : null;
+    if (standalone) {
+      handleInteractionModeChange(standalone);
+      setComposerPrompt(promptKey, "");
+      return;
+    }
+    if (!composerSendState.hasSendableContent && attachments.length === 0) return;
+    const validation = getComposerSubmissionValidationMessage({
+      prompt: promptAtSend,
+      submissionTarget: "provider-turn",
+    });
+    if (validation) {
+      setSubmissionError(validation);
+      return;
+    }
+    void dispatchSend({
+      prompt: promptAtSend,
+      text: promptAtSend.trim(),
+      attachments,
+      interactionMode,
+      dispatchMode:
+        dispatchMode ??
+        resolveComposerDispatchMode({
+          running: isRunning,
+          alternateModifier: false,
+          activeTurnDefault: followUpBehavior,
+          canSteer: !isCompacting,
+        }),
+    });
+  };
+
+  const dispatchSend = async (input: {
+    prompt: string;
+    text: string;
+    attachments: ReadonlyArray<ComposerAttachmentDraft>;
+    interactionMode: ProviderInteractionMode;
+    dispatchMode: ComposerDispatchMode;
+    sourceProposedPlan?: { threadId: ThreadId; planId: string };
+  }) => {
+    if (!project && !threadId) {
+      toast({ type: "warning", title: "Choose a project first" });
+      return;
+    }
+    const outgoingText = formatOutgoingPrompt({
+      provider: selectedProvider,
+      model: selectedModel,
+      models: selectedProviderModels,
+      effort: composerProviderState.promptEffort,
+      text: input.text || "[User attached one or more files without additional text. Respond using the conversation context and the attached files.]",
+    });
+    const sendTarget: ComposerSendTarget = threadId
+      ? {
+          kind: "thread",
+          threadId,
+          currentRuntimeMode: shell?.runtimeMode ?? runtimeMode,
+          currentInteractionMode: shell?.interactionMode ?? input.interactionMode,
+        }
+      : {
+          kind: "draft",
+          projectId: project!.id,
+          projectCwd: project!.workspaceRoot,
+          envMode: draft.envMode ?? "local",
+          branch: draft.branch ?? null,
+          worktreePath: draft.worktreePath ?? null,
+          startFromOrigin: draft.startFromOrigin ?? false,
+        };
+    setTriggerState(null);
+    const approvalsToDecline = requests.pendingApprovals.filter(
+      (approval) => !requests.respondingRequestIds.includes(approval.requestId),
+    );
+    const sent = await sendComposerMessage({
+      environmentId,
+      draftKey,
+      target: sendTarget,
+      prompt: input.prompt,
+      outgoingText,
+      attachments: input.attachments,
+      modelSelection: selectedModelSelection,
+      runtimeMode,
+      interactionMode: input.interactionMode,
+      dispatchMode: input.dispatchMode,
+      approvalsToDecline,
+      respondToApproval: async (requestId, decision) =>
+        (await requests.onRespondToApproval(requestId, decision)) as never,
+      ...(input.sourceProposedPlan ? { sourceProposedPlan: input.sourceProposedPlan } : {}),
+    });
+    if (sent) {
+      valueRef.current = "";
+      caretRef.current = 0;
+      if (target.kind === "draft") {
+        // The new thread opens with its own composer; leave this draft's workspace choices.
+      }
+    }
+  };
+
+  const onImplementPlanInNewThread = () => {
+    if (!latestProposedPlan || !project) return;
+    // web useProposedPlanSend.implementInNewThread: a fresh thread whose first turn implements the plan.
+    void sendComposerMessage({
+      environmentId,
+      draftKey: `${draftKey}:implement`,
+      target: {
+        kind: "draft",
+        projectId: project.id,
+        projectCwd: project.workspaceRoot,
+        envMode: "local",
+        branch: shell?.branch ?? null,
+        worktreePath: shell?.worktreePath ?? null,
+        startFromOrigin: false,
+      },
+      prompt: "",
+      outgoingText: resolvePlanFollowUpSubmission({ draftText: "", planMarkdown: latestProposedPlan.planMarkdown }).text,
+      attachments: [],
+      modelSelection: selectedModelSelection,
+      runtimeMode,
+      interactionMode: "default",
+      dispatchMode: "auto",
+      ...(threadId ? { sourceProposedPlan: { threadId, planId: latestProposedPlan.id } } : {}),
+    });
+  };
+
+  const onResume = () => {
+    if (!threadId || sending) return;
+    if (resumableRunId === null) {
+      void runAtomCommand(appAtomRegistry, threadEnvironment.resumeThreadQueue, {
+        environmentId,
+        input: { threadId } as never,
+      });
+      return;
+    }
+    void runAtomCommand(appAtomRegistry, threadEnvironment.startTurn, {
+      environmentId,
+      input: {
+        threadId,
+        manualContinuationOfRunId: resumableRunId,
+        modelSelection: selectedModelSelection,
+        message: {
+          messageId: globalThis.crypto.randomUUID(),
+          role: "user",
+          text: "Continue where you left off.",
+          attachments: [],
+        },
+        runtimeMode,
+        interactionMode,
+        dispatchMode: "start",
+      } as never,
+    });
+  };
+
+  const onInterrupt = () => {
+    if (threadId) void interruptComposerTurn(environmentId, threadId);
+  };
+
+  // ── Model / traits / mode changes ─────────────────────────────────────
+  const getModelDisabledReason = makeModelDisabledReason(
+    shell
+      ? {
+          providers: providerStatuses,
+          hasStartedSession: runtime !== null,
+          supportsProviderSwitchingViaHandoff: false,
+          currentModelSelection: shell.modelSelection,
+          currentProviderInstanceId: runtime?.providerInstanceId ?? null,
+        }
+      : null,
+  );
+  const onProviderModelSelect = (instanceId: ProviderInstanceId, model: string) => {
+    const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
+    if (lockedProvider !== null && entry && entry.driver !== lockedProvider) return;
+    const resolved = resolveAppModelSelectionForInstance(instanceId, settings, providerStatuses, model);
+    if (!resolved) return;
+    const remembered = sticky.modelSelectionByProvider[instanceId];
+    setComposerModelSelection(
+      draftKey,
+      remembered && remembered.model === resolved && remembered.options
+        ? { instanceId, model: resolved, options: remembered.options }
+        : { instanceId, model: resolved },
+    );
+    setModelPickerOpen(false);
+    focusEditor();
+  };
+
+  const onPromptEdit = (edit: (current: string) => string) => {
+    const current = readComposerDraft(promptKey).prompt;
+    const next = edit(current);
+    if (next === current) return;
+    valueRef.current = next;
+    caretRef.current = next.length;
+    setComposerPrompt(promptKey, next);
+  };
+
+  // mod+shift+E steps the reasoning effort (web ChatComposerHandle.stepReasoningEffort).
+  const effortStep = useAtomValue(composerEffortStepAtom);
+  const lastEffortNonceRef = useRef(effortStep?.nonce ?? 0);
+  useEffect(() => {
+    if (!effortStep || effortStep.nonce === lastEffortNonceRef.current) return;
+    lastEffortNonceRef.current = effortStep.nonce;
+    if (noProviderAvailable || activePendingProgress) return;
+    const change = getComposerReasoningStep({
+      provider: selectedProvider,
+      instanceId: selectedInstanceId,
+      model: selectedModel,
+      models: selectedProviderModels,
+      modelOptions: selectedModelOptions,
+      reportedModelSelection,
+      prompt,
+      cursor: caretRef.current,
+      planModeEnabled: settings.planModeEnabled,
+      direction: effortStep.direction,
+    });
+    if (!change) return;
+    if (change.modelOptions) setComposerModelOptions(draftKey, selectedInstanceId, selectedModel, change.modelOptions);
+    if (change.prompt !== prompt) onPromptEdit(() => change.prompt);
+  });
+
+  // ── Attachments ───────────────────────────────────────────────────────
+  const fileStagingAllowed = !activePendingProgress;
+  const addPaths = (paths: ReadonlyArray<string>) => {
+    const { attachments, folders } = attachmentsFromPaths(paths);
+    if (attachments.length > 0) addComposerAttachments(draftKey, attachments);
+    if (folders.length > 0) {
+      const mentions = folders.map((folder) => serializeComposerFileLink(folder)).join(" ");
+      const current = valueRef.current;
+      const spacer = current.length > 0 && !/\s$/.test(current) ? " " : "";
+      applyPromptReplacement(current.length, current.length, `${spacer}${mentions} `);
+    }
+    focusEditor();
+  };
+  const onAttach = async () => {
+    const paths = await renderer.promptForPaths?.({ files: true, multiple: true, prompt: "Attach" });
+    if (paths && paths.length > 0) addPaths(paths);
+  };
+  const images = draft.attachments.filter((attachment) => attachment.type === "image");
+  const files = draft.attachments.filter((attachment) => attachment.type === "file");
+
+  // ── Context window ────────────────────────────────────────────────────
+  const activeProviderThread = projection?.providerThreads.find(
+    (candidate) => candidate.id === projection.thread.activeProviderThreadId,
+  );
+  const liveTokenUsage = projection
+    ? latestProviderTurnTokenUsage(projection.providerTurns ?? [], projection, activeProviderThread)
+    : null;
+  const activeContextWindow = projection
+    ? deriveLatestContextWindowSnapshot(
+        projection.turnItems.map((item) => ({ item })),
+        liveTokenUsage,
+        activeProviderThread,
+      )
+    : null;
+
+  // ── Resting ───────────────────────────────────────────────────────────
+  const hasExpandedChrome =
+    isComposerApprovalState ||
+    requests.pendingUserInputs.length > 0 ||
+    showPlanFollowUpPrompt ||
+    menuIsOpen ||
+    dragOver ||
+    showProviderUnavailable ||
+    environmentUnavailable ||
+    submissionError !== null ||
+    menuOpen !== null ||
+    modelPickerOpen;
+  const isResting =
+    threadId !== null &&
+    settings.composerCollapseOnScroll &&
+    restingRequested &&
+    !focused &&
+    !prompt.includes("\n") &&
+    !hasExpandedChrome;
+
+  // ── Keyboard ──────────────────────────────────────────────────────────
+  const onEditorKeyDown = (event: KeyEvent) => {
+    const key = event.key;
+    const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
+    const ctrl = Boolean(mods.ctrl || mods.cmd);
+    if (menuIsOpen) {
+      if (key === "escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        dismissTrigger();
+        return;
+      }
+      if (key === "tab" && !mods.shift) {
+        event.preventDefault();
+        const item = activeMenuItem ?? menu.items[0];
+        if (item) onSelectMenuItem(item);
+        return;
+      }
+      if ((key === "tab" && mods.shift) || (ctrl && (key === "p" || key === "k"))) {
+        event.preventDefault();
+        nudgeMenuHighlight(-1);
+        return;
+      }
+      if (ctrl && (key === "n" || key === "j")) {
+        event.preventDefault();
+        nudgeMenuHighlight(1);
+        return;
+      }
+    }
+    if (key === "tab" && mods.shift) {
+      event.preventDefault();
+      toggleInteractionMode();
+      return;
+    }
+    if (key === "enter" && ctrl) {
+      event.preventDefault();
+      submit(
+        resolveComposerDispatchMode({
+          running: isRunning,
+          alternateModifier: true,
+          activeTurnDefault: followUpBehavior,
+          canSteer: !isCompacting,
+        }),
+      );
+    }
+  };
+
+  const onEditorSubmit = () => {
+    if (menuIsOpen) {
+      const item = activeMenuItem ?? menu.items[0];
+      if (item) {
+        onSelectMenuItem(item);
+        return;
+      }
+    }
+    submit();
+  };
+
+  // ── Placeholder ───────────────────────────────────────────────────────
+  const placeholder = isComposerApprovalState
+    ? "Send a message to decline and redirect the agent"
+    : activePendingProgress
+      ? isChoiceOnlyPendingQuestion
+        ? "Choose an option above"
+        : "Type your own answer, or leave this blank to use the selected option"
+      : showPlanFollowUpPrompt
+        ? "Add feedback to refine the plan, or leave this blank to implement it"
+        : showProviderUnavailable
+          ? "Enable a provider in Settings to send a message"
+          : // web: a thread without a runtime yet (never run, or a new draft) is "disconnected".
+            environmentUnavailable || derivePhase(runtime) === "disconnected"
+            ? DISCONNECTED_COMPOSER_PLACEHOLDER
+            : DEFAULT_PLACEHOLDER;
+
+  // ── Render ────────────────────────────────────────────────────────────
+  const controlsSize = isResting ? "xs" : "sm";
+  const pendingAction = activePendingProgress
+    ? {
+        questionIndex: activePendingProgress.questionIndex,
+        isLastQuestion: activePendingProgress.isLastQuestion,
+        canAdvance: activePendingProgress.canAdvance,
+        isResponding: requests.activePendingIsResponding,
+        isComplete: Boolean(requests.activePendingResolvedAnswers),
+      }
+    : null;
+  const activeThreadModelDisplayName = resolveContextWindowModelDisplayName(
+    shell?.modelSelection ?? null,
+    modelOptionsByInstance,
+  );
+  const compactCommandAvailable = providerSupportsManualCompaction(selectedProviderEntry);
+
+  const controls = showProviderUnavailable ? (
+    <Text color={theme.mutedForeground} weight={500}>
+      No provider available
+    </Text>
+  ) : (
+    <>
+      <ProviderModelPicker
+        environmentId={environmentId}
+        activeInstanceId={selectedInstanceId}
+        model={selectedModel}
+        lockedProvider={lockedProvider}
+        lockedContinuationGroupKey={lockedContinuationGroupKey}
+        instanceEntries={providerInstanceEntries}
+        modelOptionsByInstance={modelOptionsByInstance}
+        {...(keybindings ? { keybindings } : {})}
+        size={controlsSize}
+        disabled={providerCatalogPending || sending}
+        open={modelPickerOpen}
+        onOpenChange={setModelPickerOpen}
+        getModelDisabledReason={getModelDisabledReason}
+        onOpenProviderSetup={() => appAtomRegistry.set(routeAtom, { kind: "settings", page: "providers" })}
+        onInstanceModelChange={onProviderModelSelect}
+      />
+      <TraitsSlot
+        provider={selectedProvider}
+        instanceId={selectedInstanceId}
+        models={selectedProviderModels}
+        model={selectedModel}
+        modelOptions={traitsModelOptions}
+        reportedModelSelection={reportedModelSelection}
+        promptUltrathink={readPromptUltrathink(prompt)}
+        onPromptEdit={onPromptEdit}
+        onModelOptionsChange={(next) => setComposerModelOptions(draftKey, selectedInstanceId, selectedModel, next)}
+        planModeEnabled={settings.planModeEnabled}
+        size={controlsSize}
+        open={menuOpen === "traits"}
+        onOpenChange={(open) => setMenuOpen(open ? "traits" : null)}
+      />
+      <ComposerFooterModeControls
+        showInteractionModeToggle={planModeUiEnabled}
+        interactionMode={interactionMode}
+        runtimeMode={runtimeMode}
+        runtimeModeOptions={compatibleRuntimeModeOptions}
+        size={controlsSize}
+        modeMenuOpen={menuOpen === "mode"}
+        onModeMenuOpenChange={(open) => setMenuOpen(open ? "mode" : null)}
+        onToggleInteractionMode={toggleInteractionMode}
+        onRuntimeModeChange={(mode) => {
+          setComposerRuntimeMode(draftKey, mode);
+          focusEditor();
+        }}
+      />
+    </>
+  );
+
+  const primaryActions = (
+    <ComposerPrimaryActions
+      compact={isResting}
+      canOperateThread={true}
+      pendingAction={pendingAction}
+      isRunning={isRunning}
+      canInterrupt={canInterrupt}
+      followUpBehavior={followUpBehavior}
+      canSteer={!isCompacting}
+      showPlanFollowUpPrompt={requests.pendingUserInputs.length === 0 && showPlanFollowUpPrompt}
+      promptHasText={prompt.trim().length > 0}
+      isSendBusy={sending || queuedEdit.isSaving}
+      sendDisabledReason={sendDisabledReason}
+      isConnecting={phase === "connecting" && !isRunning && sending}
+      isEnvironmentUnavailable={environmentUnavailable || noProviderAvailable}
+      isPreparingWorktree={sending && target.kind === "draft" && draft.envMode === "worktree"}
+      hasSendableContent={composerSendState.hasSendableContent || draft.attachments.length > 0}
+      canResume={canResume && prompt.trim().length === 0 && draft.attachments.length === 0}
+      alternateModifier={false}
+      isEditingQueuedMessage={queuedEdit.isEditing}
+      alternateShortcutLabel={
+        keybindings
+          ? shortcutLabelForCommand(keybindings, "composer.sendAlternate", {
+              context: { composerFocus: true, draftThreadRoute: target.kind === "draft", turnRunning: true },
+            })
+          : null
+      }
+      onSubmit={(mode) => submit(mode)}
+      onResume={onResume}
+      onPreviousPendingQuestion={requests.onPreviousActivePendingUserInputQuestion}
+      onAdvancePendingQuestion={requests.onAdvanceActivePendingUserInput}
+      onInterrupt={onInterrupt}
+      onImplementPlanInNewThread={onImplementPlanInNewThread}
+    />
+  );
+
+  const surfaceBase = surfaceStyle(theme);
+  const editorTextStyle = {
+    fontSize: 14,
+    lineHeight: PROMPT_LINE_HEIGHT,
+    fontFamily: FONTS.sans,
+    color: theme.foreground,
+  };
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        width: "100%",
+        maxWidth: LAYOUT.chatMaxWidth,
+        pointerEvents: "auto",
+      }}
+    >
+      <ComposerTopBanners
+        requests={requests}
+        canOperateThread={true}
+        showPlanFollowUp={showPlanFollowUpPrompt && latestProposedPlan !== null}
+        planFollowUpTitle={
+          showPlanFollowUpPrompt && latestProposedPlan ? (proposedPlanTitle(latestProposedPlan.planMarkdown) ?? null) : null
+        }
+        attachedAbove={
+          threadId ? (
+            <QueuedRunsControl
+              environmentId={environmentId}
+              threadId={threadId}
+              canOperateThread={true}
+              editingRunId={queuedEdit.editingRunId}
+              onEditQueuedRun={queuedEdit.beginEdit}
+              onCancelEdit={queuedEdit.cancelEdit}
+            />
+          ) : null
+        }
+      />
+      <StripBehindSurface
+        strip={
+          target.kind === "draft" && project ? (
+            <BranchToolbar
+              environmentId={environmentId}
+              projectId={project.id}
+              draftKey={draftKey}
+              onComposerFocusRequest={focusEditor}
+            />
+          ) : isResting ? (
+            <RestingModelStrip>{controls}</RestingModelStrip>
+          ) : null
+        }
+      >
+      <div
+        testId="composer-surface"
+        onLayout={(event) => {
+          const width = (event as { width?: number }).width;
+          if (typeof width === "number" && width !== surfaceWidth) setSurfaceWidth(width);
+        }}
+        onFileDrop={(event) => {
+          setDragOver(false);
+          const paths = (event as { paths?: string[] }).paths ?? [];
+          if (paths.length > 0 && fileStagingAllowed) addPaths(paths);
+        }}
+        onMouseDown={() => {
+          if (isResting) {
+            appAtomRegistry.set(composerRestingAtom(draftKey), false);
+            focusEditor();
+          }
+        }}
+        style={{
+          ...surfaceBase,
+          position: "relative",
+          ...(dragOver ? { backgroundColor: mix("#ffffff", surfaceBase.backgroundColor, 0.045), borderColor: alpha(theme.primary, 0.7) } : {}),
+        }}
+      >
+        <SurfaceHighlight />
+        {menuIsOpen && surfaceWidth !== null ? (
+          <ComposerCommandMenuLayer surfaceWidth={surfaceWidth}>
+            <ComposerCommandMenu
+              items={menu.items}
+              isLoading={menu.isLoading}
+              triggerKind={trigger?.kind ?? null}
+              emptyStateText={menu.emptyState}
+              activeItemId={activeMenuItemId}
+              onHighlightedItemChange={(itemId) => {
+                setHighlightedItemId(itemId);
+                setHighlightedSearchKey(menuSearchKey);
+              }}
+              onSelect={onSelectMenuItem}
+            />
+          </ComposerCommandMenuLayer>
+        ) : null}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: isResting ? "row" : "column",
+            alignItems: isResting ? "center" : "stretch",
+            // web: Main p-px + body pt-4 / pb-2 around a 70px editor. GPUI sets the 14px glyphs
+            // 2px lower in a 23px line than Chrome does in 22.75, so 15/10 lands the same rows.
+            paddingTop: isResting ? 8 : 15,
+            paddingBottom: isResting ? 8 : 10,
+            paddingLeft: 16,
+            paddingRight: isResting ? 16 : 16,
+            gap: isResting ? 4 : 0,
+          }}
+        >
+          {!isResting ? <ComposerAttachmentMediaRow images={images} onRemove={(id) => removeComposerAttachment(draftKey, id)} /> : null}
+          {!isResting ? <ComposerAttachmentFileList files={files} onRemove={(id) => removeComposerAttachment(draftKey, id)} /> : null}
+          <div style={{ position: "relative", flexGrow: 1, minWidth: 0 }}>
+            {editorValue.length === 0 ? (
+              <text
+                style={{
+                  ...editorTextStyle,
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  color: alpha(theme.mutedForeground, 0.75),
+                  whiteSpace: isResting ? "nowrap" : undefined,
+                  textOverflow: isResting ? "ellipsis" : undefined,
+                  overflow: "hidden",
+                  pointerEvents: "none",
+                  ...(isResting ? { lineHeight: 32 } : {}),
+                }}
+              >
+                {placeholder}
+              </text>
+            ) : null}
+            <textarea
+              ref={editorRef as never}
+              testId="composer"
+              value={editorValue}
+              placeholder=""
+              minRows={isResting ? 1 : 3}
+              maxRows={isResting ? 1 : 9}
+              readOnly={isChoiceOnlyPendingQuestion || requests.activePendingIsResponding}
+              theme={{ caret: theme.foreground }}
+              style={{ ...editorTextStyle, ...(isResting ? { lineHeight: 32 } : {}) }}
+              onChange={(event) => onEditorChange(event.value ?? "")}
+              onSubmit={onEditorSubmit}
+              onKeyDown={onEditorKeyDown}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
+            />
+          </div>
+          {isResting ? (
+            <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 }}>
+              {fileStagingAllowed ? <ComposerAttachButton onClick={() => void onAttach()} /> : null}
+              {primaryActions}
+            </div>
+          ) : null}
+        </div>
+        {submissionError ?? sendError ? (
+          <div style={{ paddingLeft: 16, paddingRight: 16, paddingBottom: 8 }}>
+            <Text size="xs" color={theme.errorForeground}>
+              {submissionError ?? sendError}
+            </Text>
+          </div>
+        ) : null}
+        {!isResting ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              paddingLeft: 16,
+              paddingRight: 16,
+              paddingBottom: 16,
+              paddingTop: requests.pendingUserInputs.length > 0 ? 8 : 0,
+            }}
+          >
+            <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, minWidth: 0, flexShrink: 1, overflow: "hidden" }}>
+              {controls}
+            </div>
+            <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, flexShrink: 0 }}>
+              {fileStagingAllowed ? <ComposerAttachButton onClick={() => void onAttach()} /> : null}
+              {settings.contextWindowMeterEnabled && activeContextWindow ? (
+                <ContextWindowMeter
+                  usage={activeContextWindow}
+                  modelDisplayName={activeThreadModelDisplayName}
+                  {...(compactCommandAvailable && threadId
+                    ? {
+                        onCompact: () =>
+                          void dispatchSend({
+                            prompt: "",
+                            text: "/compact",
+                            attachments: [],
+                            interactionMode,
+                            dispatchMode: "auto",
+                          }),
+                      }
+                    : {})}
+                  compactDisabled={isRunning || sending}
+                  compactDisabledReason={isRunning ? "Wait for the current turn to finish." : null}
+                />
+              ) : null}
+              {primaryActions}
+            </div>
+          </div>
+        ) : null}
+      </div>
+      </StripBehindSurface>
+    </div>
+  );
+}
+
+/**
+ * web ComposerSurface.ContextStrip: a strip under the composer, inset 22px a side, whose top
+ * 16px tuck under the surface (`-mt-4`, composer `z-10`). gpuix paints in tree order and has
+ * no z-index, so the strip renders first, absolutely at the bottom, and a spacer reserves the
+ * part that shows below the surface. Strip components render only their box (no margins).
+ */
+function StripBehindSurface({ strip, children }: { strip: ReactNode; children: ReactNode }) {
+  const [stripHeight, setStripHeight] = useState(49);
+  if (strip === null || strip === false) return <>{children}</>;
+  return (
+    <div style={{ position: "relative", display: "flex", flexDirection: "column" }}>
+      <div
+        style={{ position: "absolute", left: 22, right: 22, bottom: 0, display: "flex", flexDirection: "column" }}
+        onLayout={(event) => {
+          const height = (event as { height?: number }).height;
+          if (typeof height === "number" && Math.abs(height - stripHeight) > 0.5) setStripHeight(height);
+        }}
+      >
+        {strip}
+      </div>
+      {children}
+      <div style={{ height: Math.max(0, stripHeight - 16), flexShrink: 0, pointerEvents: "none" }} />
+    </div>
+  );
+}
+
+/** The traits picker renders only when the model has trait controls (web shouldRenderTraitsControls). */
+function TraitsSlot(props: Parameters<typeof TraitsPicker>[0]) {
+  if (
+    !shouldRenderTraitsControls({
+      provider: props.provider,
+      models: props.models,
+      model: props.model,
+      modelOptions: props.modelOptions,
+      promptUltrathink: props.promptUltrathink,
+      planModeEnabled: props.planModeEnabled,
+    })
+  ) {
+    return null;
+  }
+  return (
+    <>
+      <ComposerControlSeparator size={props.size} />
+      <TraitsPicker {...props} />
+    </>
+  );
+}
+
+/** web ComposerSurface.ContextStrip hosting the resting controls (xs) under a collapsed composer. */
+function RestingModelStrip({ children }: { children: ReactNode }) {
   const theme = useTheme();
   return (
-    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, height: 28, paddingLeft: 10, paddingRight: 10, borderRadius: RADIUS.md, cursor: "pointer", hover: { backgroundColor: theme.accent } }}>
-      <Icon name={icon} size={16} color={theme.mutedForeground} />
-      <Text weight={500} color={theme.mutedForeground}>
-        {label}
-      </Text>
-      <Icon name="chevron-down" size={14} strokeWidth={2.25} color={theme.mutedForeground} />
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+        paddingTop: 20,
+        paddingLeft: 8,
+        paddingRight: 8,
+        paddingBottom: 4,
+        borderBottomLeftRadius: RADIUS["2xl"],
+        borderBottomRightRadius: RADIUS["2xl"],
+        borderWidth: 1,
+        borderTopWidth: 0,
+        borderColor: alpha("#ffffff", 0.07),
+        // dark:bg-composer-seam-below over the timeline, measured ≈ white 5% on the background.
+        backgroundColor: mix("#ffffff", theme.background, 0.05),
+      }}
+    >
+      {children}
     </div>
   );
 }

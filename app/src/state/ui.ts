@@ -26,7 +26,10 @@ export type Route =
       readonly environmentId: EnvironmentId | null;
       readonly projectId: ProjectId | null;
     }
-  | { readonly kind: "settings"; readonly page: SettingsPage };
+  | { readonly kind: "settings"; readonly page: SettingsPage }
+  // Sidebar footer utility pages (web: /pull-requests, /usage).
+  | { readonly kind: "pull-requests" }
+  | { readonly kind: "usage" };
 
 export const routeAtom = Atom.make<Route>({ kind: "home" }).pipe(Atom.keepAlive);
 export const sidebarOpenAtom = Atom.make(true).pipe(Atom.keepAlive);
@@ -38,7 +41,14 @@ export const sidebarSearchAtom = Atom.make("").pipe(Atom.keepAlive);
 
 export type RightPanelSurface = "terminal" | "files" | "diff" | "pull-request";
 export const rightPanelSurfaceAtom = Atom.make<RightPanelSurface>("diff").pipe(Atom.keepAlive);
+/**
+ * Bumped with every "show this surface" request, so asking for the kind the
+ * atom above already holds (its default is "diff") still reaches the panel.
+ */
+export const rightPanelSurfaceRequestAtom = Atom.make(0).pipe(Atom.keepAlive);
 
 /** Open requests for pickers that keybindings and the palette can trigger. */
 export const modelPickerOpenAtom = Atom.make(false).pipe(Atom.keepAlive);
 export const findBarOpenAtom = Atom.make(false).pipe(Atom.keepAlive);
+/** The right panel fills the workspace, hiding the chat column (web's rightPanelMaximized). */
+export const rightPanelMaximizedAtom = Atom.make(false).pipe(Atom.keepAlive);

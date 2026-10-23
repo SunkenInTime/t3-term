@@ -20,10 +20,14 @@ export function App({ boot }: { boot: Boot }) {
     <RegistryContext.Provider value={appAtomRegistry}>
       <AppThemeProvider>
         <TooltipProvider>
-          <Shell boot={boot} />
-          <CommandPalette />
-          <DialogHost />
-          <ToastHost />
+          {/* One root element: gpuix takes the last root child as the window root, so a
+              toast or dialog rendered as a sibling of Shell would replace the whole app. */}
+          <div style={{ position: "relative", display: "flex", width: "100%", height: "100%" }}>
+            <Shell boot={boot} />
+            <CommandPalette />
+            <DialogHost />
+            <ToastHost />
+          </div>
         </TooltipProvider>
       </AppThemeProvider>
     </RegistryContext.Provider>
