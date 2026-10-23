@@ -49,6 +49,7 @@ import {
 } from "../web/previewStateStore.ts";
 import { environmentServerConfigsAtom, environmentSession } from "./environment.ts";
 import { rightPanelActions, threadKeyOf } from "./rightPanel.ts";
+import { rememberClosedView } from "./closedViews.ts";
 import { readEnvironmentScope } from "./terminal.ts";
 import { rightPanelOpenAtom } from "./ui.ts";
 
@@ -232,6 +233,7 @@ export async function closePreviewSession(input: {
     input: { threadId: input.threadRef.threadId, tabId: input.tabId },
   } as never);
   if (result._tag === "Failure") cancelPreviewSessionClose(input.threadRef, input.snapshot, input.tabId);
+  else if (input.snapshot) rememberClosedView({ kind: "browser", threadRef: input.threadRef, snapshot: input.snapshot });
   return result;
 }
 

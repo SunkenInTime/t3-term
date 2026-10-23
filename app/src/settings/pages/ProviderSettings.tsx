@@ -2,11 +2,11 @@
 // apps/web/src/components/settings/ProviderSettingsPanel.tsx (+ ProviderUpdatesAction.tsx).
 // The route is single-environment: SettingsView wraps it in a single-environment scope.
 //
-// Layout differs from web in one way: web scrolls the page and, inside it, the provider
-// detail pane. gpuix cannot nest vertical scrollers, so the page does not scroll here. The
-// provider card takes the height left over (capped at web's 44rem) and its detail pane is
-// the one scroller; Usage providers and Advanced sit below the card instead of below the fold.
+// Like web, the page scrolls and the provider card has its own height
+// (min(44rem, 100dvh - 11rem), at least 32rem), so Usage providers and Advanced sit below
+// the fold. The card's detail pane scrolls inside it.
 import { useAtomValue } from "@effect/atom-react";
+import { useWindowSize } from "@gpuix/react";
 import {
   AuthOrchestrationReadScope,
   AuthProvidersManageScope,
@@ -69,7 +69,7 @@ import {
 import { searchableSetting } from "../../web/components/settings/settingsSearch.ts";
 import { formatRelativeTime } from "../../web/timestampFormat.ts";
 import { resolveAppModelSelectionState } from "../../web/modelSelection.ts";
-import { machineIcon, PolicyTooltip, SettingResetButton, SettingsMessage, SettingsPageContainer, SettingsRow, SettingsSection } from "../layout.tsx";
+import { machineIcon, PolicyTooltip, usePageWheelClaim, SettingResetButton, SettingsMessage, SettingsPageContainer, SettingsRow, SettingsSection } from "../layout.tsx";
 import { AddProviderDialog } from "../providers/AddProviderDialog.tsx";
 import type { PaneItem } from "../providers/paneItems.ts";
 import { NumberStepper, StackedRow } from "../providers/parts.tsx";
@@ -87,9 +87,10 @@ import { UsageProviderSettings } from "../providers/UsageProviderSettings.tsx";
 import { useRelativeTimeLabel } from "../RelativeTime.tsx";
 import { useSettingsScope } from "../scope.tsx";
 
-/** web: h-[min(44rem,calc(100dvh-11rem))] min-h-[32rem]; here the leftover height, capped. */
+/** web providerCardHeightClassName: h-[min(44rem,calc(100dvh-11rem))] min-h-[32rem]. */
 const CARD_MAX_HEIGHT = 704;
-const CARD_MIN_HEIGHT = 240;
+const CARD_MIN_HEIGHT = 512;
+const CARD_VIEWPORT_INSET = 176;
 const LIST_WIDTH = 272;
 
 const PROVIDER_SETTINGS = providerClients.definitions.map((definition) => ({
@@ -127,7 +128,7 @@ export function ProviderSettings() {
       ? scope.members.filter((member) => member.environmentId === environment.environmentId).map((member) => member.id)
       : [];
   return (
-    <SettingsPageContainer scroll={false}>
+    <SettingsPageContainer>
       <AccessGatedProviderSettings key={environment.environmentId} environment={environment} projectIds={projectIds} />
     </SettingsPageContainer>
   );
@@ -359,6 +360,8 @@ function EnvironmentProviderSettings({
   projectIds: readonly ProjectId[];
 }) {
   const theme = useTheme();
+  const windowHeight = useWindowSize().height;
+  const claimPageWheel = usePageWheelClaim();
   const settings = useEnvironmentSettings(environmentId);
   const canWriteSettings = useEnvironmentScope(environmentId, AuthSettingsWriteScope);
   const canRefreshProviders = useEnvironmentScope(environmentId, AuthOrchestrationReadScope);
@@ -491,11 +494,12 @@ function EnvironmentProviderSettings({
     };
   };
 
+  const cardHeight = Math.max(CARD_MIN_HEIGHT, Math.min(CARD_MAX_HEIGHT, windowHeight - CARD_VIEWPORT_INSET));
   const healthCheck = searchableSetting("provider-health-check-interval");
   const providersSection = searchableSetting("providers");
   return (
-    <div style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, gap: 32 }}>
-      <div testId={`settings-section-${providersSection.id}`} style={{ display: "flex", flexDirection: "column", width: "100%", gap: 10, flexGrow: 1, flexShrink: 1, minHeight: CARD_MIN_HEIGHT + 38, maxHeight: CARD_MAX_HEIGHT + 38 }}>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", gap: 32 }}>
+      <div testId={`settings-section-${providersSection.id}`} style={{ display: "flex", flexDirection: "column", width: "100%", gap: 10, flexShrink: 0 }}>
         <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 16, minHeight: 28, paddingLeft: 16, paddingRight: 16 }}>
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>
             <Text color={alpha(theme.foreground, 0.7)}>{providersSection.title}</Text>
@@ -543,12 +547,15 @@ function EnvironmentProviderSettings({
           </div>
         ) : null}
         <div
+          testId="provider-card"
+          // The card's own lists take a wheel over it; the page stays put (web chainVerticalScroll).
+          onScroll={claimPageWheel}
           style={{
             display: "flex",
             flexDirection: "row",
             width: "100%",
-            flexGrow: 1,
-            minHeight: 0,
+            height: cardHeight,
+            flexShrink: 0,
             borderRadius: RADIUS.xl,
             borderWidth: 1,
             borderColor: alpha(theme.border, 0.6),

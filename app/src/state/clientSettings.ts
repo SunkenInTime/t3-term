@@ -22,7 +22,6 @@ import { createElement, type ReactNode } from "react";
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { termHome } from "../runtime/paths.ts";
 import {
-  BUILT_IN_THEME_DEFINITIONS,
   DARK,
   LIGHT,
   getThemeColorsForMode,
@@ -31,7 +30,10 @@ import {
   ThemeContext,
   type Palette,
   type ThemeAppearance,
+  type ThemeColors,
+  type ThemeDefinition,
 } from "../ui/theme.ts";
+import { getCustomThemes, subscribeToCustomThemes } from "../web/themePalette.ts";
 
 // ── Theme preference (apps/web/src/hooks/useTheme.ts) ───────────────────
 
@@ -255,28 +257,71 @@ export function resolveActiveThemeId(state: ThemeState, appearance: ThemeAppeara
   return getThemeDefinition(preference)?.id ?? null;
 }
 
-const paletteCache = new Map<string, Palette>();
+// Keyed by definition object: saving an edited custom theme replaces its
+// definition, so a stale palette cannot outlive the edit.
+const paletteCache = new WeakMap<ThemeDefinition, Partial<Record<ThemeAppearance, Palette>>>();
 
 export function resolvePalette(state: ThemeState, systemDark: boolean): Palette {
   const appearance = resolveThemeAppearance(state, systemDark);
   const themeId = resolveActiveThemeId(state, appearance);
-  if (themeId === null) return appearance === "dark" ? DARK : LIGHT;
-  const key = `${themeId}:${appearance}`;
-  let palette = paletteCache.get(key);
+  const definition = themeId === null ? null : getThemeDefinition(themeId);
+  if (definition === null) return appearance === "dark" ? DARK : LIGHT;
+  let byAppearance = paletteCache.get(definition);
+  if (!byAppearance) {
+    byAppearance = {};
+    paletteCache.set(definition, byAppearance);
+  }
+  let palette = byAppearance[appearance];
   if (!palette) {
-    const definition = BUILT_IN_THEME_DEFINITIONS.find((candidate) => candidate.id === themeId);
-    const colors = definition ? getThemeColorsForMode(definition, appearance) : null;
-    palette = colors ? paletteFromThemeColors(colors, appearance, themeId) : appearance === "dark" ? DARK : LIGHT;
-    paletteCache.set(key, palette);
+    const colors = getThemeColorsForMode(definition, appearance);
+    palette = colors ? paletteFromThemeColors(colors, appearance, definition.id) : appearance === "dark" ? DARK : LIGHT;
+    byAppearance[appearance] = palette;
   }
   return palette;
 }
 
-/** The palette App provides through ThemeContext. */
-export const activePaletteAtom = Atom.make((get) => resolvePalette(get(themeStateAtom), get(systemDarkAtom))).pipe(
+/**
+ * Bumped whenever the custom theme library ($T3TERM_HOME/themes.json) changes,
+ * so a saved edit to the active theme repaints (web's refreshTheme).
+ */
+export const customThemesRevisionAtom = Atom.make(0).pipe(Atom.keepAlive, Atom.withLabel("t3term-custom-themes"));
+subscribeToCustomThemes(() => {
+  appAtomRegistry.set(customThemesRevisionAtom, appAtomRegistry.get(customThemesRevisionAtom) + 1);
+});
+
+/** hooks/useCustomThemes.ts: the saved custom themes, re-read when the library changes. */
+export function useCustomThemes(): ReadonlyArray<ThemeDefinition> {
+  useAtomValue(customThemesRevisionAtom);
+  return getCustomThemes();
+}
+
+/**
+ * The theme editor's draft, painted over the stored theme while the editor is
+ * open (web's applyThemeColorPreview). Clearing it restores the stored theme.
+ */
+export interface ThemePreview {
+  readonly colors: ThemeColors;
+  readonly appearance: ThemeAppearance;
+}
+export const themePreviewAtom = Atom.make<ThemePreview | null>(null).pipe(
   Atom.keepAlive,
-  Atom.withLabel("t3term-active-palette"),
+  Atom.withLabel("t3term-theme-preview"),
 );
+
+/** web THEME_PREVIEW_ID: the draft paints as a theme, like html[data-theme-id="__preview"]. */
+export const THEME_PREVIEW_ID = "__preview";
+
+export function setThemePreview(preview: ThemePreview | null): void {
+  appAtomRegistry.set(themePreviewAtom, preview);
+}
+
+/** The palette App provides through ThemeContext. */
+export const activePaletteAtom = Atom.make((get) => {
+  get(customThemesRevisionAtom);
+  const preview = get(themePreviewAtom);
+  if (preview) return paletteFromThemeColors(preview.colors, preview.appearance, THEME_PREVIEW_ID);
+  return resolvePalette(get(themeStateAtom), get(systemDarkAtom));
+}).pipe(Atom.keepAlive, Atom.withLabel("t3term-active-palette"));
 
 export function setThemeState(update: (current: ThemeState) => ThemeState): void {
   appAtomRegistry.set(themeStateAtom, update(appAtomRegistry.get(themeStateAtom)));

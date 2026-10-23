@@ -12,6 +12,7 @@ import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import * as Panel from "../web/rightPanelStore.ts";
+import { rememberClosedSurfaces } from "./closedViews.ts";
 import { isRecord, persistedAtom } from "./persistedAtom.ts";
 import { rightPanelOpenAtom, rightPanelSurfaceAtom, routeAtom, type RightPanelSurface as SharedSurfaceKind } from "./ui.ts";
 
@@ -147,6 +148,16 @@ function reveal(state: Panel.ThreadRightPanelState): void {
   }
 }
 
+/** A user close: the tabs it removed go into the reopen history (web closeRevisionByThreadKey). */
+function closeAndRemember(
+  threadKey: string,
+  updater: (current: Panel.ThreadRightPanelState) => Panel.ThreadRightPanelState,
+): void {
+  const before = appAtomRegistry.get(rightPanelStatesAtom)[threadKey] ?? Panel.EMPTY_THREAD_STATE;
+  const after = updateRightPanel(threadKey, updater);
+  rememberClosedSurfaces(threadKey, before, after);
+}
+
 export const rightPanelActions = {
   open(threadKey: string, kind: Panel.SingletonKind | "preview") {
     reveal(updateRightPanel(threadKey, (current) => Panel.openSingleton(current, kind)));
@@ -193,16 +204,16 @@ export const rightPanelActions = {
     updateRightPanel(threadKey, (current) => Panel.activateSurface(current, surfaceId));
   },
   close(threadKey: string, surfaceId: string) {
-    updateRightPanel(threadKey, (current) => Panel.closeSurface(current, surfaceId));
+    closeAndRemember(threadKey, (current) => Panel.closeSurface(current, surfaceId));
   },
   closeOthers(threadKey: string, surfaceId: string) {
-    updateRightPanel(threadKey, (current) => Panel.closeOtherSurfaces(current, surfaceId));
+    closeAndRemember(threadKey, (current) => Panel.closeOtherSurfaces(current, surfaceId));
   },
   closeToRight(threadKey: string, surfaceId: string) {
-    updateRightPanel(threadKey, (current) => Panel.closeSurfacesToRight(current, surfaceId));
+    closeAndRemember(threadKey, (current) => Panel.closeSurfacesToRight(current, surfaceId));
   },
   closeAll(threadKey: string) {
-    updateRightPanel(threadKey, Panel.closeAllSurfaces);
+    closeAndRemember(threadKey, Panel.closeAllSurfaces);
   },
   move(threadKey: string, surfaceId: string, toIndex: number) {
     updateRightPanel(threadKey, (current) => Panel.moveSurface(current, surfaceId, toIndex));

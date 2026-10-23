@@ -55,6 +55,7 @@ import {
   threadEnvironment,
 } from "../../state/environment.ts";
 import { routeAtom } from "../../state/ui.ts";
+import { startNewThread } from "../../palette/actions.ts";
 import { toast } from "../../ui/toast.tsx";
 
 /** Sends in flight per draft key: the composer shows a spinner and refuses a second send. */
@@ -251,6 +252,12 @@ export interface ComposerSendInput {
   readonly respondToApproval?: ApprovalResponder;
   /** Implements a proposed plan (web: sourceProposedPlan). */
   readonly sourceProposedPlan?: { readonly threadId: ThreadId; readonly planId: string };
+  /**
+   * web ComposerSubmissionIntent "background": a draft starts its thread without opening it
+   * (a fresh draft stays, "Started in background"); a thread opens a new draft in
+   * `backgroundProjectId` once the send lands (send and new thread).
+   */
+  readonly background?: { readonly projectId: ProjectId | null };
 }
 
 export async function sendComposerMessage(input: ComposerSendInput): Promise<boolean> {
@@ -345,7 +352,9 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
       if (isAtomCommandInterrupted(result)) return false;
       throw squashAtomCommandFailure(result);
     }
-    if (input.target.kind === "draft") {
+    if (input.background) {
+      finishBackgroundSend(input.environmentId, input.target.kind, threadId, input.background.projectId);
+    } else if (input.target.kind === "draft") {
       appAtomRegistry.set(routeAtom, { kind: "thread", environmentId: input.environmentId, threadId });
     }
     return true;
@@ -364,6 +373,28 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
       });
     }
   }
+}
+
+/** web useComposerSend after a background turn starts. */
+function finishBackgroundSend(
+  environmentId: EnvironmentId,
+  targetKind: ComposerSendTarget["kind"],
+  threadId: ThreadId,
+  projectId: ProjectId | null,
+): void {
+  const openThread = () => appAtomRegistry.set(routeAtom, { kind: "thread", environmentId, threadId });
+  if (targetKind === "draft") {
+    // The draft route is the fresh composer: its content was cleared on send.
+    toast({ type: "success", title: "Started in background", duration: 5000, action: { label: "Open", onClick: openThread } });
+    return;
+  }
+  const route = appAtomRegistry.get(routeAtom);
+  // Only when the user is still looking at the thread they sent from.
+  if (projectId === null || route.kind !== "thread" || route.environmentId !== environmentId || route.threadId !== threadId) {
+    return;
+  }
+  // handleNewThreadInActiveProject: the same new draft mod+N opens, model and mode carried over.
+  startNewThread({ environmentId, projectId });
 }
 
 export async function interruptComposerTurn(environmentId: EnvironmentId, threadId: ThreadId): Promise<void> {

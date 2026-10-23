@@ -25,3 +25,6 @@ export const activeKeybindingsAtom = Atom.make((get): ResolvedKeybindingsConfig 
 
 /** Owned by the terminal area (TerminalView sets it on focus/blur); `when: "terminalFocus"` reads it. */
 export { terminalFocusAtom } from "./terminal.ts";
+
+/** The composer's editor has focus (web `composerFocus`, from document.activeElement). The composer sets it. */
+export const composerFocusAtom = Atom.make(false).pipe(Atom.keepAlive);

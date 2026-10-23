@@ -10,6 +10,7 @@ import { Sidebar } from "../sidebar/Sidebar.tsx";
 import { SettingsSidebar } from "../settings/SettingsView.tsx";
 import { CommandPalette } from "../palette/CommandPalette.tsx";
 import { DialogHost } from "../dialogs/DialogHost.tsx";
+import { ThemeEditorHost } from "../settings/appearance/ThemeEditorHost.tsx";
 import { MainView } from "./MainView.tsx";
 import { useTheme } from "../ui/theme.ts";
 import { AppThemeProvider } from "../state/clientSettings.ts";
@@ -27,6 +28,8 @@ export function App({ boot }: { boot: Boot }) {
           <div style={{ position: "relative", display: "flex", flexDirection: "column", width: "100%", height: "100%" }}>
             <ConnectGate bootError={boot.error}>
               <Shell boot={boot} />
+              {/* Before the palette and dialogs: same layer priority, so they paint over the editor. */}
+              <ThemeEditorHost />
               <CommandPalette />
               <DialogHost />
             </ConnectGate>

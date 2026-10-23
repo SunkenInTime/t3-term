@@ -10,13 +10,14 @@
 // terminal.*, the sidebar for thread.undo), and built-in fallbacks cover the
 // commands that only change app state.
 import type { KeyEvent } from "@gpuix/react";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { KeybindingCommand } from "@t3tools/contracts";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import type { KeybindingCommand, ScopedThreadRef } from "@t3tools/contracts";
 import { US_SHIFTED_TO_UNSHIFTED_KEYS } from "@t3tools/shared/keybindings";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { cycleAppearanceMode } from "../state/appearance.ts";
-import { activeKeybindingsAtom, terminalFocusAtom } from "../state/keybindings.ts";
+import { activeKeybindingsAtom, composerFocusAtom, terminalFocusAtom } from "../state/keybindings.ts";
 import { navigateBack, navigateForward } from "../state/navigation.ts";
 import { dispatchCommandPalette, isCommandPaletteOpen, openCommandPalette } from "../state/palette.ts";
 import {
@@ -39,8 +40,19 @@ import {
   undoLatestThreadAction,
 } from "../sidebar/threadActions.ts";
 import { openDiffSurface } from "../state/git.ts";
-import { rightPanelAddMenuOpenAtom } from "../state/rightPanel.ts";
+import { rightPanelActions, rightPanelAddMenuOpenAtom, rightPanelStatesAtom } from "../state/rightPanel.ts";
+import { hasClosedViews, type ReopenPanelActions, reopenNextClosedView } from "../state/closedViews.ts";
+import {
+  addBrowserSurface,
+  openMiniPlayer,
+  openPreviewSession,
+  readEnvironmentSupportsServerBrowser,
+  releasePreviewSurface,
+} from "../state/preview.ts";
+import { EMPTY_THREAD_STATE, selectedSurface, type ThreadRightPanelState } from "../web/rightPanelStore.ts";
+import { readThreadPreviewState } from "../web/previewStateStore.ts";
 import { sidebarJumpHintsVisibleAtom } from "../state/sidebar.ts";
+import { toggleThemeEditor } from "../state/themeEditor.ts";
 import {
   copyActiveThreadReference,
   readProjects,
@@ -96,6 +108,7 @@ export function readShortcutContext(overrides?: Partial<ShortcutMatchContext>): 
   const route = appAtomRegistry.get(routeAtom);
   return {
     terminalFocus: appAtomRegistry.get(terminalFocusAtom),
+    composerFocus: appAtomRegistry.get(composerFocusAtom),
     terminalOpen: route.kind === "thread" && appAtomRegistry.get(terminalOpenAtom),
     rightPanelOpen: route.kind === "thread" && appAtomRegistry.get(rightPanelOpenAtom),
     modelPickerOpen: appAtomRegistry.get(modelPickerOpenAtom),
@@ -180,6 +193,11 @@ function runPaletteCommand(command: KeybindingCommand, event: KeyEvent): boolean
     dispatchCommandPalette({ _tag: "OpenChangeTheme" });
     return true;
   }
+  if (command === "themeEditor.toggle") {
+    if (event.isHeld) return true;
+    toggleThemeEditor();
+    return true;
+  }
   if (command === "appearance.cycle") {
     if (event.isHeld) return true;
     const next = cycleAppearanceMode();
@@ -188,6 +206,81 @@ function runPaletteCommand(command: KeybindingCommand, event: KeyEvent): boolean
   }
   return false;
 }
+
+// ── Right panel (web useRightPanelActions + ReopenClosedViewShortcut) ──
+
+function readPanelState(threadKey: string): ThreadRightPanelState {
+  return appAtomRegistry.get(rightPanelStatesAtom)[threadKey] ?? EMPTY_THREAD_STATE;
+}
+
+/** web "rightPanel.close": closes the active tab (a browser tab ends its session); the last one hides the panel. */
+function closeActiveRightPanelSurface(threadRef: ScopedThreadRef): void {
+  const threadKey = scopedThreadKey(threadRef);
+  const active = selectedSurface(readPanelState(threadKey));
+  if (active === null) {
+    appAtomRegistry.set(rightPanelOpenAtom, false);
+    return;
+  }
+  releasePreviewSurface(threadRef.environmentId, threadRef.threadId, active);
+  rightPanelActions.close(threadKey, active.id);
+  if (readPanelState(threadKey).surfaces.length === 0) appAtomRegistry.set(rightPanelOpenAtom, false);
+}
+
+/** web togglePreviewPanel (+ closePreviewPanel, which floats the open tab in the mini player). */
+function togglePreviewPanel(threadRef: ScopedThreadRef): void {
+  if (!readEnvironmentSupportsServerBrowser(threadRef.environmentId)) {
+    toast({ type: "info", title: "Preview is desktop-only", description: "Open T3 Code in the desktop app to use the in-app preview." });
+    return;
+  }
+  const threadKey = scopedThreadKey(threadRef);
+  const active = selectedSurface(readPanelState(threadKey));
+  if (appAtomRegistry.get(rightPanelOpenAtom) && active?.kind === "preview") {
+    if (active.resourceId) openMiniPlayer(threadRef, active.resourceId);
+    rightPanelActions.setMaximized(threadKey, false);
+    appAtomRegistry.set(rightPanelOpenAtom, false);
+    return;
+  }
+  const activeTabId = readThreadPreviewState(threadRef).activeTabId;
+  if (activeTabId) {
+    rightPanelActions.openBrowser(threadKey, activeTabId);
+    return;
+  }
+  void addBrowserSurface(threadRef).then((result) => {
+    if (result._tag === "Failure") {
+      const error = squashAtomCommandFailure(result);
+      toast({ type: "error", title: "Unable to open browser", description: error instanceof Error ? error.message : undefined });
+    }
+  });
+}
+
+const REOPEN_PANEL_ACTIONS: ReopenPanelActions = {
+  readState: (threadKey) => {
+    const route = appAtomRegistry.get(routeAtom);
+    const visible =
+      route.kind === "thread" &&
+      scopedThreadKey(scopeThreadRef(route.environmentId, route.threadId)) === threadKey &&
+      appAtomRegistry.get(rightPanelOpenAtom);
+    const state = readPanelState(threadKey);
+    return { ...state, isOpen: visible && state.isOpen };
+  },
+  open: (threadKey, kind) => rightPanelActions.open(threadKey, kind),
+  openFile: (threadKey, relativePath, line) => rightPanelActions.openFile(threadKey, relativePath, line),
+  openPullRequest: (threadKey, target) => rightPanelActions.openPullRequest(threadKey, target),
+  openDevice: (threadKey, target) => rightPanelActions.openDevice(threadKey, target),
+  renameDevice: (threadKey, surfaceId, title) => rightPanelActions.renameDevice(threadKey, surfaceId, title),
+  openBrowserSession: async (threadRef, snapshot) => {
+    const url = snapshot.navStatus._tag === "Idle" ? undefined : snapshot.navStatus.url;
+    const result = await openPreviewSession({
+      threadRef,
+      ...(url === undefined ? {} : { url }),
+      ...(snapshot.viewport === undefined ? {} : { viewport: snapshot.viewport }),
+      ...(snapshot.profileId === undefined ? {} : { profileId: snapshot.profileId }),
+    });
+    if (result._tag === "Failure") return false;
+    rightPanelActions.openBrowser(scopedThreadKey(threadRef), result.value.tabId);
+    return true;
+  },
+};
 
 function onThreadRoute(): boolean {
   return appAtomRegistry.get(routeAtom).kind === "thread";
@@ -214,8 +307,16 @@ function runBuiltIn(command: KeybindingCommand, event: KeyEvent): boolean {
       toggle(rightPanelOpenAtom);
       return true;
     case "rightPanel.close":
-      if (!onThreadRoute() || !appAtomRegistry.get(rightPanelOpenAtom)) return false;
-      appAtomRegistry.set(rightPanelOpenAtom, false);
+      if (route.kind !== "thread" || !appAtomRegistry.get(rightPanelOpenAtom)) return false;
+      if (!event.isHeld) closeActiveRightPanelSurface(scopeThreadRef(route.environmentId, route.threadId));
+      return true;
+    case "preview.toggle":
+      if (route.kind !== "thread") return false;
+      if (!event.isHeld) togglePreviewPanel(scopeThreadRef(route.environmentId, route.threadId));
+      return true;
+    case "view.reopenClosed":
+      if (!hasClosedViews()) return false;
+      if (!event.isHeld) reopenNextClosedView(REOPEN_PANEL_ACTIONS);
       return true;
     case "threadPanel.toggle":
       if (!onThreadRoute()) return false;
