@@ -930,6 +930,7 @@ export function GeneralSettingsPanel() {
                 description="Inactivity does not settle threads with a pull request. Merge and close still do."
                 control={
                   <ScopedSwitch
+                    testId="settings-auto-settle-keep-pull-requests"
                     settingKeys={["sidebarAutoSettleKeepPullRequests"]}
                     checked={settings.sidebarAutoSettleKeepPullRequests}
                     onChange={(checked) => updateSettings({ sidebarAutoSettleKeepPullRequests: checked })}
