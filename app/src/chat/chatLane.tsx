@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { Atom } from "effect/reactivity";
 import type { ReactNode } from "react";
 
 import { detailsPresentationAtom } from "../state/git.ts";
@@ -8,6 +9,18 @@ import { LAYOUT } from "../ui/theme.ts";
 const CARD_GAP = 12;
 // web chatCanvasLayout.ts DETAILS_CARD_CLEARANCE
 const DETAILS_CARD_CLEARANCE = 32;
+// web chatCanvasLayout.ts GAP and minChatWidth (min-w-[40rem])
+const MINI_PLAYER_GAP = 12;
+const MIN_CHAT_WIDTH = 640;
+
+/**
+ * The browser mini player floating over the chat canvas: its left edge and the
+ * canvas width, in canvas pixels. The player (panels/browser/ThreadPreviewHost)
+ * publishes it so the lane can make room, like web's chatBeside.
+ */
+export const chatLaneMiniPlayerAtom = Atom.make<{ readonly left: number; readonly canvasWidth: number } | null>(null).pipe(
+  Atom.keepAlive,
+);
 
 /** True while the details card floats inline over the canvas (not as a header popover). */
 export function useDetailsCardInline(): boolean {
@@ -29,7 +42,14 @@ export function useDetailsCardInline(): boolean {
  */
 export function ChatLane({ cardInline, children }: { cardInline: boolean; children: ReactNode }) {
   const padding = LAYOUT.chatLanePadding;
-  const rightMin = cardInline ? CARD_GAP + LAYOUT.detailsCardWidth + DETAILS_CARD_CLEARANCE : padding;
+  const player = useAtomValue(chatLaneMiniPlayerAtom);
+  let rightMin = cardInline ? CARD_GAP + LAYOUT.detailsCardWidth + DETAILS_CARD_CLEARANCE : padding;
+  // web chatBeside: the lane ends 12px left of the mini player while that still
+  // leaves a 640px lane; otherwise the lane keeps its place and web moves the player.
+  if (player) {
+    const besideWidth = Math.min(LAYOUT.chatMaxWidth, player.left - MINI_PLAYER_GAP - padding);
+    if (besideWidth >= MIN_CHAT_WIDTH) rightMin = Math.max(rightMin, player.canvasWidth - player.left + MINI_PLAYER_GAP);
+  }
   return (
     <div style={{ display: "flex", flexDirection: "row", width: "100%" }}>
       <div style={{ flexGrow: 1, flexShrink: 0, flexBasis: 0, minWidth: padding }} />
