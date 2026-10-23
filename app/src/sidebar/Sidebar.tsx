@@ -544,8 +544,9 @@ function ShowMoreSettled({ count }: { count: number }) {
       }}
     >
       <Icon name="plus" size={16} color={color} />
-      <Text size="sm" color={color}>
-        Show {count} more
+      {/* One string: separate JSX children become separate gpuix text runs that wrap apart. */}
+      <Text size="sm" color={color} style={{ whiteSpace: "nowrap" }}>
+        {`Show ${count} more`}
       </Text>
     </div>
   );
