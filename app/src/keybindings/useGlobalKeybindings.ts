@@ -9,6 +9,7 @@
 // registerShortcutHandler (the composer for composer.*, the terminal for
 // terminal.*, the sidebar for thread.undo), and built-in fallbacks cover the
 // commands that only change app state.
+import { noteUserInput } from "../notifications/platform.ts";
 import type { KeyEvent } from "@gpuix/react";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -448,6 +449,7 @@ export function handleGlobalKeyUp(event: KeyEvent): void {
 }
 
 export function handleGlobalKeyDown(event: KeyEvent): void {
+  noteUserInput();
   updateJumpHints(event, true);
   if (event.defaultPrevented) return;
   if (handleEscapeToGoBack(event)) return;
