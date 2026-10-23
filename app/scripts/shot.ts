@@ -2,7 +2,7 @@
 // bun scripts/shot.ts <out-dir> [steps.json]
 // steps: [{click: testId}|{clickText: text}|{press: "ctrl-k"}|{fill:[testId,text]}|{wait: ms}|{shot: name}|{mouse:[x,y]}
 //         |{hover:[x,y]}|{hoverTestId: testId}|{hoverText: text}|{rightClick:[x,y]}|{rightClickText: text}
-//         |{wheel:[x,y,dy]}|{mouseMods:[x,y,"shift"]}]
+//         |{wheel:[x,y,dy]}|{mouseMods:[x,y,"shift"]}|{dblclick:[x,y]}|{dblclickText: text}]
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { launch } from "@gpuix/react/automation";
@@ -26,6 +26,16 @@ try {
     if (step.hover) await app.mouse.move({ x: step.hover[0], y: step.hover[1] });
     if (step.hoverTestId) await app.getByTestId(step.hoverTestId).hover();
     if (step.hoverText) await app.getByText(step.hoverText).hover();
+    if (step.dblclick) {
+      await app.mouse.click({ x: step.dblclick[0], y: step.dblclick[1] });
+      await app.mouse.click({ x: step.dblclick[0], y: step.dblclick[1] });
+    }
+    if (step.dblclickText) {
+      const target = app.getByText(step.dblclickText);
+      await app.mouse.click(target);
+      await app.mouse.click(target);
+    }
+    if (step.type) await app.getByTestId(step.type[0]).fill(step.type[1]);
     if (step.rightClickText) await app.mouse.click(app.getByText(step.rightClickText), { button: 2 });
     if (step.rightClick) await app.mouse.click({ x: step.rightClick[0], y: step.rightClick[1] }, { button: 2 });
     if (step.wheel) await app.mouse.wheel({ x: step.wheel[0], y: step.wheel[1] }, 0, step.wheel[2]);

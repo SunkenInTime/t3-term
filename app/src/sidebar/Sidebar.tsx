@@ -403,19 +403,7 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
           onOpenProjectSettings={(project) => openProjectSettings(project)}
         />
       </div>
-      <div
-        testId="sidebar-thread-list"
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          flexGrow: 1,
-          minHeight: 0,
-          paddingLeft: 8,
-          paddingRight: 8,
-          paddingBottom: 8,
-          overflowY: "scroll",
-        }}
-      >
+      <ScrollFadeRegion>
         {isSearchingThreads ? (
           threadSearchResults.length > 0 ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
@@ -456,11 +444,65 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
         {!isSearchingThreads && visibleDraftCount === 0 && totalThreads === 0 ? (
           <SidebarEmptyState noProjects={projects.length === 0} scopedName={scope?.displayName ?? null} />
         ) : null}
-      </div>
+      </ScrollFadeRegion>
       <SidebarChromeFooter />
       <SidebarContextMenuHost />
       <SidebarDialogs />
       <RouteVisitWatermark />
+    </div>
+  );
+}
+
+const FADE_SIZE = 12;
+
+/**
+ * SidebarContent's ScrollArea with `scrollFade`: the list scrolls under a
+ * 12px fade at whichever edge has more content. Web masks the viewport; over
+ * the black sidebar a gradient overlay looks the same.
+ */
+function ScrollFadeRegion({ children }: { children: ReactNode }) {
+  const theme = useTheme();
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const [contentHeight, setContentHeight] = useState(0);
+  const [scrollY, setScrollY] = useState(0);
+  const hiddenBelow = contentHeight - viewportHeight + scrollY;
+  const fade = (edge: "top" | "bottom") => (
+    <div
+      style={{
+        position: "absolute",
+        left: 0,
+        right: 0,
+        ...(edge === "top" ? { top: 0 } : { bottom: 0 }),
+        height: FADE_SIZE,
+        pointerEvents: "none",
+        background: {
+          type: "linear-gradient",
+          angle: edge === "top" ? 180 : 0,
+          stops: [
+            { color: theme.sidebar.background, position: 0 },
+            { color: alpha(theme.sidebar.background, 0), position: 1 },
+          ],
+        },
+      }}
+    />
+  );
+  return (
+    <div style={{ position: "relative", display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
+      <div
+        testId="sidebar-thread-list"
+        onLayout={(event) => setViewportHeight(event.height ?? 0)}
+        onScrollChange={(event) => setScrollY(event.scrollY ?? 0)}
+        style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, overflowY: "scroll" }}
+      >
+        <div
+          onLayout={(event) => setContentHeight(event.height ?? 0)}
+          style={{ display: "flex", flexDirection: "column", flexGrow: 1, flexShrink: 0, paddingLeft: 8, paddingRight: 8, paddingBottom: 8 }}
+        >
+          {children}
+        </div>
+      </div>
+      {scrollY < -0.5 ? fade("top") : null}
+      {hiddenBelow > 0.5 ? fade("bottom") : null}
     </div>
   );
 }
