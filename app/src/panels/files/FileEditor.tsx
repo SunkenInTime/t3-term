@@ -67,13 +67,23 @@ function splitDoc(text: string): { lines: string[]; eol: "\n" | "\r\n" } {
 function buildChunks(
   lineCount: number,
   entriesByLine: ReadonlyMap<number, ReadonlyArray<FileCommentAnnotationEntry>>,
+  previous: ReadonlyArray<Chunk> = [],
 ): Chunk[] {
+  // A chunk that keeps its lines keeps its id, so its textarea (focus, undo) survives a
+  // comment opening or closing elsewhere in the file.
+  const previousIds = new Map<string, number>();
+  let previousStart = 0;
+  for (const chunk of previous) {
+    previousIds.set(`${previousStart}:${chunk.count}`, chunk.id);
+    previousStart += chunk.count;
+  }
   const chunks: Chunk[] = [];
   let start = 0;
   for (let line = 1; line <= lineCount; line += 1) {
     const entries = entriesByLine.get(line);
     if (entries || line - start === CHUNK || line === lineCount) {
-      chunks.push({ id: chunkSequence++, count: line - start, entries: entries ?? [] });
+      const count = line - start;
+      chunks.push({ id: previousIds.get(`${start}:${count}`) ?? chunkSequence++, count, entries: entries ?? [] });
       start = line;
     }
   }
@@ -253,7 +263,7 @@ export function FileEditor(props: FileEditorProps) {
     const byLine = entriesByEndLine(current.chunks);
     update(byLine);
     for (const [line, entries] of byLine) if (entries.length === 0) byLine.delete(line);
-    commitDoc({ ...current, chunks: buildChunks(current.lines.length, byLine) });
+    commitDoc({ ...current, chunks: buildChunks(current.lines.length, byLine, current.chunks) });
   };
 
   const beginComment = (range: { start: number; end: number }) => {
