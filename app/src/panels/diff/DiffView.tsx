@@ -10,7 +10,7 @@ import type { EventPayload } from "@gpuix/native";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { copyTextToClipboard } from "../../chat/header/osActions.ts";
-import { Icon, type IconName } from "../../ui/Icon.tsx";
+import { Icon } from "../../ui/Icon.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
 import { toast } from "../../ui/toast.tsx";
 import { FONTS, alpha, useTheme } from "../../ui/theme.ts";
@@ -563,6 +563,7 @@ const FileHeader = memo(function FileHeader(props: {
       </div>
       <svg source={fileStatusIcon(file)} style={{ width: 16, height: 16, flexShrink: 0, color: tone, pointerEvents: "none" }} />
       <div
+        testId={`diff-file-title-${file.path}`}
         onClick={(event: EventPayload) => {
           consumeClick(event);
           props.onOpenFile(file.path);
