@@ -26,6 +26,7 @@ import {
 } from "../code/codeRows.tsx";
 import { requestSyntaxTokens, peekSyntaxTokens, type SyntaxLines } from "../code/highlighter.ts";
 import { EXPAND_BOTH, EXPAND_DOWN, EXPAND_UP, FILE_ADDED, FILE_DELETED, FILE_MODIFIED, FILE_MOVED } from "./pierreIcons.ts";
+import { useListWindow } from "../code/listWindow.ts";
 import { buildDiffRows, type DiffFileModel, type DiffLayout, type DiffRow, type LineCell } from "./diffModel.ts";
 
 const WINDOW = 160;
@@ -86,7 +87,7 @@ export function DiffView(props: DiffViewProps) {
   const palette = diffPalette(theme);
   const { width: ch, probe } = useMonoCharWidth();
   const [width, setWidth] = useState(0);
-  const [start, setStart] = useState(0);
+  const { listRef, start, onVisibleRange, reset, topIndex } = useListWindow(WINDOW);
   const [visible, setVisible] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
   const [scrollX, setScrollX] = useState(0);
   const [tokens, setTokens] = useState<ReadonlyMap<DiffFileModel, FileTokens>>(new Map());
@@ -95,7 +96,7 @@ export function DiffView(props: DiffViewProps) {
   const rows = useMemo(() => buildDiffRows(props.files, props.layout, props.collapsed), [props.files, props.layout, props.collapsed]);
 
   useEffect(() => {
-    setStart(0);
+    reset(0);
     setScrollX(0);
   }, [props.resetKey]);
 
@@ -171,16 +172,18 @@ export function DiffView(props: DiffViewProps) {
       {probe}
       {width > 0 ? (
         <virtual-list
+          ref={listRef}
           itemCount={rows.length}
           windowStart={start}
           estimatedItemHeight={CODE_LINE_HEIGHT}
           overdraw={600}
           onVisibleRange={(event) => {
-            const first = Math.floor(Number(event.startIndex ?? 0));
-            const last = Math.ceil(Number(event.endIndex ?? first));
+            const reportedFirst = Math.floor(Number(event.startIndex ?? 0));
+            const reportedLast = Math.ceil(Number(event.endIndex ?? reportedFirst));
+            const first = topIndex(reportedFirst);
+            const last = first + (reportedLast - reportedFirst);
             setVisible((current) => (current.start === first && current.end === last ? current : { start: first, end: last }));
-            const nextStart = Math.max(0, first - WINDOW / 4);
-            if (first < start || last > start + WINDOW - 8) setStart(nextStart);
+            onVisibleRange(reportedFirst, reportedLast);
           }}
           style={{ flexGrow: 1, minHeight: 0, scrollbarColor: theme.scrollbar }}
         >

@@ -48,6 +48,10 @@ function parseFile(file: PatchFile): DiffFileModel {
   let previousEnd = 1;
   let maxLine = 1;
   let binary = false;
+  // Lines still owed to the open hunk per its header; past them the hunk is over,
+  // so trailing text (or a truncated patch's tail) is never read as code.
+  let oldLeft = 0;
+  let newLeft = 0;
   for (const raw of file.patch.split("\n")) {
     const header = HUNK_HEADER.exec(raw);
     if (header) {
@@ -60,10 +64,16 @@ function parseFile(file: PatchFile): DiffFileModel {
       const anchor = Math.max(oldStart, 1);
       hunks.push({ collapsedBefore: Math.max(0, anchor - previousEnd), lines: current });
       previousEnd = anchor + Number(header[2] ?? 1);
+      oldLeft = Number(header[2] ?? 1);
+      newLeft = Number(header[4] ?? 1);
       continue;
     }
     if (current === null) {
       if (raw.startsWith("Binary files ") || raw.startsWith("GIT binary patch")) binary = true;
+      continue;
+    }
+    if (oldLeft <= 0 && newLeft <= 0 && !raw.startsWith("\\")) {
+      current = null;
       continue;
     }
     if (raw.startsWith("\\")) {
@@ -79,11 +89,13 @@ function parseFile(file: PatchFile): DiffFileModel {
       newLines.push(text);
       maxLine = Math.max(maxLine, newNo);
       newNo += 1;
+      newLeft -= 1;
     } else if (marker === "-") {
       current.push({ kind: "deletion", text, oldLine: oldNo, newLine: null, oldIndex: oldLines.length, newIndex: null, noNewline: false });
       oldLines.push(text);
       maxLine = Math.max(maxLine, oldNo);
       oldNo += 1;
+      oldLeft -= 1;
     } else if (marker === " ") {
       current.push({ kind: "context", text, oldLine: oldNo, newLine: newNo, oldIndex: oldLines.length, newIndex: newLines.length, noNewline: false });
       oldLines.push(text);
@@ -91,6 +103,8 @@ function parseFile(file: PatchFile): DiffFileModel {
       maxLine = Math.max(maxLine, oldNo, newNo);
       oldNo += 1;
       newNo += 1;
+      oldLeft -= 1;
+      newLeft -= 1;
     }
   }
   return {

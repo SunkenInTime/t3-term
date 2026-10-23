@@ -319,6 +319,8 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
       ? lazyFiles
           .map((file) => lazyMap.get(file.path))
           .filter((patch): patch is string => typeof patch === "string")
+          // A truncated file patch can end mid-line; the next file must start on its own line.
+          .map((patch) => (patch.length === 0 || patch.endsWith("\n") ? patch : `${patch}\n`))
           .join("")
       : (gitSource?.diff ?? null);
   // useReviewFilePatches: files in path order (numeric, case-insensitive).

@@ -3,13 +3,14 @@
 // soft wrap by default (client setting `wordWrap`) or one shared horizontal pan.
 // Rows sit in a windowed <virtual-list>, so a 1 MB file mounts a screenful.
 import type { EventPayload } from "@gpuix/native";
-import { useGpuixRequired, type PublicInstance } from "@gpuix/react";
+import { useGpuixRequired } from "@gpuix/react";
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { FONTS, useTheme } from "../../ui/theme.ts";
 import { diffPalette, mix } from "./palette.ts";
 import { CODE_LINE_HEIGHT, CodeRun, expandTabs, expandTokenTabs, segmentsFor, useMonoCharWidth, wrapLine } from "./codeRows.tsx";
 import { useSyntaxTokens, type SyntaxToken } from "./highlighter.ts";
+import { useListWindow } from "./listWindow.ts";
 
 const WINDOW = 200;
 const PADDING_Y = 8;
@@ -30,10 +31,9 @@ export function SourceView(props: {
   const theme = useTheme();
   const palette = diffPalette(theme);
   const renderer = useGpuixRequired();
-  const listRef = useRef<PublicInstance | null>(null);
   const { width: ch, probe } = useMonoCharWidth();
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const [start, setStart] = useState(0);
+  const { listRef, start, onVisibleRange, reset } = useListWindow(WINDOW);
   const [scrollX, setScrollX] = useState(0);
   const lines = useMemo(() => splitLines(props.text), [props.text]);
   const syntax = useSyntaxTokens(props.text, props.path, theme.appearance);
@@ -51,7 +51,7 @@ export function SourceView(props: {
     if (handled.current === props.revealKey) return;
     handled.current = props.revealKey;
     const index = Math.min(lines.length - 1, Math.max(0, props.revealLine - 1));
-    setStart(Math.max(0, index - WINDOW / 2));
+    reset(Math.max(0, index - WINDOW / 2));
     renderer.scrollToItem?.(listRef.current.id, index + 1, -Math.max(0, Math.floor(size.height / 2 - CODE_LINE_HEIGHT / 2)));
   }, [props.revealLine, props.revealKey, size.height, lines.length, renderer]);
 
@@ -110,8 +110,7 @@ export function SourceView(props: {
           overdraw={600}
           onVisibleRange={(event) => {
             const first = Math.max(0, Math.floor(Number(event.startIndex ?? 0)) - 1);
-            const last = Math.ceil(Number(event.endIndex ?? first));
-            if (first < start || last > start + WINDOW - 8) setStart(Math.max(0, first - WINDOW / 4));
+            onVisibleRange(first, Math.ceil(Number(event.endIndex ?? first)));
           }}
           style={{ flexGrow: 1, minHeight: 0, scrollbarColor: theme.scrollbar }}
         >
