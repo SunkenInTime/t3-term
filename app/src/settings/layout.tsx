@@ -624,9 +624,15 @@ export function SettingsGroup({
 
 function dividedChildren(children: ReactNode, divided: boolean, color: string): ReactNode {
   if (!divided) return children;
-  const items = (Array.isArray(children) ? children.flat(4) : [children]).filter(
-    (child) => child !== null && child !== undefined && child !== false && child !== "",
-  );
+  // Pages often pass their rows inside a fragment; each row still needs its own divider.
+  const flatten = (node: ReactNode): ReactNode[] => {
+    if (Array.isArray(node)) return node.flatMap(flatten);
+    if (isValidElement(node) && node.type === Fragment) {
+      return flatten((node.props as { children?: ReactNode }).children);
+    }
+    return node === null || node === undefined || node === false || node === "" || node === true ? [] : [node];
+  };
+  const items = flatten(children);
   return items.map((child, index) => (
     <div key={(child as { key?: string | null })?.key ?? index} style={{ display: "flex", flexDirection: "column", width: "100%", ...(index > 0 ? { borderTopWidth: 1, paddingTop: 1, borderColor: color } : {}) }}>
       {child as ReactNode}
