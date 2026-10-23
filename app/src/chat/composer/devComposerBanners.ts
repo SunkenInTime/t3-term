@@ -3,7 +3,7 @@
 // a checkout on another branch). Inert unless set:
 //
 //   T3TERM_DEV_COMPOSER_BANNERS=goal,child-input,background,branch,limit,feedback-sent,feedback-failed,
-//     feedback-uploading,provider-warning,provider-error,provider-unauthenticated,provider-unsupported
+//     feedback-uploading,tasks,provider-warning,provider-error,provider-unauthenticated,provider-unsupported
 //
 // Each flag only replaces the data the banner reads in the open thread; buttons on the
 // banners still run their real commands, so don't click them against a real thread.
@@ -105,4 +105,17 @@ export function withDevProviderStatus<T extends ServerProvider | null>(status: T
     } as T;
   }
   return status;
+}
+
+/** `tasks`: a three-step todo list, one done, one running, one pending. */
+export function devComposerTasks<T>(threadId: string | null, real: T | null): T | null {
+  if (!flags.has("tasks") || real !== null || threadId === null) return real;
+  return {
+    progress: { step: "Update the README", completedSteps: 1, totalSteps: 3, live: true },
+    steps: [
+      { step: "Audit the scripts folder", status: "completed", durationMs: 8_400 },
+      { step: "Update the README", status: "inProgress" },
+      { step: "Run the sandbox checks", status: "pending" },
+    ],
+  } as T;
 }

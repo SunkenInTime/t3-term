@@ -192,7 +192,7 @@ import { composerRestingAtom } from "./composerResting.ts";
 import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
 import { useProjectCloneBanner } from "./useProjectCloneBanner.tsx";
 import { composerProviderStatusAtom } from "./composerProviderStatus.ts";
-import { withDevProviderStatus } from "./devComposerBanners.ts";
+import { devComposerTasks, withDevProviderStatus } from "./devComposerBanners.ts";
 import { feedbackUploadsInFlight, upsertFeedbackSubmission } from "./ComposerFeedback.tsx";
 import { parseCodexFeedbackCommand, submitCodexFeedback } from "@t3tools/client-runtime/state/threads";
 import { isUsageLimitsCommand, USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
@@ -785,7 +785,7 @@ function ComposerBody({
     activeActivityRun?.runId ?? null,
     activeActivityRunSettled,
   );
-  const composerTasks = (() => {
+  const composerTasks = devComposerTasks(threadId, (() => {
     if (!composerTasksPlan || composerTasksPlan.steps.length === 0) return null;
     const steps = composerTasksPlan.steps;
     return {
@@ -800,7 +800,7 @@ function ComposerBody({
       },
       steps,
     };
-  })();
+  })());
   const threadStatus = useAtomValue(
     threadId ? environmentThreadDetails.statusAtom({ environmentId, threadId }) : NO_THREAD_STATUS_ATOM,
   );
