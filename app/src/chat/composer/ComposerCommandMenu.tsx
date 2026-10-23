@@ -49,11 +49,15 @@ function mix(base: string, over: string, amount: number): string {
  * a white 5% outline in dark (black 8% in light), 18px top corners.
  */
 export function composerAttachedSurfaceColors(theme: Palette) {
-  const background = mix(theme.background, theme.card, 0.8);
+  const background = mix(theme.background.slice(0, 7), theme.composer.surface.slice(0, 7), 0.8);
   return {
     background,
     outline:
-      theme.appearance === "dark" ? mix(background, "#ffffff", 0.05) : mix(background, "#000000", 0.08),
+      theme.themeId !== null
+        ? theme.composer.outline
+        : theme.appearance === "dark"
+          ? mix(background, "#ffffff", 0.05)
+          : mix(background, "#000000", 0.08),
     /** bg-accent on a command item: foreground at 4%. */
     highlight: mix(background, theme.foreground.slice(0, 7), theme.appearance === "dark" ? 0.04 : 0.06),
   };

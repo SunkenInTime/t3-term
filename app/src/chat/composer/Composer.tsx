@@ -290,14 +290,15 @@ function ComposerShellPlaceholder({ text }: { text: string }) {
 }
 
 function surfaceStyle(theme: ReturnType<typeof useTheme>) {
-  const glass = mix(theme.card, theme.background, 0.8);
+  // --chat-composer-glass-surface at --glass-opacity (80%); a theme swaps in its surfaceRaised.
+  const glass = mix(theme.composer.surface.slice(0, 7), theme.background.slice(0, 7), 0.8);
   return {
     display: "flex" as const,
     flexDirection: "column" as const,
     width: "100%" as const,
     borderRadius: RADIUS["3xl"],
     borderWidth: 1,
-    borderColor: theme.appearance === "dark" ? alpha("#ffffff", 0.05) : "#00000014",
+    borderColor: theme.composer.outline,
     backgroundColor: glass,
     // web --shadow-composer: 0 12px 28px -18px. GPUI's blurRadius spreads about
     // twice as far as a CSS blur, so 14 here matches web's 28 pixel for pixel.
@@ -307,10 +308,10 @@ function surfaceStyle(theme: ReturnType<typeof useTheme>) {
   };
 }
 
-/** web `dark:inset-shadow-2xs` (white 3%) under the top outline; GPUI's inset shadow paints over the border. */
+/** web `dark:inset-shadow-2xs` (--chat-composer-highlight) under the top outline; GPUI's inset shadow paints over the border. */
 function SurfaceHighlight() {
   const theme = useTheme();
-  if (theme.appearance !== "dark") return null;
+  if (theme.composer.highlight === null) return null;
   return (
     <div
       style={{
@@ -319,7 +320,7 @@ function SurfaceHighlight() {
         left: 12,
         right: 12,
         height: 1,
-        backgroundColor: alpha("#ffffff", 0.03),
+        backgroundColor: theme.composer.highlight,
         pointerEvents: "none",
       }}
     />

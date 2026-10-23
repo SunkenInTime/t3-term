@@ -355,7 +355,9 @@ export function Switch({
           width: 14,
           height: 14,
           borderRadius: 7,
-          backgroundColor: checked || theme.appearance === "light" ? "#ffffff" : theme.mutedForeground,
+          // bg-background, dark:data-unchecked:bg-muted-foreground: a checked dark
+          // switch has a dark thumb, not a white one.
+          backgroundColor: !checked && theme.appearance === "dark" ? theme.mutedForeground : theme.background,
           pointerEvents: "none",
         }}
       />

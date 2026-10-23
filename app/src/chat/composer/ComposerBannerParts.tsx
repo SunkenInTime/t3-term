@@ -24,7 +24,12 @@ export const BANNER_ICON_COLUMN = 24;
 const PADDING_BLOCK: Record<ComposerBannerDensity, number> = { default: 4, comfortable: 5, spacious: 12 };
 
 function surfaceColors(theme: Palette, variant: ComposerBannerVariant) {
-  const neutralOutline = theme.appearance === "dark" ? alpha("#ffffff", 0.05) : alpha(theme.foreground, 0.08);
+  const neutralOutline =
+    theme.themeId !== null
+      ? theme.composer.outline
+      : theme.appearance === "dark"
+        ? alpha("#ffffff", 0.05)
+        : alpha(theme.foreground, 0.08);
   switch (variant) {
     case "error":
       return { outline: alpha(theme.error, 0.32), tint: alpha(theme.error, 0.08) };
@@ -76,7 +81,8 @@ export function BannerRoot({
         borderBottomLeftRadius: attached ? 0 : radius,
         borderBottomRightRadius: attached ? 0 : radius,
         // Opaque: web blurs the glass behind banners; GPUI can't, and timeline text would show through.
-        backgroundColor: theme.appearance === "dark" ? "#101010" : theme.card,
+        backgroundColor:
+          theme.themeId !== null ? theme.composer.surface : theme.appearance === "dark" ? "#101010" : theme.card,
         boxShadow:
           theme.appearance === "dark"
             ? { offsetX: 0, offsetY: 14, blurRadius: 32, spreadRadius: -18, color: "#000000bf" }

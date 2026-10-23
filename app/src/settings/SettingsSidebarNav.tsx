@@ -4,7 +4,9 @@ import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useGpuixRequired } from "@gpuix/react";
 import { useEffect, useRef, useState } from "react";
 
-import { routeAtom, sidebarOpenAtom, type SettingsPage } from "../state/ui.ts";
+import { SidebarChromeHeader, useStageIdentification } from "../sidebar/SidebarChrome.tsx";
+import { StageBackdrop } from "../sidebar/StageBackdrop.tsx";
+import { routeAtom, type SettingsPage } from "../state/ui.ts";
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { IconButton, Kbd, Text } from "../ui/primitives.tsx";
 import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../ui/theme.ts";
@@ -285,16 +287,20 @@ function NavRow({
   );
 }
 
-/** The settings sidebar App renders in place of the thread sidebar. */
+/**
+ * The settings sidebar App renders in place of the thread sidebar. Web
+ * AppSidebarLayout gives it the same SidebarChromeHeader, stage artwork included.
+ */
 export function SettingsSidebar() {
   const theme = useTheme();
   const route = useAtomValue(routeAtom);
-  const setSidebarOpen = useAtomSet(sidebarOpenAtom);
   const page = route.kind === "settings" ? route.page : "general";
+  const { backdropVariant } = useStageIdentification();
   return (
     <div
       testId="settings-sidebar"
       style={{
+        position: "relative",
         display: "flex",
         flexDirection: "column",
         width: LAYOUT.sidebarWidth,
@@ -305,17 +311,8 @@ export function SettingsSidebar() {
         borderColor: theme.sidebar.border,
       }}
     >
-      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", height: LAYOUT.topbar, paddingLeft: 12, paddingRight: 12, gap: 12, flexShrink: 0 }}>
-        <IconButton icon="panel-left-close" color={theme.sidebar.foreground} hoverBg={theme.sidebar.rowHover} onClick={() => setSidebarOpen(false)} testId="settings-sidebar-toggle" />
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>
-          <Text weight={700} color={theme.sidebar.foreground}>
-            T3
-          </Text>
-          <Text weight={500} color={theme.sidebar.mutedForeground}>
-            Code
-          </Text>
-        </div>
-      </div>
+      {backdropVariant ? <StageBackdrop variant={backdropVariant} width={LAYOUT.sidebarWidth - 1} /> : null}
+      <SidebarChromeHeader />
       <SettingsSidebarNav page={page} />
     </div>
   );

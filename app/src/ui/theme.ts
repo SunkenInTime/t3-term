@@ -40,6 +40,17 @@ export interface Palette {
   readonly diffDel: string;
   readonly scrollbar: string;
   readonly overlay: string;
+  /** Built-in theme painting this palette (web html[data-theme-id]); null is the standard T3 Code palette. */
+  readonly themeId: string | null;
+  /**
+   * ComposerSurface.tsx: the glass fill before --glass-opacity, the 1px outline,
+   * and the dark-mode inset highlight under the top edge (null in light).
+   */
+  readonly composer: {
+    readonly surface: string;
+    readonly outline: string;
+    readonly highlight: string | null;
+  };
   readonly sidebar: {
     readonly background: string;
     readonly foreground: string;
@@ -89,6 +100,9 @@ export const DARK: Palette = {
   // backdrop blur, so the dim goes to 80%, which knocks text behind a dialog down
   // about as far as the blur does (brightest glyph pixels ~50 vs web ~44).
   overlay: "#0a0a0acc",
+  themeId: null,
+  // --surface-raised (background 97% + white), white 5% outline, white 3% highlight.
+  composer: { surface: "#111111", outline: "#ffffff0d", highlight: "#ffffff08" },
   sidebar: {
     background: "#000000",
     foreground: "#f1f3f7",
@@ -136,6 +150,8 @@ export const LIGHT: Palette = {
   scrollbar: "#d9d9d9",
   // web: 60% + blur; 75% here for the same reason as the dark overlay.
   overlay: "#fcfcfcbf",
+  themeId: null,
+  composer: { surface: "#ffffff", outline: "#00000014", highlight: null },
   sidebar: {
     background: "#fafafa",
     foreground: "#27272a",
@@ -282,7 +298,11 @@ export function mixColors(a: string, b: string, weight: number): string {
   return `#${out.join("")}`;
 }
 
-export function paletteFromThemeColors(raw: ThemeColors, appearance: ThemeAppearance): Palette {
+export function paletteFromThemeColors(
+  raw: ThemeColors,
+  appearance: ThemeAppearance,
+  themeId: string | null = null,
+): Palette {
   const c = Object.fromEntries(Object.entries(raw).map(([role, value]) => [role, cssColorToHex(value)])) as Record<
     keyof ThemeColors,
     string
@@ -314,6 +334,8 @@ export function paletteFromThemeColors(raw: ThemeColors, appearance: ThemeAppear
     codeBackground: c.codeBackground,
     scrollbar: c.border,
     overlay: alpha(c.canvas, appearance === "dark" ? 0.64 : 0.6),
+    themeId,
+    composer: themedComposerColors(c, appearance, themeId),
     sidebar: {
       background: c.sidebar,
       foreground: c.sidebarForeground,
@@ -326,5 +348,24 @@ export function paletteFromThemeColors(raw: ThemeColors, appearance: ThemeAppear
       icon: mixColors(c.sidebarMutedForeground.slice(0, 7), c.sidebar.slice(0, 7), 0.6),
       input: c.input,
     },
+  };
+}
+
+/** ComposerSurface.tsx's [html[data-theme-id]] overrides of the glass surface, outline and highlight. */
+function themedComposerColors(
+  c: Record<keyof ThemeColors, string>,
+  appearance: ThemeAppearance,
+  themeId: string | null,
+): Palette["composer"] {
+  if (appearance === "light") {
+    return { surface: c.surfaceRaised, outline: c.toolbarBorder, highlight: null };
+  }
+  if (themeId === "t3-chat") {
+    return { surface: c.surfaceRaised, outline: "#241e28", highlight: alpha("#432d48", 0.12) };
+  }
+  return {
+    surface: c.surfaceRaised,
+    outline: mixColors(c.input.slice(0, 7), c.canvas.slice(0, 7), 0.3),
+    highlight: alpha(c.input, 0.12),
   };
 }
