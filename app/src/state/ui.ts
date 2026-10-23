@@ -5,7 +5,9 @@ import { Atom } from "effect/reactivity";
 export type SettingsPage =
   | "general"
   | "appearance"
+  | "projects"
   | "keybindings"
+  | "snap-shot"
   | "providers"
   | "integrations"
   | "scheduled-tasks"
@@ -13,7 +15,8 @@ export type SettingsPage =
   | "storage"
   | "connections"
   | "archive"
-  | "diagnostics";
+  | "diagnostics"
+  | "open-source-licenses";
 
 export type Route =
   | { readonly kind: "home" }

@@ -1,5 +1,5 @@
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 
 import type { Boot } from "../connect/bootstrap.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
@@ -10,26 +10,34 @@ import { SettingsSidebar } from "../settings/SettingsView.tsx";
 import { CommandPalette } from "../palette/CommandPalette.tsx";
 import { DialogHost } from "../dialogs/DialogHost.tsx";
 import { MainView } from "./MainView.tsx";
-import { DARK, ThemeContext } from "../ui/theme.ts";
+import { ThemeContext, useTheme } from "../ui/theme.ts";
+import { activePaletteAtom } from "../state/clientSettings.ts";
 import { TooltipProvider } from "../ui/overlay.tsx";
 import { ToastHost } from "../ui/toast.tsx";
 
 export function App({ boot }: { boot: Boot }) {
   return (
     <RegistryContext.Provider value={appAtomRegistry}>
-      <ThemeContext.Provider value={DARK}>
+      <ThemedApp>
         <TooltipProvider>
           <Shell boot={boot} />
           <CommandPalette />
           <DialogHost />
           <ToastHost />
         </TooltipProvider>
-      </ThemeContext.Provider>
+      </ThemedApp>
     </RegistryContext.Provider>
   );
 }
 
+/** Provides the palette chosen in Settings → Appearance; switching repaints everything below. */
+function ThemedApp({ children }: { children: ReactNode }) {
+  const palette = useAtomValue(activePaletteAtom);
+  return <ThemeContext.Provider value={palette}>{children}</ThemeContext.Provider>;
+}
+
 function Shell({ boot }: { boot: Boot }) {
+  const theme = useTheme();
   // Mounting the catalog starts the connection registry; saved environments reconnect.
   useAtomValue(environmentCatalog.catalogAtom);
   const sidebarOpen = useAtomValue(sidebarOpenAtom);
@@ -44,7 +52,7 @@ function Shell({ boot }: { boot: Boot }) {
         flexDirection: "row",
         width: "100%",
         height: "100%",
-        backgroundColor: DARK.background,
+        backgroundColor: theme.background,
       }}
     >
       {sidebarOpen ? route.kind === "settings" ? <SettingsSidebar /> : <Sidebar /> : null}
