@@ -62,6 +62,8 @@ export function ComposerPrimaryActions(props: {
   canResume: boolean;
   /** Ctrl is held: the alternate dispatch (queue ↔ steer) applies. */
   alternateModifier: boolean;
+  /** Keybinding label for `composer.sendAlternate` (Ctrl+Enter by default). */
+  alternateShortcutLabel?: string | null;
   onSubmit: (dispatchMode: ComposerDispatchMode) => void;
   onResume: () => void;
   onPreviousPendingQuestion: () => void;
@@ -181,7 +183,7 @@ export function ComposerPrimaryActions(props: {
   const submitTooltip =
     submitStatus ??
     (props.isRunning && props.canSteer
-      ? `Click to ${props.followUpBehavior}, Ctrl-click to ${alternateAction}`
+      ? `Click to ${props.followUpBehavior}, Ctrl/⌘-click${props.alternateShortcutLabel ? ` or ${props.alternateShortcutLabel}` : ""} to ${alternateAction}`
       : submitLabel);
   const disabled =
     busy || isSendDisabled || props.isEnvironmentUnavailable || (!props.hasSendableContent && !showResume);

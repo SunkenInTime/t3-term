@@ -18,9 +18,6 @@
 // Ctrl+Enter sends with the alternate dispatch (queue ↔ steer) while a turn runs.
 // The caret position is not exposed by gpuix, so trigger detection uses the caret implied
 // by each edit (the end of the inserted text, or the deletion point).
-import * as NodeFs from "node:fs";
-import * as NodePath from "node:path";
-
 import { useAtomValue } from "@effect/atom-react";
 import { useGpuixRequired, type KeyEvent } from "@gpuix/react";
 import {
@@ -47,7 +44,8 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { proposedPlanTitle } from "@t3tools/shared/proposedPlanText";
 import * as Option from "effect/Option";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
@@ -71,6 +69,7 @@ import {
   stickyModelAtom,
 } from "../../state/composer.ts";
 import {
+  environmentSession,
   environmentThreadShells,
   environmentThreads,
   projectIndexAtom,
@@ -115,6 +114,7 @@ import { readPromptUltrathink, shouldRenderTraitsControls } from "../../web/comp
 import { runtimeModeConfig, runtimeModeOptions as runtimeModes } from "../../web/components/chat/runtimeModeConfig.ts";
 import { deriveLatestContextWindowSnapshot, latestProviderTurnTokenUsage } from "../../web/lib/contextWindow.ts";
 import { type AppModelOption, getAppModelOptionsForInstance, resolveAppModelSelectionForInstance } from "../../web/modelSelection.ts";
+import { shortcutLabelForCommand } from "../../web/keybindings.ts";
 import { getProviderModelCapabilities } from "../../web/providerModels.ts";
 import { resolvePlanFollowUpSubmission } from "../../web/proposedPlan.ts";
 import { derivePhase, findLatestProposedPlan, hasActionableProposedPlan } from "../../web/session-logic.ts";
@@ -136,6 +136,7 @@ import {
   sendComposerMessage,
   type ComposerSendTarget,
 } from "./composerSend.ts";
+import { attachmentsFromPaths } from "./composerAttachmentPaths.ts";
 import { ContextWindowMeter } from "./ContextWindowMeter.tsx";
 import { ProviderModelPicker } from "./ProviderModelPicker.tsx";
 import { QueuedRunsControl } from "./QueuedRunsControl.tsx";
@@ -147,6 +148,11 @@ import { composerRestingAtom } from "./composerResting.ts";
 
 export type { ComposerTarget } from "../../state/composer.ts";
 
+const NO_THREAD_SHELL_ATOM = Atom.make<EnvironmentThreadShell | null>(null);
+const NO_THREAD_STATE_ATOM = Atom.make(
+  AsyncResult.initial() as ReturnType<typeof environmentThreads.stateAtom> extends Atom.Atom<infer T> ? T : never,
+);
+
 const ALL_RUNTIME_MODE_OPTIONS: ReadonlyArray<RuntimeModeOption> = runtimeModes.map((mode) => ({
   mode,
   ...runtimeModeConfig[mode],
@@ -156,57 +162,6 @@ const NO_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
 const DEFAULT_PLACEHOLDER = "Ask anything, @tag files/folders, $use skills, or / for commands";
 const EMPTY_THREAD_PLACEHOLDER = "Ask for changes, send follow-ups, or attach images";
 const PROMPT_LINE_HEIGHT = 23;
-
-const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-};
-const FILE_MIME_BY_EXTENSION: Record<string, string> = {
-  pdf: "application/pdf",
-  json: "application/json",
-  md: "text/markdown",
-  txt: "text/plain",
-  csv: "text/csv",
-  html: "text/html",
-  svg: "image/svg+xml",
-  zip: "application/zip",
-};
-
-/** Draft attachments for local paths; folders are skipped (web inserts them as @mentions). */
-function attachmentsFromPaths(paths: ReadonlyArray<string>): {
-  attachments: ComposerAttachmentDraft[];
-  folders: string[];
-} {
-  const attachments: ComposerAttachmentDraft[] = [];
-  const folders: string[] = [];
-  for (const path of paths) {
-    let stat: NodeFs.Stats;
-    try {
-      stat = NodeFs.statSync(path);
-    } catch {
-      continue;
-    }
-    if (stat.isDirectory()) {
-      folders.push(path);
-      continue;
-    }
-    const name = NodePath.basename(path);
-    const extension = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
-    const imageMime = IMAGE_MIME_BY_EXTENSION[extension];
-    attachments.push({
-      id: globalThis.crypto.randomUUID(),
-      type: imageMime ? "image" : "file",
-      name,
-      mimeType: imageMime ?? FILE_MIME_BY_EXTENSION[extension] ?? (stat.size < 2_000_000 ? "text/plain" : "application/octet-stream"),
-      sizeBytes: stat.size,
-      path,
-    });
-  }
-  return { attachments, folders };
-}
 
 /** Where the caret sits after an edit from `previous` to `next`: the end of what changed. */
 function caretAfterEdit(previous: string, next: string): number {
@@ -361,15 +316,18 @@ function ComposerBody({
   const settings = useAtomValue(composerSettingsAtom(environmentId));
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const projects = useAtomValue(projectIndexAtom);
+  // Drafts have no thread yet; an empty thread id fails the ref schema, so read constants.
   const shell = useAtomValue(
-    environmentThreadShells.threadShellAtom({ environmentId, threadId: (threadId ?? "") as ThreadId }),
+    threadId ? environmentThreadShells.threadShellAtom({ environmentId, threadId }) : NO_THREAD_SHELL_ATOM,
   );
-  const threadState = useAtomValue(environmentThreads.stateAtom(environmentId, (threadId ?? "") as ThreadId));
-  const projection = threadId
-    ? Option.getOrNull(Option.flatMap(AsyncResult.value(threadState), (state) => state.data))
-    : null;
+  const threadState = useAtomValue(
+    threadId ? environmentThreads.stateAtom(environmentId, threadId) : NO_THREAD_STATE_ATOM,
+  );
+  const projection = Option.getOrNull(Option.flatMap(AsyncResult.value(threadState), (state) => state.data));
   const projectId = threadId ? (shell?.projectId ?? null) : draftProjectId;
   const project = projectId ? (projects.get(`${environmentId}:${projectId}`) ?? null) : null;
+  // Keeps the prepared connection mounted: attachment uploads read its base URL at send time.
+  useAtomValue(environmentSession.preparedConnectionValueAtom(environmentId));
   const sending = useAtomValue(composerSendingAtom(draftKey));
   const sendError = useAtomValue(composerSendErrorAtom(draftKey));
   const [modelPickerOpen, setModelPickerOpen] = [
@@ -1144,6 +1102,13 @@ function ComposerBody({
       hasSendableContent={composerSendState.hasSendableContent || draft.attachments.length > 0}
       canResume={canResume && prompt.trim().length === 0 && draft.attachments.length === 0}
       alternateModifier={false}
+      alternateShortcutLabel={
+        keybindings
+          ? shortcutLabelForCommand(keybindings, "composer.sendAlternate", {
+              context: { composerFocus: true, draftThreadRoute: target.kind === "draft", turnRunning: true },
+            })
+          : null
+      }
       onSubmit={(mode) => submit(mode)}
       onResume={onResume}
       onPreviousPendingQuestion={requests.onPreviousActivePendingUserInputQuestion}
@@ -1181,6 +1146,20 @@ function ComposerBody({
           threadId ? <QueuedRunsControl environmentId={environmentId} threadId={threadId} canOperateThread={true} /> : null
         }
       />
+      <StripBehindSurface
+        strip={
+          target.kind === "draft" && project ? (
+            <BranchToolbar
+              environmentId={environmentId}
+              projectId={project.id}
+              draftKey={draftKey}
+              onComposerFocusRequest={focusEditor}
+            />
+          ) : isResting ? (
+            <RestingModelStrip>{controls}</RestingModelStrip>
+          ) : null
+        }
+      >
       <div
         testId="composer-surface"
         onLayout={(event) => {
@@ -1280,6 +1259,7 @@ function ComposerBody({
           </div>
           {isResting ? (
             <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 }}>
+              {fileStagingAllowed ? <ComposerAttachButton onClick={() => void onAttach()} /> : null}
               {primaryActions}
             </div>
           ) : null}
@@ -1335,17 +1315,33 @@ function ComposerBody({
           </div>
         ) : null}
       </div>
-      {target.kind === "draft" && project ? (
-        <BranchToolbar
-          environmentId={environmentId}
-          projectId={project.id}
-          draftKey={draftKey}
-          onComposerFocusRequest={focusEditor}
-        />
-      ) : null}
-      {isResting ? (
-        <RestingModelStrip>{controls}</RestingModelStrip>
-      ) : null}
+      </StripBehindSurface>
+    </div>
+  );
+}
+
+/**
+ * web ComposerSurface.ContextStrip: a strip under the composer, inset 22px a side, whose top
+ * 16px tuck under the surface (`-mt-4`, composer `z-10`). gpuix paints in tree order and has
+ * no z-index, so the strip renders first, absolutely at the bottom, and a spacer reserves the
+ * part that shows below the surface. Strip components render only their box (no margins).
+ */
+function StripBehindSurface({ strip, children }: { strip: ReactNode; children: ReactNode }) {
+  const [stripHeight, setStripHeight] = useState(49);
+  if (strip === null || strip === false) return <>{children}</>;
+  return (
+    <div style={{ position: "relative", display: "flex", flexDirection: "column" }}>
+      <div
+        style={{ position: "absolute", left: 22, right: 22, bottom: 0, display: "flex", flexDirection: "column" }}
+        onLayout={(event) => {
+          const height = (event as { height?: number }).height;
+          if (typeof height === "number" && Math.abs(height - stripHeight) > 0.5) setStripHeight(height);
+        }}
+      >
+        {strip}
+      </div>
+      {children}
+      <div style={{ height: Math.max(0, stripHeight - 16), flexShrink: 0, pointerEvents: "none" }} />
     </div>
   );
 }
@@ -1382,9 +1378,6 @@ function RestingModelStrip({ children }: { children: ReactNode }) {
         flexDirection: "row",
         alignItems: "center",
         gap: 4,
-        marginTop: -16,
-        marginLeft: 22,
-        marginRight: 22,
         paddingTop: 20,
         paddingLeft: 8,
         paddingRight: 8,
@@ -1394,7 +1387,8 @@ function RestingModelStrip({ children }: { children: ReactNode }) {
         borderWidth: 1,
         borderTopWidth: 0,
         borderColor: alpha("#ffffff", 0.07),
-        backgroundColor: mix(theme.card, theme.background, 0.6),
+        // dark:bg-composer-seam-below over the timeline, measured ≈ white 5% on the background.
+        backgroundColor: mix("#ffffff", theme.background, 0.05),
       }}
     >
       {children}
