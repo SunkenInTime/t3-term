@@ -25,7 +25,13 @@ let nextId = 1;
 function getWorker(): Worker | null {
   if (worker !== undefined) return worker;
   try {
-    worker = new Worker(new URL("./highlightWorker.ts", import.meta.url).href);
+    // In a compiled binary import.meta.url is the binary's root, not this
+    // module's folder, and the worker is embedded at its path under src/
+    // (scripts/build.ts passes it as a second entrypoint).
+    const compiled = /~BUN|%7EBUN|\$bunfs/i.test(import.meta.url);
+    worker = new Worker(
+      compiled ? "./panels/code/highlightWorker.ts" : new URL("./highlightWorker.ts", import.meta.url).href,
+    );
     worker.onmessage = (event: MessageEvent<HighlightResponse>) => {
       const resolve = pending.get(event.data.id);
       pending.delete(event.data.id);

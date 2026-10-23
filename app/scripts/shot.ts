@@ -17,7 +17,12 @@ mkdirSync(outDir, { recursive: true });
 // automation's launch() pipes the app's stderr without reading it; once the
 // pipe buffer fills, the app blocks mid-frame and every step times out. Spawn
 // it here and drain stderr into <out-dir>/app-stderr.log.
-const child = spawn("bun", ["src/main.tsx", ...(process.env.T3TERM_ARGS ?? "").split(" ").filter(Boolean)], {
+// T3TERM_BIN runs a compiled binary instead of the source.
+const appArgs = (process.env.T3TERM_ARGS ?? "").split(" ").filter(Boolean);
+const [command, ...commandArgs] = process.env.T3TERM_BIN
+  ? [process.env.T3TERM_BIN, ...appArgs]
+  : ["bun", "src/main.tsx", ...appArgs];
+const child = spawn(command!, commandArgs, {
   cwd: join(import.meta.dir, ".."),
   env: { ...process.env, GPUIX_BACKGROUND: "1" },
   stdio: ["pipe", "pipe", "pipe"],

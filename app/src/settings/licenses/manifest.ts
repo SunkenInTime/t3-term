@@ -9,6 +9,8 @@ import * as NodeURL from "node:url";
 
 import { decodeThirdPartyLicenseManifest, type ThirdPartyLicenseManifest } from "@t3tools/shared/thirdPartyLicenses";
 
+import embeddedManifest from "../../generated/licenseManifest.ts";
+
 interface GeneratorModule {
   readonly generateThirdPartyLicenseManifest: (input: {
     readonly configFile?: string;
@@ -51,7 +53,11 @@ async function generateManifest(): Promise<ThirdPartyLicenseManifest> {
 }
 
 /** loadLicenseManifest: one generation per run; a failure clears the cache so Try again retries. */
+export { BUNDLE as LICENSE_BUNDLE, appPackageJson, configFile, generatorUrl };
+
 export function loadLicenseManifest(): Promise<ThirdPartyLicenseManifest> {
+  // A compiled binary carries the manifest scripts/build.ts generated.
+  if (embeddedManifest !== null) manifestPromise ??= Promise.resolve(decodeThirdPartyLicenseManifest(embeddedManifest));
   manifestPromise ??= generateManifest().catch((error: unknown) => {
     manifestPromise = undefined;
     throw error;

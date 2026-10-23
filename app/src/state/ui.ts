@@ -41,6 +41,10 @@ function initialRoute(): Route {
     case "settings":
       return { kind: "settings", page: "general" };
     default:
+      // settings/<page>, e.g. settings/open-source-licenses
+      if (process.env.T3TERM_ROUTE?.startsWith("settings/")) {
+        return { kind: "settings", page: process.env.T3TERM_ROUTE.slice("settings/".length) as SettingsPage };
+      }
       return { kind: "home" };
   }
 }
