@@ -44,3 +44,37 @@ export const environmentProjects = createEnvironmentProjectAtoms({
 export const projectEnvironment = createProjectEnvironmentAtoms(connectionAtomRuntime, {
   projectAtom: environmentProjects.projectAtom,
 });
+
+import {
+  createEnvironmentThreadDetailAtoms,
+  createEnvironmentThreadShellAtoms,
+  createEnvironmentThreadStateAtoms,
+  createThreadEnvironmentAtoms,
+} from "@t3tools/client-runtime/state/threads";
+
+export const threadEnvironment = createThreadEnvironmentAtoms(
+  connectionAtomRuntime,
+  environmentSnapshotAtom,
+);
+export const environmentThreads = createEnvironmentThreadStateAtoms(connectionAtomRuntime);
+export const environmentThreadDetails = createEnvironmentThreadDetailAtoms(
+  environmentThreads.stateAtom,
+);
+export const environmentThreadShells = createEnvironmentThreadShellAtoms({
+  catalogValueAtom: environmentCatalog.catalogValueAtom,
+  snapshotAtom: threadEnvironment.snapshotAtom,
+});
+
+import type { OrchestrationProjectShell } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
+
+/** Every connected environment's projects, keyed `${environmentId}:${projectId}`. */
+export const projectIndexAtom = Atom.make((get) => {
+  const index = new Map<string, OrchestrationProjectShell>();
+  for (const environmentId of get(environmentCatalog.catalogValueAtom).entries.keys()) {
+    for (const project of get(environmentSnapshotAtom(environmentId))?.projects ?? []) {
+      index.set(`${environmentId}:${project.id}`, project);
+    }
+  }
+  return index as ReadonlyMap<string, OrchestrationProjectShell>;
+});

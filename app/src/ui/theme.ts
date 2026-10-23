@@ -1,0 +1,195 @@
+// Design tokens transcribed from apps/web/src/index.css (default theme, contrast 100).
+// Alpha colors are written as #RRGGBBAA; GPUI blends them like the browser does.
+import { createContext, useContext } from "react";
+
+export interface Palette {
+  readonly appearance: "dark" | "light";
+  readonly background: string;
+  readonly foreground: string;
+  readonly card: string;
+  readonly popover: string;
+  readonly primary: string;
+  readonly primaryForeground: string;
+  readonly messageAction: string;
+  readonly secondary: string;
+  readonly muted: string;
+  readonly mutedForeground: string;
+  readonly accent: string;
+  readonly accentForeground: string;
+  readonly messageSurface: string;
+  readonly border: string;
+  readonly input: string;
+  readonly error: string;
+  readonly errorForeground: string;
+  readonly toolError: string;
+  readonly info: string;
+  readonly infoForeground: string;
+  readonly success: string;
+  readonly successForeground: string;
+  readonly warning: string;
+  readonly warningForeground: string;
+  readonly indigo: string;
+  readonly codeBackground: string;
+  readonly diffAdd: string;
+  readonly diffDel: string;
+  readonly scrollbar: string;
+  readonly overlay: string;
+  readonly sidebar: {
+    readonly background: string;
+    readonly foreground: string;
+    readonly mutedForeground: string;
+    readonly accent: string;
+    readonly rowHover: string;
+    readonly rowActive: string;
+    readonly rowSelected: string;
+    readonly border: string;
+    readonly icon: string;
+    readonly input: string;
+  };
+}
+
+export const DARK: Palette = {
+  appearance: "dark",
+  background: "#0a0a0a",
+  foreground: "#f5f5f5",
+  card: "#111111",
+  popover: "#111111",
+  primary: "#346bf1",
+  primaryForeground: "#ffffff",
+  messageAction: "#346bf1",
+  secondary: "#111111",
+  muted: "#111111",
+  mutedForeground: "#818181",
+  accent: "#ffffff0a",
+  accentForeground: "#f5f5f5",
+  messageSurface: "#141414",
+  border: "#ffffff0f",
+  input: "#ffffff14",
+  error: "#fb414a",
+  errorForeground: "#ff6467",
+  toolError: "#fca5a5",
+  info: "#2b7fff",
+  infoForeground: "#51a2ff",
+  success: "#00bc7d",
+  successForeground: "#00d492",
+  warning: "#fe9a00",
+  warningForeground: "#ffb900",
+  indigo: "#a3b3ff",
+  codeBackground: "#111111",
+  diffAdd: "#00d492",
+  diffDel: "#ff6467",
+  scrollbar: "#ffffff14",
+  overlay: "#0a0a0aa3",
+  sidebar: {
+    background: "#000000",
+    foreground: "#f1f3f7",
+    mutedForeground: "#a3a3a3",
+    accent: "#191a1d",
+    rowHover: "#f1f3f714",
+    rowActive: "#f1f3f71c",
+    rowSelected: "#f1f3f712",
+    border: "#ffffff14",
+    icon: "#626262",
+    input: "#ffffff2e",
+  },
+};
+
+export const LIGHT: Palette = {
+  appearance: "light",
+  background: "#fcfcfc",
+  foreground: "#27272a",
+  card: "#ffffff",
+  popover: "#ffffff",
+  primary: "#1b4ed8",
+  primaryForeground: "#ffffff",
+  messageAction: "#1b4ed8",
+  secondary: "#fafafa",
+  muted: "#fafafa",
+  mutedForeground: "#71717b",
+  accent: "#f4f4f5",
+  accentForeground: "#18181b",
+  messageSurface: "#f4f4f5",
+  border: "#e4e4e7",
+  input: "#d4d4d8",
+  error: "#fb2c36",
+  errorForeground: "#c10007",
+  toolError: "#fb2c36",
+  info: "#2b7fff",
+  infoForeground: "#1447e6",
+  success: "#00bc7d",
+  successForeground: "#007a55",
+  warning: "#fe9a00",
+  warningForeground: "#bb4d00",
+  indigo: "#4f39f6",
+  codeBackground: "#fefefe",
+  diffAdd: "#009966",
+  diffDel: "#e7000b",
+  scrollbar: "#d9d9d9",
+  overlay: "#fcfcfc99",
+  sidebar: {
+    background: "#fafafa",
+    foreground: "#27272a",
+    mutedForeground: "#71717b",
+    accent: "#f4f4f5",
+    rowHover: "#fcfcfc",
+    rowActive: "#ffffff",
+    rowSelected: "#ffffff",
+    border: "#e4e4e7",
+    icon: "#a8a8ae",
+    input: "#d4d4d8",
+  },
+};
+
+/** Tailwind type scale used by the web app: [fontSize, lineHeight]. */
+export const TEXT = {
+  "3xs": [10, 14],
+  "2xs": [11, 16],
+  xs: [12, 16],
+  sm: [14, 20],
+  base: [16, 24],
+  lg: [18, 28],
+  xl: [20, 28],
+  "2xl": [24, 32],
+  "3xl": [30, 36],
+} as const;
+
+export const RADIUS = { sm: 6, md: 8, lg: 10, xl: 14, "2xl": 18, "3xl": 22 } as const;
+
+export const LAYOUT = {
+  sidebarWidth: 256,
+  topbar: 52,
+  chatMaxWidth: 736,
+  chatLanePadding: 48,
+  detailsCardWidth: 280,
+  rightPanelWidth: 540,
+  terminalHeight: 280,
+} as const;
+
+function platformFonts() {
+  switch (process.platform) {
+    case "win32":
+      return { sans: "Segoe UI", mono: "Consolas" };
+    case "darwin":
+      return { sans: ".SystemUIFont", mono: "Menlo" };
+    default:
+      return { sans: "DejaVu Sans", mono: "DejaVu Sans Mono" };
+  }
+}
+
+export const FONTS = platformFonts();
+
+/** Scales the opacity of `color` (#rrggbb or #rrggbbaa) by `amount` 0..1, like Tailwind's `color/NN`. */
+export function alpha(color: string, amount: number): string {
+  const base = color.slice(0, 7);
+  const existing = color.length === 9 ? Number.parseInt(color.slice(7, 9), 16) / 255 : 1;
+  const a = Math.round(Math.max(0, Math.min(1, amount * existing)) * 255)
+    .toString(16)
+    .padStart(2, "0");
+  return `${base}${a}`;
+}
+
+export const ThemeContext = createContext<Palette>(DARK);
+
+export function useTheme(): Palette {
+  return useContext(ThemeContext);
+}
