@@ -410,7 +410,9 @@ function ThreadBreadcrumb({
             minWidth={198}
             rootStyle={{ minWidth: 0, flexShrink: 1 }}
             trigger={
-              <Tooltip content={thread.title}>
+              // The tooltip's wrapper must shrink too, or a long title is clipped mid-glyph
+              // instead of ending in an ellipsis in a narrow window.
+              <Tooltip content={thread.title} rootStyle={{ display: "flex", minWidth: 0, flexShrink: 1 }}>
                 <div
                   testId="thread-title"
                   onClick={onTitleClick}
