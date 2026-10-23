@@ -52,6 +52,7 @@ import { findBarOpenAtom, routeAtom } from "../../state/ui.ts";
 import { Dialog } from "../../ui/overlay.tsx";
 import { Button, Text } from "../../ui/primitives.tsx";
 import { LAYOUT, alpha, useTheme } from "../../ui/theme.ts";
+import { chatLanePadding, useSmallViewport } from "../../ui/viewport.tsx";
 import { toast } from "../../ui/toast.tsx";
 import { deriveAvailableRevertTurnCounts, resolveWorktreeSetupProgress } from "../../web/components/chatViewTimeline.logic.ts";
 import { recallableComposerPrompt } from "../../web/components/chat/composerPromptHistory.ts";
@@ -63,6 +64,7 @@ import type { ChatMessage } from "../../web/types.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import {
   resolveTimelineMinimapCurrentIndex,
+  resolveTimelineMinimapHasPersistentGutter,
   resolveTimelineMinimapHitStripWidth,
 } from "../../web/components/chat/MessagesTimeline.logic.ts";
 import { deriveTimelineMinimapItems, type TimelineMinimapItem } from "../../web/components/chat/timelineMinimapItems.ts";
@@ -671,7 +673,9 @@ const TimelineList = memo(function TimelineList({
   const leadingRows = (history ? 1 : 0) + (parentThreadLink ? 1 : 0) + 1;
   const rowCount = leadingRows + rows.length + 2;
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
-  const footerHeight = composerInset + 16;
+  // web TimelineListFooter: the composer inset, then `h-3 sm:h-4`.
+  const small = useSmallViewport();
+  const footerHeight = composerInset + (small ? 12 : 16);
 
   // Row heights by key, reported by each row frame's onLayout. They place the
   // minimap's lit strips and tell whether the whole thread fits on screen.
@@ -773,7 +777,7 @@ const TimelineList = memo(function TimelineList({
     visibleEnd: visibleRange?.end,
     rowIndices: minimapItems.map((item) => item.rowIndex),
   });
-  const laneWidth = Math.max(0, Math.min(LAYOUT.chatMaxWidth, viewport.width - LAYOUT.chatLanePadding * 2));
+  const laneWidth = Math.max(0, Math.min(LAYOUT.chatMaxWidth, viewport.width - chatLanePadding(small) * 2));
   const minimapHitStripWidth = resolveTimelineMinimapHitStripWidth(viewport.width, laneWidth);
   const selectMinimapItem = (item: TimelineMinimapItem) => {
     const id = listRef.current?.id;
@@ -889,6 +893,7 @@ const TimelineList = memo(function TimelineList({
       <TimelineMinimap
         items={minimapItems}
         hitStripWidth={minimapHitStripWidth}
+        persistentGutter={resolveTimelineMinimapHasPersistentGutter(viewport.width, laneWidth)}
         currentIndex={minimapCurrentIndex}
         inView={minimapInView}
         onSelect={selectMinimapItem}

@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { detailsPresentationAtom } from "../state/git.ts";
 import { detailsPanelOpenAtom } from "../state/ui.ts";
 import { LAYOUT } from "../ui/theme.ts";
+import { chatLanePadding, useSmallViewport } from "../ui/viewport.tsx";
 
 const CARD_GAP = 12;
 // web chatCanvasLayout.ts DETAILS_CARD_CLEARANCE
@@ -31,7 +32,7 @@ export function useDetailsCardInline(): boolean {
 
 /**
  * The centered chat column (web chatCanvasLayout.ts resolveChatCanvasLayout):
- * at most 736 wide, 48 from each edge, centered, but its right edge stays 32
+ * at most 736 wide, 48 from each edge (12 below `sm`), centered, but its right edge stays 32
  * clear of the inline details card.
  *
  * Done with flex rather than a measured width so it follows the canvas in the
@@ -41,7 +42,8 @@ export function useDetailsCardInline(): boolean {
  * The timeline rows and the composer overlay both use it so their edges line up.
  */
 export function ChatLane({ cardInline, children }: { cardInline: boolean; children: ReactNode }) {
-  const padding = LAYOUT.chatLanePadding;
+  // 12px a side below `sm`, 48 from it (index.css .chat-composer-lane).
+  const padding = chatLanePadding(useSmallViewport());
   const player = useAtomValue(chatLaneMiniPlayerAtom);
   let rightMin = cardInline ? CARD_GAP + LAYOUT.detailsCardWidth + DETAILS_CARD_CLEARANCE : padding;
   // web chatBeside: the lane ends 12px left of the mini player while that still

@@ -8,10 +8,21 @@ import {
   routeAtom,
   sidebarOpenAtom,
   terminalOpenAtom,
+  toggleSidebar,
 } from "../state/ui.ts";
+import { Tooltip } from "../ui/overlay.tsx";
+import {
+  sidebarWidthAtom,
+  titlebarContentLeft,
+  titlebarControlSize,
+  useMobileViewport,
+  useSmallViewport,
+  viewportWidthAtom,
+  workspaceGutter,
+} from "../ui/viewport.tsx";
 import { ProjectGlyph } from "../sidebar/ProjectGlyph.tsx";
 import { IconButton, Text } from "../ui/primitives.tsx";
-import { LAYOUT, useTheme } from "../ui/theme.ts";
+import { LAYOUT, alpha, useTheme } from "../ui/theme.ts";
 import { ChatView } from "../chat/ChatView.tsx";
 import { DraftView, HomeView } from "../chat/DraftView.tsx";
 import { SettingsView } from "../settings/SettingsView.tsx";
@@ -49,26 +60,74 @@ export function MainView() {
   );
 }
 
+/**
+ * Where a page header starts its content. Web pads headers by --workspace-gutter (12,
+ * 20 from `sm`) while the sidebar is docked; when it is collapsed, and always below
+ * `md` where it is a sheet, the sidebar toggle floats at the window's left
+ * (AppSidebarLayout SidebarControl, `position: fixed`) and headers start after it
+ * (COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS).
+ */
+export function useHeaderInset(): {
+  readonly paddingLeft: number;
+  readonly gutter: number;
+  /** ChatHeader / WorkspaceBreadcrumb `gap-2 sm:gap-3`. */
+  readonly crumbGap: number;
+  readonly toggle: ReactNode;
+} {
+  const sidebarOpen = useAtomValue(sidebarOpenAtom);
+  const mobile = useMobileViewport();
+  const small = useSmallViewport();
+  const docked = sidebarOpen && !mobile;
+  return {
+    paddingLeft: docked ? workspaceGutter(small) : titlebarContentLeft(small),
+    gutter: workspaceGutter(small),
+    crumbGap: small ? 8 : 12,
+    toggle: docked ? null : <HeaderSidebarToggle size={titlebarControlSize(small)} />,
+  };
+}
+
+/** The main column's width: the window less the docked sidebar. */
+export function useMainColumnWidth(): number {
+  const viewportWidth = useAtomValue(viewportWidthAtom);
+  const sidebarOpen = useAtomValue(sidebarOpenAtom);
+  const mobile = useMobileViewport();
+  const sidebarWidth = useAtomValue(sidebarWidthAtom);
+  return viewportWidth - (sidebarOpen && !mobile ? sidebarWidth : 0);
+}
+
+/** The floating SidebarTrigger. Its header must be `position: relative`. */
+function HeaderSidebarToggle({ size }: { size: number }) {
+  const theme = useTheme();
+  return (
+    <div style={{ position: "absolute", left: 12, top: (LAYOUT.topbar - size) / 2, display: "flex" }}>
+      <Tooltip content="Toggle main sidebar">
+        <IconButton icon="panel-left" size={size} color={alpha(theme.foreground, 0.8)} onClick={toggleSidebar} testId="sidebar-open" />
+      </Tooltip>
+    </div>
+  );
+}
+
 export function MainHeader({ crumbs }: { crumbs: ReactNode }) {
-  const [sidebarOpen, setSidebarOpen] = useAtom(sidebarOpenAtom);
   const [details, setDetails] = useAtom(detailsPanelOpenAtom);
   const [terminal, setTerminal] = useAtom(terminalOpenAtom);
   const [right, setRight] = useAtom(rightPanelOpenAtom);
+  const inset = useHeaderInset();
   return (
     <div
       style={{
+        position: "relative",
         display: "flex",
         flexDirection: "row",
         alignItems: "center",
         height: LAYOUT.topbar,
-        paddingLeft: sidebarOpen ? 20 : 12,
+        paddingLeft: inset.paddingLeft,
         paddingRight: 12,
         gap: 12,
         flexShrink: 0,
       }}
     >
-      {sidebarOpen ? null : <IconButton icon="panel-left" onClick={() => setSidebarOpen(true)} />}
-      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 12, flexGrow: 1, minWidth: 0 }}>
+      {inset.toggle}
+      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: inset.crumbGap, flexGrow: 1, minWidth: 0 }}>
         {crumbs}
       </div>
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>

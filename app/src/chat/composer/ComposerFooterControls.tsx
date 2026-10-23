@@ -4,6 +4,7 @@
 import type { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
 
 import { Icon } from "../../ui/Icon.tsx";
+import { useSmallViewport } from "../../ui/viewport.tsx";
 import { Menu } from "../../ui/overlay.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
 import { Text } from "../../ui/primitives.tsx";
@@ -37,6 +38,7 @@ export function ComposerFooterModeControls(props: {
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
   const size = props.size ?? "sm";
+  const small = useSmallViewport();
   const option =
     props.runtimeModeOptions.find((candidate) => candidate.mode === props.runtimeMode) ??
     supervisedRuntimeModeOption;
@@ -100,9 +102,12 @@ export function ComposerFooterModeControls(props: {
               ) : (
                 <ComposerControlIcon name="bot" size={size} large={size !== "xs"} />
               )}
-              <ComposerControlLabel size={size} pressed={props.interactionMode === "plan"}>
-                {props.interactionMode === "plan" ? "Plan" : "Build"}
-              </ComposerControlLabel>
+              {/* `sr-only sm:not-sr-only`: icon only below `sm`. */}
+              {small ? null : (
+                <ComposerControlLabel size={size} pressed={props.interactionMode === "plan"}>
+                  {props.interactionMode === "plan" ? "Plan" : "Build"}
+                </ComposerControlLabel>
+              )}
             </ComposerControl>
           </Tooltip>
         </>

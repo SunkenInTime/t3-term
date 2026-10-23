@@ -36,9 +36,15 @@ export function TimelineMinimap({
   currentIndex,
   inView,
   onSelect,
+  persistentGutter,
 }: {
   items: ReadonlyArray<TimelineMinimapItem>;
   hitStripWidth: number;
+  /**
+   * web hasPersistentGutter: with at least 48px beside the lane the rail always shows;
+   * in a narrower window it stays hidden until the pointer is on it.
+   */
+  persistentGutter: boolean;
   currentIndex: number | null;
   /** Ids of the user messages whose rows are on screen. */
   inView: ReadonlySet<string>;
@@ -49,6 +55,7 @@ export function TimelineMinimap({
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [railTop, setRailTop] = useState(0);
   const [hoveredNav, setHoveredNav] = useState<"previous" | "next" | null>(null);
+  const [railHovered, setRailHovered] = useState(false);
 
   if (items.length < TIMELINE_MINIMAP_MIN_ITEMS) return null;
 
@@ -111,9 +118,14 @@ export function TimelineMinimap({
         flexDirection: "column",
         justifyContent: "center",
         pointerEvents: "none",
+        opacity: persistentGutter || railHovered || hoveredNav !== null ? 1 : 0,
       }}
     >
-      <div style={{ position: "relative", marginLeft: RAIL_LEFT, width: hitStripWidth, height }}>
+      <div
+        style={{ position: "relative", marginLeft: RAIL_LEFT, width: hitStripWidth, height }}
+        onMouseEnter={() => setRailHovered(true)}
+        onMouseLeave={() => setRailHovered(false)}
+      >
         {navButton("previous")}
         <div
           testId="timeline-minimap-rail"
