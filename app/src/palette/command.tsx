@@ -123,6 +123,7 @@ export function PaletteInput({
   testId?: string;
 }) {
   const theme = useTheme();
+  const small = useSmallViewport();
   const icon: IconName = leading === "search" ? "search" : leading === "back" ? "arrow-left" : leading;
   // The input runs Backspace as an editing action, so onKeyDown never sees it; the
   // key-up still arrives. A Backspace that changed nothing found the query empty.
@@ -180,8 +181,9 @@ export function PaletteInput({
             minWidth: 0,
             paddingLeft: 1,
             paddingRight: 8 + accessoryWidth,
-            fontSize: 14,
-            lineHeight: 20,
+            // AutocompleteInput size="lg": `text-base sm:text-sm`.
+            fontSize: small ? 16 : 14,
+            lineHeight: small ? 24 : 20,
             fontFamily: FONTS.sans,
             color: theme.foreground,
           }}

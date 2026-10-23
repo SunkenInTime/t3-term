@@ -8,7 +8,10 @@ import { FloatingLayer, type FloatingAlign, type FloatingSide } from "@gpuix/rea
 import * as DialogPrimitive from "@gpuix/react/dialog";
 import * as TooltipPrimitive from "@gpuix/react/tooltip";
 import {
+  Children,
+  Fragment,
   createContext,
+  isValidElement,
   useCallback,
   useContext,
   useMemo,
@@ -384,6 +387,20 @@ export function Switch({
 
 // ── Dialog ──────────────────────────────────────────────────────────────
 
+/**
+ * Children in reverse order, looking through one fragment: DialogFooter's
+ * `flex-col-reverse` below `sm` (gpuix lays out `column-reverse` as a row).
+ */
+export function reversedChildren(children: ReactNode): ReactNode[] {
+  const items = Children.toArray(children);
+  const only = items.length === 1 ? items[0] : null;
+  const flat =
+    only && isValidElement(only) && only.type === Fragment
+      ? Children.toArray((only.props as { children?: ReactNode }).children)
+      : items;
+  return flat.reverse();
+}
+
 /** apps/web/src/components/ui/dialog.tsx: radius 18, glass, max-w 512, header 24px padding, title 20px. */
 export function Dialog({
   open,
@@ -452,7 +469,7 @@ export function Dialog({
               style={{
                 display: "flex",
                 // DialogFooter: `flex-col-reverse gap-2 sm:flex-row sm:justify-end`.
-                flexDirection: small ? "column-reverse" : "row",
+                flexDirection: small ? "column" : "row",
                 justifyContent: "flex-end",
                 alignItems: small ? "stretch" : "center",
                 gap: 8,
@@ -465,7 +482,7 @@ export function Dialog({
                 backgroundColor: alpha(theme.muted, 0.72),
               }}
             >
-              {footer}
+              {small ? reversedChildren(footer) : footer}
             </div>
           ) : null}
           {showCloseButton ? (

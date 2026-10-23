@@ -3,7 +3,7 @@
 // The ui kit's Dialog fixes header/footer layout and has no close button or
 // initial-focus target, which these dialogs need, so they compose the gpuix
 // primitive directly with the same surface styles.
-import { dialogGlassShadow } from "../ui/overlay.tsx";
+import { dialogGlassShadow, reversedChildren } from "../ui/overlay.tsx";
 import { useAtomValue } from "@effect/atom-react";
 import * as DialogPrimitive from "@gpuix/react/dialog";
 import type { PublicInstance } from "@gpuix/react";
@@ -105,6 +105,7 @@ export function DialogHeader({
   hasPanel: boolean;
 }) {
   const theme = useTheme();
+  const small = useSmallViewport();
   return (
     <div
       style={{
@@ -114,7 +115,8 @@ export function DialogHeader({
         paddingTop: 24,
         paddingLeft: 24,
         paddingRight: 24,
-        paddingBottom: hasPanel ? 12 : 24,
+        // `pb-3` before a panel, `max-sm:pb-4`.
+        paddingBottom: small ? 16 : hasPanel ? 12 : 24,
       }}
     >
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -190,7 +192,7 @@ export function DialogFooter({ children }: { children: ReactNode }) {
     <div
       style={{
         display: "flex",
-        flexDirection: small ? "column-reverse" : "row",
+        flexDirection: small ? "column" : "row",
         justifyContent: "flex-end",
         alignItems: small ? "stretch" : "center",
         gap: 8,
@@ -208,7 +210,7 @@ export function DialogFooter({ children }: { children: ReactNode }) {
         flexShrink: 0,
       }}
     >
-      {children}
+      {small ? reversedChildren(children) : children}
     </div>
   );
 }
@@ -307,8 +309,10 @@ export function TextField({
 }) {
   const theme = useTheme();
   const [focused, setFocused] = useState(false);
+  // input.tsx: `h-8.5 sm:h-7.5` inside the border, `text-base sm:text-sm`.
+  const small = useSmallViewport();
   return (
-    <FieldFrame focused={focused} invalid={invalid}>
+    <FieldFrame focused={focused} invalid={invalid} {...(small ? { height: 36 } : {})}>
       <input
         ref={inputRef}
         testId={testId}
@@ -323,10 +327,10 @@ export function TextField({
         style={{
           flexGrow: 1,
           minWidth: 0,
-          height: 24,
+          height: small ? 28 : 24,
           paddingLeft: 8,
           paddingRight: 8,
-          fontSize: 14,
+          fontSize: small ? 16 : 14,
           color: theme.foreground,
           fontFamily: mono ? FONTS.mono : FONTS.sans,
         }}
