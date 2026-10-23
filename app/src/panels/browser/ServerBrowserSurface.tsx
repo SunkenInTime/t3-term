@@ -603,11 +603,12 @@ export function ServerBrowserSurface(props: {
           testId={props.testId}
           tabIndex={0}
           onLayout={onLayout}
-          // A dialog or file chooser card sits over the page; the page must not
-          // capture presses meant for its buttons (see pointerBlocked).
-          onMouseDown={overlayOpen ? undefined : onMouseDown}
-          onMouseUp={overlayOpen ? undefined : onMouseUp}
-          onMouseMove={overlayOpen ? undefined : onMouseMove}
+          // A dialog or file chooser card sits over the page, or the empty and error
+          // states sit under the hidden page; the page must not capture presses
+          // meant for their buttons (see pointerBlocked).
+          onMouseDown={overlayOpen || hidden ? undefined : onMouseDown}
+          onMouseUp={overlayOpen || hidden ? undefined : onMouseUp}
+          onMouseMove={overlayOpen || hidden ? undefined : onMouseMove}
           onScroll={onScroll}
           onKeyDown={(event) => handleKey("down", event)}
           onKeyUp={(event) => handleKey("up", event)}
