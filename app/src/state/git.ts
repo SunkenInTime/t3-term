@@ -18,6 +18,7 @@ import type { EditorId, RunId, ScopedThreadRef } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
+import { composerDraftAtom, setDraftWorkspace } from "./composer.ts";
 import { termHome } from "../runtime/paths.ts";
 import { rightPanelOpenAtom, rightPanelSurfaceAtom, rightPanelSurfaceRequestAtom, type RightPanelSurface } from "./ui.ts";
 
@@ -162,8 +163,19 @@ export function openDiffSurface(
 
 // ── Pending workspace mode for server threads that have not started ──────
 
-export const pendingEnvModeAtom = Atom.family((_threadKey: string) =>
-  Atom.make<"local" | "worktree" | null>(null).pipe(Atom.keepAlive),
+/**
+ * The Local / New worktree choice for a server thread that has not started.
+ * It lives on the thread's composer draft, which sends it with the first
+ * message, so the details card and the composer's context strip agree.
+ * `threadKey` is `${environmentId}:${threadId}`.
+ */
+export const pendingEnvModeAtom = Atom.family((threadKey: string) =>
+  Atom.writable(
+    (get) => get(composerDraftAtom(`thread:${threadKey}`)).envMode ?? null,
+    (_ctx, mode: "local" | "worktree" | null) => {
+      if (mode !== null) setDraftWorkspace(`thread:${threadKey}`, { envMode: mode });
+    },
+  ),
 );
 
 // ── Thread details card presentation ──────────────────────────────────────
