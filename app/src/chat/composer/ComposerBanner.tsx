@@ -42,6 +42,8 @@ export interface ComposerTopBannersProps {
   readonly attachedAbove?: ReactNode;
   /** ChatView's notices (errors, provider status); the most urgent one docks, the rest stack. */
   readonly bannerItems?: ReadonlyArray<ComposerBannerStackEntry>;
+  /** web ComposerBanner.Dock's shoulder tab after the column (the stash badge), bottom-aligned on the right. */
+  readonly trailing?: ReactNode;
 }
 
 const NO_BANNER_ITEMS: ReadonlyArray<ComposerBannerStackEntry> = [];
@@ -53,6 +55,7 @@ export function ComposerTopBanners({
   showPlanFollowUp = planFollowUpTitle !== null,
   attachedAbove,
   bannerItems = NO_BANNER_ITEMS,
+  trailing,
 }: ComposerTopBannersProps) {
   const {
     activePendingApproval,
@@ -85,12 +88,24 @@ export function ComposerTopBanners({
   return (
     <BannerChainContext.Provider value={chain}>
       <div
+        style={{
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "flex-end",
+          gap: 4,
+          marginLeft: COMPOSER_DRAWER_INSET,
+          marginRight: COMPOSER_DRAWER_INSET,
+          minWidth: 0,
+        }}
+      >
+      <div
         testId="composer-banner-dock"
         style={{
           display: "flex",
           flexDirection: "column",
-          marginLeft: COMPOSER_DRAWER_INSET,
-          marginRight: COMPOSER_DRAWER_INSET,
+          flexGrow: 1,
+          flexShrink: 1,
+          flexBasis: 0,
           minWidth: 0,
         }}
       >
@@ -148,6 +163,8 @@ export function ComposerTopBanners({
             )}
           </BannerAttachment>
         ) : null}
+      </div>
+      {trailing}
       </div>
     </BannerChainContext.Provider>
   );

@@ -74,6 +74,7 @@ import {
   setComposerModelSelection,
   setComposerPrompt,
   setComposerRuntimeMode,
+  stepComposerEffort,
   stickyModelAtom,
 } from "../../state/composer.ts";
 import {
@@ -89,6 +90,7 @@ import { toast } from "../../ui/toast.tsx";
 import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { Text } from "../../ui/primitives.tsx";
 import {
+  type ComposerSubmissionIntent,
   type ComposerTrigger,
   detectComposerTrigger,
   extendReplacementRangeForTrailingSpace,
@@ -149,9 +151,16 @@ import { attachmentsFromPaths } from "./composerAttachmentPaths.ts";
 import { ContextWindowMeter } from "./ContextWindowMeter.tsx";
 import { ProviderModelPicker } from "./ProviderModelPicker.tsx";
 import { QueuedRunsControl } from "./QueuedRunsControl.tsx";
+import { registerShortcutHandler, resolveKeyEventCommand } from "../../keybindings/useGlobalKeybindings.ts";
+import { composerFocusAtom } from "../../state/keybindings.ts";
+import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
+import type { KeybindingCommand } from "@t3tools/contracts";
 import { TraitsPicker } from "./TraitsPicker.tsx";
 import { resolveComposerProviderModel } from "./useComposerProviderModel.ts";
 import { useComposerMenuItems } from "./useComposerMenuItems.ts";
+import { ComposerStashBadge, ComposerStashMenu } from "./ComposerStash.tsx";
+import { useComposerStash } from "./useComposerStash.ts";
+import { sendQueuedRunNow } from "./QueuedRunsControl.tsx";
 import { usePendingThreadRequests } from "./usePendingThreadRequests.ts";
 import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
@@ -615,6 +624,14 @@ function ComposerBody({
   });
   const activeMenuItem = menu.items.find((item) => item.id === activeMenuItemId) ?? null;
 
+  // ── Stash ─────────────────────────────────────────────────────────────
+  const stash = useComposerStash({
+    draftKey,
+    prompt,
+    commandMenuOpen: menuIsOpen,
+    onPromptRestored: () => focusEditor(),
+  });
+
   // ── Editing ───────────────────────────────────────────────────────────
   const writeEditorValue = (next: string) => {
     if (activePendingProgress?.activeQuestion) {
@@ -712,7 +729,7 @@ function ComposerBody({
     requests.pendingApprovals.length > 0 ? "steer" : settings.followUpBehavior;
   const isCompacting = false;
 
-  const submit = (dispatchMode?: ComposerDispatchMode) => {
+  const submit = (dispatchMode?: ComposerDispatchMode, submissionIntent: ComposerSubmissionIntent = "foreground") => {
     if (activePendingProgress) {
       requests.onAdvanceActivePendingUserInput();
       return;
@@ -763,6 +780,7 @@ function ComposerBody({
       text: promptAtSend.trim(),
       attachments,
       interactionMode,
+      background: submissionIntent === "background",
       dispatchMode:
         dispatchMode ??
         resolveComposerDispatchMode({
@@ -781,6 +799,7 @@ function ComposerBody({
     interactionMode: ProviderInteractionMode;
     dispatchMode: ComposerDispatchMode;
     sourceProposedPlan?: { threadId: ThreadId; planId: string };
+    background?: boolean;
   }) => {
     if (!project && !threadId) {
       toast({ type: "warning", title: "Choose a project first" });
@@ -828,6 +847,7 @@ function ComposerBody({
       respondToApproval: async (requestId, decision) =>
         (await requests.onRespondToApproval(requestId, decision)) as never,
       ...(input.sourceProposedPlan ? { sourceProposedPlan: input.sourceProposedPlan } : {}),
+      ...(input.background ? { background: { projectId } } : {}),
     });
     if (sent) {
       valueRef.current = "";
@@ -1035,6 +1055,7 @@ function ComposerBody({
     environmentUnavailable ||
     submissionError !== null ||
     menuOpen !== null ||
+    stash.menuOpen ||
     modelPickerOpen;
   const isResting =
     threadId !== null &&
@@ -1049,6 +1070,26 @@ function ComposerBody({
     const key = event.key;
     const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
     const ctrl = Boolean(mods.ctrl || mods.cmd);
+    // A key here proves editor focus even when focus moved without onFocus (focusElement).
+    if (!appAtomRegistry.get(composerFocusAtom)) appAtomRegistry.set(composerFocusAtom, true);
+    if (stash.menuOpen && !menuIsOpen) {
+      if (key === "escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        stash.close();
+        return;
+      }
+      if ((key === "tab" && !mods.shift) || (ctrl && (key === "n" || key === "j"))) {
+        event.preventDefault();
+        stash.nudge(1);
+        return;
+      }
+      if ((key === "tab" && mods.shift) || (ctrl && (key === "p" || key === "k"))) {
+        event.preventDefault();
+        stash.nudge(-1);
+        return;
+      }
+    }
     if (menuIsOpen) {
       if (key === "escape") {
         event.preventDefault();
@@ -1078,20 +1119,45 @@ function ComposerBody({
       toggleInteractionMode();
       return;
     }
-    if (key === "enter" && ctrl) {
+    // web composerSubmissionIntentForKey. Plain Enter never reaches here (the textarea's
+    // onSubmit takes it); modified Enter does. A chord bound to another command
+    // (mod+shift+enter steers the queue) is left to the window dispatcher.
+    if (key === "enter" && (ctrl || mods.alt)) {
+      const command = resolveKeyEventCommand(event, {
+        composerFocus: true,
+        draftThreadRoute: target.kind === "draft",
+        turnRunning: isRunning,
+      });
+      const submissionIntent: ComposerSubmissionIntent | null =
+        command === "composer.sendAlternate" && isRunning
+          ? "alternate"
+          : command === "composer.sendBackground" && target.kind === "draft"
+            ? "background"
+            : command === "composer.sendAndNewThread" && target.kind === "thread"
+              ? "background"
+              : command === null && !mods.shift && !mods.alt
+                ? "foreground"
+                : null;
+      if (submissionIntent === null) return;
       event.preventDefault();
+      if (event.isHeld) return;
       submit(
         resolveComposerDispatchMode({
           running: isRunning,
-          alternateModifier: true,
+          alternateModifier: submissionIntent === "alternate",
           activeTurnDefault: followUpBehavior,
           canSteer: !isCompacting,
         }),
+        submissionIntent,
       );
     }
   };
 
   const onEditorSubmit = () => {
+    if (stash.menuOpen && !menuIsOpen) {
+      stash.restoreHighlighted();
+      return;
+    }
     if (menuIsOpen) {
       const item = activeMenuItem ?? menu.items[0];
       if (item) {
@@ -1101,6 +1167,108 @@ function ComposerBody({
     }
     submit();
   };
+
+  // ── Shortcuts ─────────────────────────────────────────────────────────
+  // The window dispatcher (keybindings/useGlobalKeybindings.ts) resolves the chord; the
+  // mounted composer claims the commands whose targets it owns, like web's
+  // composerShortcutCommands, ChatView's queue commands and useComposerStash.
+  const steerInFlightRef = useRef(false);
+  const toggleMenu = (next: NonNullable<typeof menuOpen>) => {
+    appAtomRegistry.set(composerRestingAtom(draftKey), false);
+    setMenuOpen(appAtomRegistry.get(composerMenuOpenAtom) === next ? null : next);
+  };
+  const traitsVisible =
+    !showProviderUnavailable &&
+    shouldRenderTraitsControls({
+      provider: selectedProvider,
+      models: selectedProviderModels,
+      model: selectedModel,
+      modelOptions: traitsModelOptions,
+      promptUltrathink: readPromptUltrathink(prompt),
+      planModeEnabled: settings.planModeEnabled,
+    });
+  const shortcutCommands: Partial<Record<KeybindingCommand, (event: KeyEvent) => boolean>> = {
+    "composer.effort": (event) => {
+      if (!event.isHeld && traitsVisible) toggleMenu("traits");
+      return true;
+    },
+    "composer.mode": (event) => {
+      if (!event.isHeld && !showProviderUnavailable) toggleMenu("mode");
+      return true;
+    },
+    "composer.workspace": (event) => {
+      if (target.kind !== "draft") return false;
+      if (!event.isHeld) toggleMenu("env-mode");
+      return true;
+    },
+    "composer.branch": (event) => {
+      if (target.kind !== "draft") return false;
+      if (!event.isHeld) toggleMenu("branch");
+      return true;
+    },
+    "composer.increaseEffort": (event) => {
+      if (!event.isHeld) stepComposerEffort(1);
+      return true;
+    },
+    "composer.decreaseEffort": (event) => {
+      if (!event.isHeld) stepComposerEffort(-1);
+      return true;
+    },
+    // Always claimed, like web, even when this state cannot stash.
+    "composer.stash": (event) => {
+      if (event.isHeld) return true;
+      if (requests.pendingUserInputs.length > 0) {
+        stash.toggleMenu();
+        return true;
+      }
+      if (activePendingProgress || queuedEdit.isEditing) return true;
+      stash.stashCurrent();
+      return true;
+    },
+    // web QueuedRunsControl.editLatest: the newest queued message, only from the start of
+    // the editor and not while another queued message is being edited.
+    "thread.editQueuedMessage": (event) => {
+      if (threadId === null || !projection || queuedEdit.isEditing || caretRef.current !== 0) return false;
+      const latest = deriveThreadQueueWorkflowState(projection).queuedRuns.at(-1);
+      if (!latest) return false;
+      if (!event.isHeld) {
+        queuedEdit.beginEdit({
+          runId: latest.run.id,
+          messageId: latest.run.userMessageId,
+          text: latest.text,
+          attachments: latest.attachments,
+        });
+      }
+      return true;
+    },
+    // web QueuedRunsControl.steerNext: the first queued message starts now or steers.
+    "thread.steerQueuedMessage": (event) => {
+      if (threadId === null || !projection) return false;
+      const workflow = deriveThreadQueueWorkflowState(projection);
+      const next = workflow.queuedRuns[0];
+      if (!next || !(workflow.canSendNow || workflow.canPromoteToSteer)) return false;
+      if (!event.isHeld && !steerInFlightRef.current) {
+        steerInFlightRef.current = true;
+        void sendQueuedRunNow({ environmentId, threadId, workflow, queuedRunId: next.run.id }).finally(() => {
+          steerInFlightRef.current = false;
+        });
+      }
+      return true;
+    },
+  };
+  const shortcutCommandsRef = useRef(shortcutCommands);
+  shortcutCommandsRef.current = shortcutCommands;
+  useEffect(() => {
+    const unregister = Object.keys(shortcutCommandsRef.current).map((command) =>
+      registerShortcutHandler(command as KeybindingCommand, (resolved, event) =>
+        shortcutCommandsRef.current[resolved]?.(event) ?? false,
+      ),
+    );
+    return () => {
+      for (const dispose of unregister) dispose();
+      appAtomRegistry.set(composerFocusAtom, false);
+    };
+  }, []);
 
   // ── Placeholder ───────────────────────────────────────────────────────
   const placeholder = isComposerApprovalState
@@ -1245,6 +1413,14 @@ function ComposerBody({
       }}
     >
       <ComposerTopBanners
+        trailing={
+          <ComposerStashBadge
+            count={stash.entries.length}
+            menuOpen={stash.menuOpen}
+            pulsing={stash.pulsing}
+            onToggleMenu={stash.toggleMenu}
+          />
+        }
         requests={requests}
         canOperateThread={true}
         showPlanFollowUp={showPlanFollowUpPrompt && latestProposedPlan !== null}
@@ -1302,6 +1478,19 @@ function ComposerBody({
         }}
       >
         <SurfaceHighlight />
+        {stash.menuOpen && !menuIsOpen && surfaceWidth !== null ? (
+          <ComposerCommandMenuLayer surfaceWidth={surfaceWidth}>
+            <ComposerStashMenu
+              entries={stash.entries}
+              highlightedId={stash.highlightedId}
+              stashShortcutLabel={keybindings ? shortcutLabelForCommand(keybindings, "composer.stash") : null}
+              onHighlight={stash.setHighlightedId}
+              onRestore={stash.restore}
+              onDelete={stash.remove}
+              onClose={stash.close}
+            />
+          </ComposerCommandMenuLayer>
+        ) : null}
         {menuIsOpen && surfaceWidth !== null ? (
           <ComposerCommandMenuLayer surfaceWidth={surfaceWidth}>
             <ComposerCommandMenu
@@ -1367,8 +1556,14 @@ function ComposerBody({
               onChange={(event) => onEditorChange(event.value ?? "")}
               onSubmit={onEditorSubmit}
               onKeyDown={onEditorKeyDown}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
+              onFocus={() => {
+                setFocused(true);
+                appAtomRegistry.set(composerFocusAtom, true);
+              }}
+              onBlur={() => {
+                setFocused(false);
+                appAtomRegistry.set(composerFocusAtom, false);
+              }}
             />
           </div>
           {isResting ? (

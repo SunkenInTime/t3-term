@@ -42,6 +42,30 @@ export interface EditQueuedRunRequest {
   readonly attachments: ReadonlyArray<ChatAttachment>;
 }
 
+/**
+ * Sends a queued message now: starts it when nothing runs, otherwise steers it into the
+ * active run (web QueuedRunsControl sendQueuedMessage; also the mod+shift+enter shortcut).
+ */
+export async function sendQueuedRunNow(input: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly workflow: ReturnType<typeof deriveThreadQueueWorkflowState>;
+  readonly queuedRunId: RunId;
+}): Promise<void> {
+  const { environmentId, threadId, workflow, queuedRunId } = input;
+  if (workflow.canSendNow) {
+    await runAtomCommand(appAtomRegistry, threadEnvironment.resumeThreadQueue, {
+      environmentId,
+      input: { threadId, runId: queuedRunId },
+    });
+  } else if (workflow.activeRun !== null) {
+    await runAtomCommand(appAtomRegistry, threadEnvironment.promoteQueuedRun, {
+      environmentId,
+      input: { threadId, queuedRunId, targetRunId: workflow.activeRun.id },
+    });
+  }
+}
+
 /** Rows are at least 24px (their icon-xs buttons) with a 1px gap. */
 const FALLBACK_ROW_PITCH = 25;
 
@@ -106,17 +130,7 @@ export function QueuedRunsControl(props: {
     if (!canSend || steerInFlightRef.current) return;
     steerInFlightRef.current = true;
     setBusyRunId(queuedRunId);
-    if (workflow?.canSendNow) {
-      await runAtomCommand(appAtomRegistry, threadEnvironment.resumeThreadQueue, {
-        ...scope,
-        input: { threadId, runId: queuedRunId },
-      });
-    } else if (activeRun !== null) {
-      await runAtomCommand(appAtomRegistry, threadEnvironment.promoteQueuedRun, {
-        ...scope,
-        input: { threadId, queuedRunId, targetRunId: activeRun.id },
-      });
-    }
+    if (workflow) await sendQueuedRunNow({ ...scope, threadId, workflow, queuedRunId });
     steerInFlightRef.current = false;
     setBusyRunId(null);
   };
