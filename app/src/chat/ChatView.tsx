@@ -17,6 +17,7 @@ import { composerTargetKey } from "../state/composer.ts";
 import { ThreadDetailsCard } from "./details/ThreadDetailsCard.tsx";
 import { ChatHeader } from "./header/ChatHeader.tsx";
 import { Timeline } from "./timeline/Timeline.tsx";
+import { ChatBannerLane } from "./ChatBannerLane.tsx";
 import { PerfRegion } from "../dev/PerfRegion.tsx";
 
 export function ChatView({ environmentId, threadId }: { environmentId: EnvironmentId; threadId: ThreadId }) {
@@ -33,6 +34,7 @@ export function ChatView({ environmentId, threadId }: { environmentId: Environme
           style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, position: "relative" }}
           onScroll={(event) => reportTimelineWheel(composerTargetKey({ kind: "thread", environmentId, threadId }), event.deltaY ?? 0)}
         >
+          <ChatBannerLane composerTargetKey={composerTargetKey({ kind: "thread", environmentId, threadId })} />
           <PerfRegion id="timeline">
             <Timeline environmentId={environmentId} threadId={threadId} />
           </PerfRegion>

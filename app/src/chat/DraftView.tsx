@@ -19,6 +19,7 @@ import { LAYOUT, useTheme } from "../ui/theme.ts";
 import { composerTargetKey } from "../state/composer.ts";
 import { ChatLane, useDetailsCardInline } from "./chatLane.tsx";
 import { Composer } from "./composer/Composer.tsx";
+import { ChatBannerLane } from "./ChatBannerLane.tsx";
 import { DraftDetailsCard } from "./details/ThreadDetailsCard.tsx";
 import { DraftHeroHeadline } from "./draft/DraftHeroHeadline.tsx";
 import { NoActiveThreadState, NoProjectsHero } from "./draft/EmptyStates.tsx";
@@ -85,6 +86,9 @@ export function DraftView({ environmentId, projectId }: { environmentId: Environ
             </div>
           </ChatLane>
         </div>
+        {environmentId !== null && projectId !== null ? (
+          <ChatBannerLane composerTargetKey={composerTargetKey({ kind: "draft", environmentId, projectId })} overlay />
+        ) : null}
         {project && environmentId !== null && projectId !== null ? (
           <DraftDetailsCard
             environmentId={environmentId}

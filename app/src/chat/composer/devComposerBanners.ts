@@ -2,13 +2,14 @@
 // (a provider goal, a subagent asking, a usage limit, a /feedback upload to OpenAI,
 // a checkout on another branch). Inert unless set:
 //
-//   T3TERM_DEV_COMPOSER_BANNERS=goal,child-input,background,branch,limit,feedback-sent,feedback-failed,feedback-uploading
+//   T3TERM_DEV_COMPOSER_BANNERS=goal,child-input,background,branch,limit,feedback-sent,feedback-failed,
+//     feedback-uploading,provider-warning,provider-error,provider-unauthenticated,provider-unsupported
 //
 // Each flag only replaces the data the banner reads in the open thread; buttons on the
 // banners still run their real commands, so don't click them against a real thread.
 import type { CodexFeedbackSubmission } from "@t3tools/client-runtime/state/threads";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { MessageId } from "@t3tools/contracts";
+import { MessageId, type ServerProvider } from "@t3tools/contracts";
 
 const flags = new Set(
   (process.env.T3TERM_DEV_COMPOSER_BANNERS ?? "")
@@ -79,4 +80,29 @@ export function devBackgroundTasks<T>(threadId: string | null, real: ReadonlyArr
     { taskId: "dev-task-1", kind: "subagent", description: "Audit the scripts folder", childThreadId: threadId },
     { taskId: "dev-task-2", kind: "command", description: "sleep 75" },
   ] as unknown as ReadonlyArray<T>;
+}
+
+/**
+ * `provider-warning` / `provider-error` / `provider-unauthenticated` / `provider-unsupported`:
+ * the composer's selected provider reports that state, for the banner lane above the timeline.
+ */
+export function withDevProviderStatus<T extends ServerProvider | null>(status: T): T {
+  if (!status) return status;
+  if (flags.has("provider-warning")) {
+    return { ...status, status: "warning", message: "Rate limits are close: responses may slow down for the next hour." };
+  }
+  if (flags.has("provider-error")) {
+    return { ...status, status: "error", message: "The provider CLI exited during its health check (exit code 1)." };
+  }
+  if (flags.has("provider-unauthenticated")) {
+    return { ...status, status: "error", auth: { ...status.auth, status: "unauthenticated" }, message: undefined };
+  }
+  if (flags.has("provider-unsupported")) {
+    return {
+      ...status,
+      status: "ready",
+      compatibilityAdvisory: { status: "unsupported", message: "This CLI version has not been tested with T3 Code. Update it from Settings." },
+    } as T;
+  }
+  return status;
 }

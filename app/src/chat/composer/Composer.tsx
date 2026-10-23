@@ -177,6 +177,8 @@ import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
 import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
 import { useProjectCloneBanner } from "./useProjectCloneBanner.tsx";
+import { composerProviderStatusAtom } from "./composerProviderStatus.ts";
+import { withDevProviderStatus } from "./devComposerBanners.ts";
 import { feedbackUploadsInFlight, upsertFeedbackSubmission } from "./ComposerFeedback.tsx";
 import { parseCodexFeedbackCommand, submitCodexFeedback } from "@t3tools/client-runtime/state/threads";
 import { isUsageLimitsCommand, USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
@@ -752,6 +754,15 @@ function ComposerBody({
   };
 
   // ── Notices ───────────────────────────────────────────────────────────
+  // The banner lane above the timeline shows this provider's status (web ChatBannerLane).
+  const publishedProviderStatus = useMemo(
+    () => (showProviderUnavailable ? null : withDevProviderStatus(selectedProviderStatus)),
+    [showProviderUnavailable, selectedProviderStatus],
+  );
+  useEffect(() => {
+    const atom = composerProviderStatusAtom(draftKey);
+    if (appAtomRegistry.get(atom) !== publishedProviderStatus) appAtomRegistry.set(atom, publishedProviderStatus);
+  }, [draftKey, publishedProviderStatus]);
   const projectClone = useProjectCloneBanner(projectId ? { environmentId, projectId } : null);
   const banners = useComposerBannerItems({
     projectCloneBannerItem: projectClone.projectCloneBannerItem,
