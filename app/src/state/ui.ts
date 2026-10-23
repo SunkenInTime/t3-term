@@ -32,3 +32,10 @@ export const terminalOpenAtom = Atom.make(false).pipe(Atom.keepAlive);
 export const rightPanelOpenAtom = Atom.make(false).pipe(Atom.keepAlive);
 export const commandPaletteOpenAtom = Atom.make(false).pipe(Atom.keepAlive);
 export const sidebarSearchAtom = Atom.make("").pipe(Atom.keepAlive);
+
+export type RightPanelSurface = "terminal" | "files" | "diff" | "pull-request";
+export const rightPanelSurfaceAtom = Atom.make<RightPanelSurface>("diff").pipe(Atom.keepAlive);
+
+/** Open requests for pickers that keybindings and the palette can trigger. */
+export const modelPickerOpenAtom = Atom.make(false).pipe(Atom.keepAlive);
+export const findBarOpenAtom = Atom.make(false).pipe(Atom.keepAlive);
