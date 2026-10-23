@@ -31,6 +31,17 @@ export function surfaceStyle(theme: Palette): Style {
   };
 }
 
+/**
+ * dialog-glass box-shadow: light `0 24px 64px -24px rgb(0 0 0 / 65%)`, dark
+ * `0 24px 72px -20px rgb(0 0 0 / 90%)`. GPUI's blur spreads about twice as far
+ * as CSS's, so the blur radii are halved.
+ */
+export function dialogGlassShadow(theme: Palette): Style["boxShadow"] {
+  return theme.appearance === "dark"
+    ? { offsetX: 0, offsetY: 24, blurRadius: 36, spreadRadius: -20, color: "#000000e6" }
+    : { offsetX: 0, offsetY: 24, blurRadius: 32, spreadRadius: -24, color: "#000000a6" };
+}
+
 // ── Popover ─────────────────────────────────────────────────────────────
 
 export interface PopoverProps {
@@ -406,7 +417,7 @@ export function Dialog({
             borderWidth: 1,
             borderColor: theme.appearance === "dark" ? alpha("#ffffff", 0.08) : alpha(theme.foreground, 0.1),
             backgroundColor: theme.appearance === "dark" ? "#0f0f0f" : "#ffffff",
-            boxShadow: { offsetX: 0, offsetY: 24, blurRadius: 72, spreadRadius: -20, color: "#000000e6" },
+            boxShadow: dialogGlassShadow(theme),
             overflow: "hidden",
             position: "relative",
           }}
