@@ -54,6 +54,11 @@ function initialRoute(): Route {
         const [, environmentId, threadId] = process.env.T3TERM_ROUTE.split("/");
         return { kind: "thread", environmentId: environmentId as EnvironmentId, threadId: threadId as ThreadId };
       }
+      // draft/<environmentId>/<projectId>: that project's new-thread draft.
+      if (process.env.T3TERM_ROUTE?.startsWith("draft/")) {
+        const [, environmentId, projectId] = process.env.T3TERM_ROUTE.split("/");
+        return { kind: "draft", environmentId: environmentId as EnvironmentId, projectId: projectId as ProjectId };
+      }
       return { kind: "home" };
   }
 }

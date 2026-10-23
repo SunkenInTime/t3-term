@@ -16,6 +16,7 @@ import { sortProjectsByActivity, startNewThread } from "../palette/actions.ts";
 import { ProjectGlyph } from "../sidebar/ProjectGlyph.tsx";
 import { Text } from "../ui/primitives.tsx";
 import { LAYOUT, useTheme } from "../ui/theme.ts";
+import { useSmallViewport } from "../ui/viewport.tsx";
 import { composerTargetKey } from "../state/composer.ts";
 import { ChatLane, useDetailsCardInline } from "./chatLane.tsx";
 import { Composer } from "./composer/Composer.tsx";
@@ -23,15 +24,10 @@ import { DraftDetailsCard } from "./details/ThreadDetailsCard.tsx";
 import { DraftHeroHeadline } from "./draft/DraftHeroHeadline.tsx";
 import { NoActiveThreadState, NoProjectsHero } from "./draft/EmptyStates.tsx";
 
-/**
- * Space the composer takes. The composer positions itself at the bottom of its
- * container (thread layout), so the draft gives it a box of its own height.
- */
-const COMPOSER_SLOT_HEIGHT = 140;
-
 export function DraftView({ environmentId, projectId }: { environmentId: EnvironmentId | null; projectId: ProjectId | null }) {
   const theme = useTheme();
   const cardInline = useDetailsCardInline();
+  const small = useSmallViewport();
   const projects = useAtomValue(environmentProjects.projectsAtom);
   const project =
     environmentId !== null && projectId !== null
@@ -65,25 +61,25 @@ export function DraftView({ environmentId, projectId }: { environmentId: Environ
       {/* The chat canvas: the hero and composer share the thread view's lane, so they
           clear the details card the same way (web renders drafts through ChatView). */}
       <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, position: "relative" }}>
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            justifyContent: "center",
-            flexGrow: 1,
-            minHeight: 0,
-            // Lift the group a little above center, like web's hero.
-            paddingBottom: 140,
-          }}
-        >
-          <ChatLane cardInline={cardInline}>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%", paddingBottom: 16 }}>
-              <DraftHeroHeadline environmentId={environmentId} projectId={projectId} />
-            </div>
-            <div style={{ position: "relative", width: "100%", height: COMPOSER_SLOT_HEIGHT, flexShrink: 0 }}>
+        {/* web draft hero: the composer stack (with its `h-4 sm:h-5` spacer) is centered in
+            the canvas (`absolute inset-0 flex items-center`) and the headline hangs above it
+            (`absolute inset-x-0 bottom-full pb-4`). Two equal flex spacers center the stack;
+            the top one ends with the headline and lets it overflow upward. */}
+        <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
+          <div style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end", flexGrow: 1, flexShrink: 1, flexBasis: 0, minHeight: 0 }}>
+            <ChatLane cardInline={cardInline}>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%", paddingBottom: 16 }}>
+                <DraftHeroHeadline environmentId={environmentId} projectId={projectId} />
+              </div>
+            </ChatLane>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", flexShrink: 0 }}>
+            <ChatLane cardInline={cardInline}>
               <Composer target={{ kind: "draft", environmentId, projectId }} layout="lane" />
-            </div>
-          </ChatLane>
+              <div style={{ height: small ? 16 : 20, flexShrink: 0 }} />
+            </ChatLane>
+          </div>
+          <div style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, minHeight: 0 }} />
         </div>
         {project && environmentId !== null && projectId !== null ? (
           <DraftDetailsCard
