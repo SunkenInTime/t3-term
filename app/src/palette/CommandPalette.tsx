@@ -88,6 +88,7 @@ import {
   commandPaletteDetailAtom,
   dispatchCommandPalette,
   filesystemEnvironment,
+  searchPaletteSettings,
   sourceControlEnvironment,
 } from "../state/palette.ts";
 import {
@@ -1133,6 +1134,16 @@ function CommandModePalette({
     query,
     isInSubmenu: currentView !== null,
     projectSearchItems,
+    settingsSearchItems: searchPaletteSettings(query).map((item) => ({
+      kind: "action" as const,
+      value: `setting:${item.id}`,
+      searchTerms: [item.title, item.sectionLabel, ...item.searchTerms],
+      title: item.title,
+      description: `Settings · ${item.sectionLabel}`,
+      ...(item.secondary ? { secondary: true } : {}),
+      icon: <ItemIcon name="settings" />,
+      run: async () => item.open(),
+    })),
     threadSearchItems:
       linkedThreadSearch?.linkedThreads && query === linkedThreadSearch.query
         ? buildLinkedThreadActionItems({

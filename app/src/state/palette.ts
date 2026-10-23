@@ -83,3 +83,28 @@ export interface OpenFileRequest {
   readonly nonce: number;
 }
 export const openFileRequestAtom = Atom.make<OpenFileRequest | null>(null).pipe(Atom.keepAlive);
+
+/**
+ * Settings rows the palette lists under "Settings" for a query (web:
+ * searchSettings + useAvailableSettingsSearchItems). The settings area owns the
+ * search index and registers it here; without a provider the group is absent.
+ */
+export interface PaletteSettingsResult {
+  readonly id: string;
+  readonly title: string;
+  readonly sectionLabel: string;
+  readonly searchTerms: ReadonlyArray<string>;
+  readonly secondary?: boolean;
+  readonly open: () => void;
+}
+export type PaletteSettingsSearchProvider = (query: string) => ReadonlyArray<PaletteSettingsResult>;
+let settingsSearchProvider: PaletteSettingsSearchProvider | null = null;
+export function registerPaletteSettingsSearch(provider: PaletteSettingsSearchProvider): () => void {
+  settingsSearchProvider = provider;
+  return () => {
+    if (settingsSearchProvider === provider) settingsSearchProvider = null;
+  };
+}
+export function searchPaletteSettings(query: string): ReadonlyArray<PaletteSettingsResult> {
+  return settingsSearchProvider?.(query) ?? [];
+}
