@@ -29,6 +29,7 @@ import {
   terminalOpenAtom,
 } from "../state/ui.ts";
 import { toast } from "../ui/toast.tsx";
+import { handleUsageShortcutCommand } from "../usage/usageShortcuts.ts";
 import {
   copyActiveThreadReference,
   jumpToThread,
@@ -261,6 +262,10 @@ function runBuiltIn(command: KeybindingCommand, event: KeyEvent): boolean {
       return true;
     default:
       break;
+  }
+  if (command.startsWith("usage.") && route.kind === "usage") {
+    if (event.isHeld) return true;
+    return handleUsageShortcutCommand(command);
   }
   const direction = threadTraversalDirectionFromCommand(command);
   if (direction !== null) {
