@@ -1,6 +1,6 @@
 // Port of apps/web/src/components/settings/SettingsSidebarNav.tsx: brand row,
 // settings search ("/" or Ctrl+F), section nav, and the Back footer.
-import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomValue } from "@effect/atom-react";
 import { useGpuixRequired } from "@gpuix/react";
 import { useEffect, useRef, useState } from "react";
 
