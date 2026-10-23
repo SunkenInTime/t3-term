@@ -37,6 +37,7 @@ import {
 } from "../../web/components/ChatView.logic.ts";
 import { readEnvironmentScope, useEnvironmentScope } from "../../web/state/session.ts";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack.tsx";
+import { devBackgroundTasks, devChildInputs, devCurrentGitBranch } from "./devComposerBanners.ts";
 import { composerSendErrorAtom } from "./composerSend.ts";
 import {
   backgroundWorkBannerItem,
@@ -97,7 +98,7 @@ export function useThreadLifecycleBanners(input: ThreadLifecycleBannersInput) {
         effectiveEnvMode: activeThread.worktreePath ? "worktree" : "local",
         activeWorktreePath: activeThread.worktreePath,
         activeThreadBranch: activeThread.branch,
-        currentGitBranch: (gitStatus.data as { refName?: string | null } | null)?.refName ?? null,
+        currentGitBranch: devCurrentGitBranch((gitStatus.data as { refName?: string | null } | null)?.refName ?? null),
       })
     : null;
   const [isRestoringThreadBranch, setIsRestoringThreadBranch] = useState(false);
@@ -168,7 +169,8 @@ export function useThreadLifecycleBanners(input: ThreadLifecycleBannersInput) {
   // ── Background work ───────────────────────────────────────────────────
   // The interrupt path also accepts a completed run while its provider still
   // has background work.
-  const activeBackgroundTasks = !isWorking && activeThread ? deriveThreadPendingBackgroundTasks(projection) : [];
+  const activeBackgroundTasks =
+    !isWorking && activeThread ? devBackgroundTasks(threadId, deriveThreadPendingBackgroundTasks(projection)) : [];
   const [stoppingBackgroundWorkKey, setStoppingBackgroundWorkKey] = useState<string | null>(null);
   const isStoppingBackgroundWork = stoppingBackgroundWorkKey === `${environmentId}:${threadId}`;
   const handleStopBackgroundWork = async () => {
@@ -203,9 +205,9 @@ export function useThreadLifecycleBanners(input: ThreadLifecycleBannersInput) {
     }
     appAtomRegistry.set(routeAtom, { kind: "thread", environmentId, threadId: target });
   };
-  const childThreadInputs = useAtomValue(
+  const childThreadInputs = devChildInputs(shell, useAtomValue(
     threadId === null ? NO_CHILD_INPUTS_ATOM : environmentThreadShells.childThreadInputsAtom({ environmentId, threadId }),
-  );
+  ));
   const childInputBanner = childInputBannerItem({
     childThreadInputs,
     parentAwaitingUser: parentAwaitingUser || Boolean(activeThread?.hasPendingUserInput),

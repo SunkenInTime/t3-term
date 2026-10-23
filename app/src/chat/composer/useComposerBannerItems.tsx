@@ -23,6 +23,7 @@ import { usageLimitRecoveryBannerItem } from "./UsageLimitRecoveryBanner.tsx";
 import { useSystemComposerBanners } from "./useSystemComposerBanners.tsx";
 import { type StandaloneSendContext, useThreadLifecycleBanners } from "./useThreadLifecycleBanners.tsx";
 import { useUsageLimitsPanel } from "./useUsageLimitsPanel.ts";
+import { devFeedbackSubmissions, withDevGoal, withDevUsageLimitRuntime } from "./devComposerBanners.ts";
 
 const NO_AUTO_UPDATE_ENVIRONMENTS: never[] = [];
 const EMPTY_USAGE_LIMIT_SOURCES: UsageLimitSourceSnapshots = [];
@@ -54,7 +55,9 @@ export interface ComposerBannerItemsInput {
 }
 
 export function useComposerBannerItems(input: ComposerBannerItemsInput) {
-  const { environmentId, threadId, draftKey, shell, runtime } = input;
+  const { environmentId, threadId, draftKey } = input;
+  const shell = withDevGoal(input.shell);
+  const runtime = withDevUsageLimitRuntime(input.runtime);
   const routeThreadKey = threadId ? `${environmentId}:${threadId}` : draftKey;
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
 
@@ -101,7 +104,7 @@ export function useComposerBannerItems(input: ComposerBannerItemsInput) {
   });
 
   // ── Feedback (/feedback) ──────────────────────────────────────────────
-  const feedbackSubmissions = useAtomValue(feedbackSubmissionsAtom(routeThreadKey));
+  const feedbackSubmissions = devFeedbackSubmissions(useAtomValue(feedbackSubmissionsAtom(routeThreadKey)));
   const feedbackItems = feedbackSubmissions.flatMap((submission) => {
     const item = feedbackBannerItem(submission, () => removeFeedbackSubmission(routeThreadKey, submission.id));
     return item ? [item] : [];
