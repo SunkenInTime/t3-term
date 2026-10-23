@@ -1,9 +1,14 @@
 // Command palette UI state (web keeps it in CommandPalette's reducer and opens it
 // through commandPaletteBus.ts). `commandPaletteOpenAtom` in ui.ts stays the open
 // flag every area may set; this module adds mode and the open intent.
+import { createFilesystemEnvironmentAtoms } from "@t3tools/client-runtime/state/filesystem";
+import { createOrchestrationEnvironmentAtoms } from "@t3tools/client-runtime/state/orchestration";
+import { createEnvironmentRpcQueryAtomFamily } from "@t3tools/client-runtime/state/runtime";
+import { createSourceControlEnvironmentAtoms } from "@t3tools/client-runtime/state/source-control";
+import { type EnvironmentId, type ThreadId, WS_METHODS } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
-import { appAtomRegistry } from "../runtime/runtime.ts";
+import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
 import {
   reduceCommandPaletteUiState,
   type CommandPaletteUiAction,
@@ -55,14 +60,6 @@ export function isCommandPaletteOpen(): boolean {
 
 // ── Queries the palette runs (web: state/filesystem.ts, orchestration.ts,
 // sourceControl.ts, projects.ts projectContentSearch) ────────────────────
-
-import { createFilesystemEnvironmentAtoms } from "@t3tools/client-runtime/state/filesystem";
-import { createOrchestrationEnvironmentAtoms } from "@t3tools/client-runtime/state/orchestration";
-import { createEnvironmentRpcQueryAtomFamily } from "@t3tools/client-runtime/state/runtime";
-import { createSourceControlEnvironmentAtoms } from "@t3tools/client-runtime/state/source-control";
-import { type EnvironmentId, type ThreadId, WS_METHODS } from "@t3tools/contracts";
-
-import { connectionAtomRuntime } from "../runtime/runtime.ts";
 
 export const filesystemEnvironment = createFilesystemEnvironmentAtoms(connectionAtomRuntime);
 export const orchestrationEnvironment = createOrchestrationEnvironmentAtoms(connectionAtomRuntime);
