@@ -449,6 +449,8 @@ export interface PullRequestDetailViewProps {
   threadRef?: ScopedThreadRef | null;
   /** Where the selected tab lives; the page keeps it on the panel surface. */
   onTabChange?: (tab: PullRequestDetailTab) => void;
+  /** Back to the thread's list of pull requests (PullRequestDetailCrumbs' arrow). */
+  onBack?: () => void;
 }
 
 export function PullRequestDetailView({
@@ -461,6 +463,7 @@ export function PullRequestDetailView({
   attachTarget = null,
   threadRef = null,
   onTabChange,
+  onBack,
 }: PullRequestDetailViewProps) {
   const theme = useTheme();
   const projects = useAtomValue(environmentProjects.projectsAtom);
@@ -1137,6 +1140,13 @@ export function PullRequestDetailView({
               paddingLeft: 16,
             }}
           >
+            {onBack ? (
+              <Tooltip content="Back to pull requests" side="top">
+                <div style={{ display: "flex", marginLeft: -6 }}>
+                  <IconButton icon="arrow-left" size={20} iconSize={14} onClick={onBack} testId="pr-back" />
+                </div>
+              </Tooltip>
+            ) : null}
             {detail && statePresentation ? (
               condensed ? (
                 <>

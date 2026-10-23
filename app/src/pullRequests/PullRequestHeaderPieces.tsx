@@ -306,7 +306,7 @@ export function PullRequestBaseBranch({
   if (!freshness) {
     return (
       <Tooltip content={stacked ? `Stacked on ${baseBranch}` : baseBranch} side="top">
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, minWidth: 0, flexShrink: 0, maxWidth: "40%" }}>
+        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, minWidth: 0, flexShrink: 1, maxWidth: 240 }}>
           {label(color)}
         </div>
       </Tooltip>
@@ -332,7 +332,7 @@ export function PullRequestBaseBranch({
       onMouseEnter={holdOpen}
       onMouseLeave={letClose}
       onClick={() => setOpen(!open)}
-      style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, minWidth: 0, flexShrink: 0, maxWidth: "40%", position: "relative", cursor: "default" }}
+      style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, minWidth: 0, flexShrink: 1, maxWidth: 240, position: "relative", cursor: "default" }}
     >
       {label(theme.warningForeground)}
       <Icon name="triangle-alert" size={iconSize} color={theme.warningForeground} />
