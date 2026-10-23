@@ -6,14 +6,24 @@ import { appAtomRegistry } from "../runtime/runtime.ts";
 import { environmentCatalog } from "../state/environment.ts";
 import { routeAtom, sidebarOpenAtom } from "../state/ui.ts";
 import { Sidebar } from "../sidebar/Sidebar.tsx";
+import { SettingsSidebar } from "../settings/SettingsView.tsx";
+import { CommandPalette } from "../palette/CommandPalette.tsx";
+import { DialogHost } from "../dialogs/DialogHost.tsx";
 import { MainView } from "./MainView.tsx";
 import { DARK, ThemeContext } from "../ui/theme.ts";
+import { TooltipProvider } from "../ui/overlay.tsx";
+import { ToastHost } from "../ui/toast.tsx";
 
 export function App({ boot }: { boot: Boot }) {
   return (
     <RegistryContext.Provider value={appAtomRegistry}>
       <ThemeContext.Provider value={DARK}>
-        <Shell boot={boot} />
+        <TooltipProvider>
+          <Shell boot={boot} />
+          <CommandPalette />
+          <DialogHost />
+          <ToastHost />
+        </TooltipProvider>
       </ThemeContext.Provider>
     </RegistryContext.Provider>
   );
@@ -26,7 +36,7 @@ function Shell({ boot }: { boot: Boot }) {
   useEffect(() => {
     if (boot.error) console.error(boot.error);
   }, [boot.error]);
-  useAtomValue(routeAtom);
+  const route = useAtomValue(routeAtom);
   return (
     <div
       style={{
@@ -37,7 +47,7 @@ function Shell({ boot }: { boot: Boot }) {
         backgroundColor: DARK.background,
       }}
     >
-      {sidebarOpen ? <Sidebar /> : null}
+      {sidebarOpen ? route.kind === "settings" ? <SettingsSidebar /> : <Sidebar /> : null}
       <MainView />
     </div>
   );

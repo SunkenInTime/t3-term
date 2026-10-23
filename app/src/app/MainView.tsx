@@ -13,6 +13,8 @@ import { ProjectGlyph } from "../sidebar/ProjectGlyph.tsx";
 import { IconButton, Text } from "../ui/primitives.tsx";
 import { LAYOUT, useTheme } from "../ui/theme.ts";
 import { ChatView } from "../chat/ChatView.tsx";
+import { DraftView } from "../chat/DraftView.tsx";
+import { SettingsView } from "../settings/SettingsView.tsx";
 
 export function MainView() {
   const theme = useTheme();
@@ -30,6 +32,10 @@ export function MainView() {
     >
       {route.kind === "thread" ? (
         <ChatView environmentId={route.environmentId} threadId={route.threadId} />
+      ) : route.kind === "draft" ? (
+        <DraftView environmentId={route.environmentId} projectId={route.projectId} />
+      ) : route.kind === "settings" ? (
+        <SettingsView page={route.page} />
       ) : (
         <>
           <MainHeader crumbs={<Text weight={500}>New thread</Text>} />

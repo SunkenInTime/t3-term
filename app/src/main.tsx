@@ -9,6 +9,7 @@ import { render } from "@gpuix/react";
 
 import { App } from "./app/App.tsx";
 import { bootstrapConnections, parseArgs } from "./connect/bootstrap.ts";
+import { handleGlobalKeyDown } from "./keybindings/useGlobalKeybindings.ts";
 
 const args = parseArgs(process.argv.slice(2));
 if (args.help) {
@@ -28,6 +29,7 @@ render(<App boot={boot} />, {
   terminal: args.terminal,
   focus: !background,
   keyboardFocusDim: false,
+  onKeyDown: (event) => handleGlobalKeyDown(event),
   titlebarTransparent: process.platform === "darwin",
   trafficLightX: 16,
   trafficLightY: 18,
