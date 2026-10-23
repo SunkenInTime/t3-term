@@ -91,13 +91,8 @@ import {
   searchPaletteSettings,
   sourceControlEnvironment,
 } from "../state/palette.ts";
-import {
-  commandPaletteOpenAtom,
-  findBarOpenAtom,
-  rightPanelOpenAtom,
-  rightPanelSurfaceAtom,
-  routeAtom,
-} from "../state/ui.ts";
+import { openRightPanelSurface } from "../state/git.ts";
+import { commandPaletteOpenAtom, findBarOpenAtom, routeAtom } from "../state/ui.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { ProjectGlyph } from "../sidebar/ProjectGlyph.tsx";
 import { Icon, type IconName } from "../ui/Icon.tsx";
@@ -944,10 +939,7 @@ function CommandModePalette({
         title: "Show linked pull requests",
         disabled: visibleThreadPullRequests(activeThread.pullRequests).length === 0,
         icon: <ItemIcon name="link-2" />,
-        run: async () => {
-          appAtomRegistry.set(rightPanelSurfaceAtom, "pull-request");
-          appAtomRegistry.set(rightPanelOpenAtom, true);
-        },
+        run: async () => openRightPanelSurface("pull-request"),
       });
     }
   }

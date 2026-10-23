@@ -23,17 +23,5 @@ export const activeKeybindingsAtom = Atom.make((get): ResolvedKeybindingsConfig 
   return mergeWithDefaultKeybindings(custom ?? []);
 }).pipe(Atom.keepAlive);
 
-/**
- * True while the embedded terminal has keyboard focus. The terminal area sets
- * it from its onFocus/onBlur; `when: "terminalFocus"` clauses read it.
- */
-export const terminalFocusAtom = Atom.make(false).pipe(Atom.keepAlive);
-
-/**
- * The thread order the sidebar shows, as `${environmentId}:${threadId}` keys,
- * for thread.previous/next and the Mod+1..9 jumps. The sidebar writes its exact
- * order here; until it does, the dispatcher derives pinned + active order itself.
- */
-export const sidebarThreadOrderAtom = Atom.make<ReadonlyArray<string> | null>(null).pipe(
-  Atom.keepAlive,
-);
+/** Owned by the terminal area (TerminalView sets it on focus/blur); `when: "terminalFocus"` reads it. */
+export { terminalFocusAtom } from "./terminal.ts";

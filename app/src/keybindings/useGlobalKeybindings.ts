@@ -10,6 +10,7 @@
 // terminal.*, the sidebar for thread.undo), and built-in fallbacks cover the
 // commands that only change app state.
 import type { KeyEvent } from "@gpuix/react";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { KeybindingCommand } from "@t3tools/contracts";
 import { US_SHIFTED_TO_UNSHIFTED_KEYS } from "@t3tools/shared/keybindings";
 
@@ -31,22 +32,29 @@ import {
 import { toast } from "../ui/toast.tsx";
 import { handleUsageShortcutCommand } from "../usage/usageShortcuts.ts";
 import {
-  copyActiveThreadReference,
-  jumpToThread,
   navigateAdjacentThread,
+  navigateToThreadAtIndex,
+  settleAndAdvance,
+  togglePinOpenThread,
+  undoLatestThreadAction,
+} from "../sidebar/threadActions.ts";
+import { openDiffSurface } from "../state/git.ts";
+import { rightPanelAddMenuOpenAtom } from "../state/rightPanel.ts";
+import { sidebarJumpHintsVisibleAtom } from "../state/sidebar.ts";
+import {
+  copyActiveThreadReference,
   readProjects,
   readRouteContext,
   readScratchTargetEnvironmentId,
   readServerConfig,
   startNewThreadFromContext,
   startScratchThread,
-  toggleActiveThreadPinned,
-  toggleActiveThreadSettled,
 } from "../palette/actions.ts";
 import {
   resolveShortcutCommand,
   threadJumpIndexFromCommand,
   threadTraversalDirectionFromCommand,
+  shouldShowThreadJumpHintsForModifiers,
   type ShortcutEventLike,
   type ShortcutMatchContext,
 } from "../web/keybindings.ts";
@@ -214,11 +222,11 @@ function runBuiltIn(command: KeybindingCommand, event: KeyEvent): boolean {
       toggle(detailsPanelOpenAtom);
       return true;
     case "diff.toggle": {
-      if (!onThreadRoute()) return false;
+      if (route.kind !== "thread") return false;
       const showingDiff =
         appAtomRegistry.get(rightPanelOpenAtom) && appAtomRegistry.get(rightPanelSurfaceAtom) === "diff";
-      appAtomRegistry.set(rightPanelSurfaceAtom, "diff");
-      appAtomRegistry.set(rightPanelOpenAtom, !showingDiff);
+      if (showingDiff) appAtomRegistry.set(rightPanelOpenAtom, false);
+      else openDiffSurface(scopeThreadRef(route.environmentId, route.threadId));
       return true;
     }
     case "chat.new": {
@@ -254,11 +262,15 @@ function runBuiltIn(command: KeybindingCommand, event: KeyEvent): boolean {
       return true;
     case "thread.settle":
       if (route.kind !== "thread") return false;
-      void toggleActiveThreadSettled();
-      return true;
+      return settleAndAdvance();
     case "thread.pin":
       if (route.kind !== "thread") return false;
-      void toggleActiveThreadPinned();
+      return togglePinOpenThread();
+    case "thread.undo":
+      return undoLatestThreadAction();
+    case "rightPanel.new":
+      if (!onThreadRoute() || !appAtomRegistry.get(rightPanelOpenAtom)) return false;
+      appAtomRegistry.set(rightPanelAddMenuOpenAtom, true);
       return true;
     default:
       break;
@@ -275,12 +287,51 @@ function runBuiltIn(command: KeybindingCommand, event: KeyEvent): boolean {
   const jumpIndex = threadJumpIndexFromCommand(command);
   if (jumpIndex !== null) {
     if (event.isHeld) return true;
-    return jumpToThread(jumpIndex);
+    return navigateToThreadAtIndex(jumpIndex);
   }
   return false;
 }
 
+// ── Thread jump hints (Sidebar useThreadJumpHintVisibility) ─────────────
+
+const MODIFIER_KEYS: Readonly<Record<string, "ctrl" | "cmd" | "alt" | "shift">> = {
+  control: "ctrl",
+  ctrl: "ctrl",
+  platform: "cmd",
+  cmd: "cmd",
+  meta: "cmd",
+  super: "cmd",
+  alt: "alt",
+  option: "alt",
+  shift: "shift",
+};
+
+/** The modifier state with this keystroke applied (GPUI reports the state before it). */
+function modifiersAfter(event: KeyEvent, down: boolean) {
+  const modifiers = { ctrl: false, cmd: false, alt: false, shift: false, ...event.modifiers };
+  const changed = MODIFIER_KEYS[(event.key ?? "").toLowerCase()];
+  if (changed) modifiers[changed] = down;
+  return { ctrlKey: modifiers.ctrl, metaKey: modifiers.cmd, altKey: modifiers.alt, shiftKey: modifiers.shift };
+}
+
+function updateJumpHints(event: KeyEvent, down: boolean): void {
+  const isModifier = MODIFIER_KEYS[(event.key ?? "").toLowerCase()] !== undefined;
+  const visible =
+    isModifier &&
+    shouldShowThreadJumpHintsForModifiers(modifiersAfter(event, down), appAtomRegistry.get(activeKeybindingsAtom), {
+      context: readShortcutContext(),
+    });
+  if (appAtomRegistry.get(sidebarJumpHintsVisibleAtom) !== visible) {
+    appAtomRegistry.set(sidebarJumpHintsVisibleAtom, visible);
+  }
+}
+
+export function handleGlobalKeyUp(event: KeyEvent): void {
+  updateJumpHints(event, false);
+}
+
 export function handleGlobalKeyDown(event: KeyEvent): void {
+  updateJumpHints(event, true);
   if (event.defaultPrevented) return;
   const command = resolveKeyEventCommand(event);
   if (command === null) return;

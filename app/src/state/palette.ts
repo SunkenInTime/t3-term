@@ -5,7 +5,7 @@ import { createFilesystemEnvironmentAtoms } from "@t3tools/client-runtime/state/
 import { createOrchestrationEnvironmentAtoms } from "@t3tools/client-runtime/state/orchestration";
 import { createEnvironmentRpcQueryAtomFamily } from "@t3tools/client-runtime/state/runtime";
 import { createSourceControlEnvironmentAtoms } from "@t3tools/client-runtime/state/source-control";
-import { type EnvironmentId, type ThreadId, WS_METHODS } from "@t3tools/contracts";
+import { WS_METHODS } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
@@ -15,6 +15,7 @@ import {
   type CommandPaletteUiState,
 } from "../web/components/CommandPalette.logic.ts";
 import type { CommandPaletteOpenDetail } from "../web/commandPaletteBus.ts";
+import { commandPaletteModeRequestAtom } from "./sidebar.ts";
 import { commandPaletteOpenAtom } from "./ui.ts";
 
 type PaletteDetail = Omit<CommandPaletteUiState, "open">;
@@ -71,18 +72,6 @@ export const projectContentSearch = createEnvironmentRpcQueryAtomFamily(connecti
   idleTtlMs: 60_000,
 });
 
-/**
- * "Go to file" and content-search results ask the right panel to open a file
- * (web: useRightPanelStore.openFile). The Files surface reads and clears this.
- */
-export interface OpenFileRequest {
-  readonly environmentId: EnvironmentId;
-  readonly threadId: ThreadId;
-  readonly path: string;
-  readonly line: number | null;
-  readonly nonce: number;
-}
-export const openFileRequestAtom = Atom.make<OpenFileRequest | null>(null).pipe(Atom.keepAlive);
 
 /**
  * Settings rows the palette lists under "Settings" for a query (web:
@@ -108,3 +97,11 @@ export function registerPaletteSettingsSearch(provider: PaletteSettingsSearchPro
 export function searchPaletteSettings(query: string): ReadonlyArray<PaletteSettingsResult> {
   return settingsSearchProvider?.(query) ?? [];
 }
+
+// The sidebar asks for a palette view through its own request atom
+// (state/sidebar.ts commandPaletteModeRequestAtom); apply each request once.
+appAtomRegistry.subscribe(commandPaletteModeRequestAtom, (request) => {
+  if (request === null) return;
+  appAtomRegistry.set(commandPaletteModeRequestAtom, null);
+  openCommandPalette({ open: request.open });
+});

@@ -233,9 +233,8 @@ export function Sidebar() {
       });
       return;
     }
-    // Web opens the palette's "New thread in…" picker here. Until the palette
-    // implements that mode, start the draft in the current project as well.
-    setRoute({ kind: "draft", environmentId: newThreadContextProject.environmentId, projectId: newThreadContextProject.projectId });
+    // Web opens the palette's "New thread in…" picker here.
+    openCommandPaletteMode("new-thread-in");
   };
 
   // web: newThreadShortcutLabel / newThreadInProjectShortcutLabel / showNewThreadInProjectHint

@@ -13,13 +13,7 @@ import {
   runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
-import {
-  getThreadSortTimestamp,
-  sortActiveThreadsByOrderKey,
-  sortPinnedThreadsByOrderKey,
-  toSortableTimestamp,
-} from "@t3tools/client-runtime/state/thread-sort";
+import { getThreadSortTimestamp, toSortableTimestamp } from "@t3tools/client-runtime/state/thread-sort";
 import type {
   EnvironmentId,
   ProjectId,
@@ -39,7 +33,6 @@ import {
   serverEnvironment,
   threadEnvironment,
 } from "../state/environment.ts";
-import { sidebarThreadOrderAtom } from "../state/keybindings.ts";
 import { environmentPresentations } from "../state/navigation.ts";
 import { routeAtom } from "../state/ui.ts";
 import { toast } from "../ui/toast.tsx";
@@ -221,64 +214,6 @@ export function readScratchTargetEnvironmentId(): EnvironmentId | null {
   return scratchEnvironmentId(readRouteContext().environmentId);
 }
 
-// ── Thread traversal (thread.previous/next, Mod+1..9) ───────────────────
-
-function threadKey(thread: Pick<EnvironmentThreadShell, "environmentId" | "id">): string {
-  return scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-}
-
-/**
- * The sidebar's visible order. The sidebar publishes it to sidebarThreadOrderAtom;
- * without that, pinned then active threads in the sidebar's sort.
- */
-export function readThreadNavigationOrder(): ReadonlyArray<string> {
-  const published = appAtomRegistry.get(sidebarThreadOrderAtom);
-  if (published) return published;
-  const now = new Date().toISOString();
-  const pinned: EnvironmentThreadShell[] = [];
-  const active: EnvironmentThreadShell[] = [];
-  for (const thread of readThreads()) {
-    const capabilities = readServerConfig(thread.environmentId)?.environment.capabilities;
-    if (capabilities?.threadSnooze === true && effectiveSnoozed(thread, { now })) continue;
-    if (capabilities?.threadSettlement === true && thread.settledOverride === "settled") continue;
-    (thread.pinnedAt != null ? pinned : active).push(thread);
-  }
-  return [...sortPinnedThreadsByOrderKey(pinned), ...sortActiveThreadsByOrderKey(active)].map(threadKey);
-}
-
-function openThreadKey(key: string | undefined): boolean {
-  if (!key) return false;
-  const thread = readThreads().find((candidate) => threadKey(candidate) === key);
-  if (!thread) return false;
-  openThread({ environmentId: thread.environmentId, threadId: thread.id });
-  return true;
-}
-
-export function navigateAdjacentThread(direction: "previous" | "next"): boolean {
-  const order = readThreadNavigationOrder();
-  if (order.length === 0) return false;
-  const context = readRouteContext();
-  const currentKey =
-    context.environmentId !== null && context.threadId !== null
-      ? scopedThreadKey(scopeThreadRef(context.environmentId, context.threadId))
-      : null;
-  const index = currentKey === null ? -1 : order.indexOf(currentKey);
-  // resolveAdjacentThreadId: from no current thread, previous starts at the end.
-  const nextIndex =
-    index === -1
-      ? direction === "next"
-        ? 0
-        : order.length - 1
-      : direction === "next"
-        ? (index + 1) % order.length
-        : (index - 1 + order.length) % order.length;
-  return openThreadKey(order[nextIndex]);
-}
-
-export function jumpToThread(index: number): boolean {
-  return openThreadKey(readThreadNavigationOrder()[index]);
-}
-
 // ── Active-thread actions ───────────────────────────────────────────────
 
 export function readActiveThread(): EnvironmentThreadShell | null {
@@ -306,43 +241,5 @@ export async function copyActiveThreadReference(): Promise<void> {
     toast({ type: "success", title: target.successTitle, description: target.value });
   } else {
     toast({ type: "error", title: target.failureTitle, description: "The system clipboard is unavailable." });
-  }
-}
-
-export async function toggleActiveThreadSettled(): Promise<void> {
-  const thread = readActiveThread();
-  if (!thread) return;
-  if (readServerConfig(thread.environmentId)?.environment.capabilities.threadSettlement !== true) return;
-  const settled = thread.settledOverride === "settled";
-  const result = settled
-    ? await runAtomCommand(appAtomRegistry, threadEnvironment.unsettle, {
-        environmentId: thread.environmentId,
-        input: { threadId: thread.id, reason: "user" },
-      })
-    : await runAtomCommand(appAtomRegistry, threadEnvironment.settle, {
-        environmentId: thread.environmentId,
-        input: { threadId: thread.id },
-      });
-  if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-    reportError(settled ? "Failed to unsettle thread" : "Failed to settle thread", squashAtomCommandFailure(result));
-  }
-}
-
-export async function toggleActiveThreadPinned(): Promise<void> {
-  const thread = readActiveThread();
-  if (!thread) return;
-  if (readServerConfig(thread.environmentId)?.environment.capabilities.threadPinning !== true) return;
-  const pinned = thread.pinnedAt != null;
-  const result = pinned
-    ? await runAtomCommand(appAtomRegistry, threadEnvironment.unpin, {
-        environmentId: thread.environmentId,
-        input: { threadId: thread.id },
-      })
-    : await runAtomCommand(appAtomRegistry, threadEnvironment.pin, {
-        environmentId: thread.environmentId,
-        input: { threadId: thread.id },
-      });
-  if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-    reportError(pinned ? "Failed to unpin thread" : "Failed to pin thread", squashAtomCommandFailure(result));
   }
 }

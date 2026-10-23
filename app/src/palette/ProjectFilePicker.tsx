@@ -1,16 +1,14 @@
 // Port of apps/web/src/components/files/ProjectFilePicker.tsx (+ ProjectFilePicker.logic.ts
-// via useActiveProjectTarget). Opening a file asks the right panel's Files
-// surface through openFileRequestAtom.
+// via useActiveProjectTarget). Opening a file goes through the right panel
+// (openFileInActiveThread).
 import { useAtomValue } from "@effect/atom-react";
 import type { KeyEvent } from "@gpuix/react";
 import type { ProjectEntry } from "@t3tools/contracts";
 import { normalizeSearchQuery } from "@t3tools/shared/searchRanking";
 import { useRef, useState } from "react";
 
-import { appAtomRegistry } from "../runtime/runtime.ts";
 import { activeKeybindingsAtom } from "../state/keybindings.ts";
-import { openFileRequestAtom } from "../state/palette.ts";
-import { rightPanelOpenAtom, rightPanelSurfaceAtom } from "../state/ui.ts";
+import { openFileInActiveThread } from "../state/rightPanel.ts";
 import { Text } from "../ui/primitives.tsx";
 import { alpha, useTheme } from "../ui/theme.ts";
 import { buildCommandPaletteRows, type CommandPaletteActionItem } from "../web/components/CommandPalette.logic.ts";
@@ -118,16 +116,8 @@ function emptyMessage(query: string, error: string | null, isPending: boolean): 
   return isSearching ? "No matching files." : "No files found.";
 }
 
-export function requestOpenFile(target: ActiveProjectTarget, path: string, line: number | null): void {
-  appAtomRegistry.set(openFileRequestAtom, {
-    environmentId: target.environmentId,
-    threadId: target.threadId,
-    path,
-    line,
-    nonce: Date.now(),
-  });
-  appAtomRegistry.set(rightPanelSurfaceAtom, "files");
-  appAtomRegistry.set(rightPanelOpenAtom, true);
+export function requestOpenFile(_target: ActiveProjectTarget, path: string, line: number | null): void {
+  openFileInActiveThread(path, line ?? undefined);
 }
 
 export function ProjectFilePicker({ onClose, onBack }: { onClose: () => void; onBack: () => void }) {
