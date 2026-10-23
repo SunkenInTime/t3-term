@@ -1,98 +1,860 @@
-// OWNER: timeline agent. First-pass renderer; replace with the port of
-// apps/web/src/components/chat/MessagesTimeline.tsx and its row components.
+// The chat timeline: apps/web/src/components/chat/ThreadTimeline.tsx +
+// MessagesTimeline.tsx, with the thread-state wiring ChatView.tsx does for them
+// (latest run, working state, checkpoints, history paging, rewind and fork).
 import { useAtomValue } from "@effect/atom-react";
-import type { EnvironmentId, OrchestrationV2ProjectedTurnItem, ThreadId } from "@t3tools/contracts";
-import * as Option from "effect/Option";
-import { AsyncResult } from "effect/reactivity";
-import { memo } from "react";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { HandoffTimelineRun } from "@t3tools/client-runtime/handoff";
+import {
+  deriveLatestThreadRun,
+  deriveRunlessWorkStartedAt,
+  deriveThreadActivityRun,
+  deriveThreadStructureRuntime,
+} from "@t3tools/client-runtime/state/thread-execution";
+import { runAtomCommand, isAtomCommandInterrupted, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { workspacePreparationRetryRunIds } from "@t3tools/client-runtime/state/turn-item-presentation";
+import { resolveVisibleWorktreeSetup, worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
+import {
+  CommandId,
+  type EnvironmentId,
+  type MessageId,
+  type RunAttemptId,
+  type RunId,
+  type ScopedThreadRef,
+  ThreadId,
+  type WorktreeSetupSnapshot,
+} from "@t3tools/contracts";
+import type { TimestampFormat } from "@t3tools/contracts/settings";
+import { useGpuixRequired, type PublicInstance } from "@gpuix/react";
+import { AsyncResult, Atom } from "effect/reactivity";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { environmentThreads } from "../../state/environment.ts";
+import { appAtomRegistry } from "../../runtime/runtime.ts";
+import {
+  environmentProjects,
+  environmentThreadDetails,
+  environmentThreadShells,
+  serverEnvironment,
+  threadEnvironment,
+} from "../../state/environment.ts";
+import {
+  composerInsetAtom,
+  restoredPromptAtom,
+  revertConfirmAtom,
+  rewindingThreadKeysAtom,
+  timelineLocalErrorsAtom,
+  timelineVcs,
+  turnDiffRequestAtom,
+} from "../../state/timeline.ts";
+import { detailsPanelOpenAtom, findBarOpenAtom, rightPanelOpenAtom, rightPanelSurfaceAtom, routeAtom } from "../../state/ui.ts";
+import { Dialog } from "../../ui/overlay.tsx";
+import { Button, Text } from "../../ui/primitives.tsx";
+import { LAYOUT, alpha, useTheme } from "../../ui/theme.ts";
+import { toast } from "../../ui/toast.tsx";
+import { deriveAvailableRevertTurnCounts, resolveWorktreeSetupProgress } from "../../web/components/chatViewTimeline.logic.ts";
+import { recallableComposerPrompt } from "../../web/components/chat/composerPromptHistory.ts";
+import { timelineTurnFoldRunIdsByEntryId, type MessagesTimelineRow } from "../../web/components/chat/MessagesTimeline.logic.ts";
+import { useIncrementalTimelineRows, useStableHandoffRuns, useStableRows } from "../../web/components/chat/useTimelineRows.ts";
+import { useIncrementalTimelineEntries } from "../../web/hooks/useIncrementalTimelineEntries.ts";
+import { deriveActiveWorkStartedAt, derivePhase, findRevertCheckpoint, isLatestRunSettled } from "../../web/session-logic.ts";
+import type { ChatMessage } from "../../web/types.ts";
 import { Icon } from "../../ui/Icon.tsx";
-import { Text } from "../../ui/primitives.tsx";
-import { FONTS, LAYOUT, alpha, useTheme } from "../../ui/theme.ts";
+import "./devOpenThread.ts";
+import { ThreadErrorBanner } from "./ThreadErrorBanner.tsx";
+import { findHighlightColors, ThreadFindBar, type ThreadFindState } from "./ThreadFindBar.tsx";
+import { TimelineRowContent } from "./TimelineRows.tsx";
+import { TimelineSystemDivider } from "./parts.tsx";
+import {
+  TimelineRowActivityCtx,
+  TimelineRowCtx,
+  type TimelineRowActivityState,
+  type TimelineRowSharedState,
+  type WorkGroupViewState,
+} from "./rowContext.ts";
 
-export function Timeline({ environmentId, threadId }: { environmentId: EnvironmentId; threadId: ThreadId }) {
-  const theme = useTheme();
-  const result = useAtomValue(environmentThreads.stateAtom(environmentId, threadId));
-  const state = Option.getOrNull(AsyncResult.value(result));
-  const projection = state ? Option.getOrNull(state.data) : null;
-  const items = projection?.visibleTurnItems ?? [];
-  if (items.length === 0) {
-    return (
-      <div style={{ display: "flex", flexGrow: 1, alignItems: "center", justifyContent: "center" }}>
-        <Text color={alpha(theme.mutedForeground, 0.5)}>Send a message to start the conversation.</Text>
-      </div>
-    );
+const EMPTY_MESSAGES: ReadonlyArray<ChatMessage> = [];
+// Web reads this from client settings (default "locale"); t3-term has no client settings store yet.
+const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
+const EMPTY_RUN_IDS: ReadonlySet<RunId> = new Set();
+
+/** Disclosure state per thread, so returning to a thread reopens what the reader opened. */
+interface RememberedDisclosures {
+  runs: ReadonlySet<RunId>;
+  workGroups: ReadonlySet<string>;
+  attempts: ReadonlySet<RunAttemptId>;
+  changedFiles: ReadonlySet<RunId>;
+  workGroupViewState: WorkGroupViewState;
+}
+const rememberedDisclosures = new Map<string, RememberedDisclosures>();
+
+function rememberedFor(threadKey: string): RememberedDisclosures {
+  let remembered = rememberedDisclosures.get(threadKey);
+  if (!remembered) {
+    remembered = {
+      runs: new Set(),
+      workGroups: new Set(),
+      attempts: new Set(),
+      changedFiles: new Set(),
+      workGroupViewState: { expandedEntries: new Set() },
+    };
+    rememberedDisclosures.set(threadKey, remembered);
   }
-  return <TimelineList items={items} />;
+  return remembered;
 }
 
-const TimelineList = memo(function TimelineList({ items }: { items: ReadonlyArray<OrchestrationV2ProjectedTurnItem> }) {
+/** A callback whose identity never changes but always calls the latest closure. */
+function useStableCallback<A extends unknown[], R>(callback: (...args: A) => R): (...args: A) => R {
+  const ref = useRef(callback);
+  ref.current = callback;
+  return useRef((...args: A) => ref.current(...args)).current;
+}
+
+function toggleIn<T>(set: ReadonlySet<T>, value: T): ReadonlySet<T> {
+  const next = new Set(set);
+  if (next.has(value)) next.delete(value);
+  else next.add(value);
+  return next;
+}
+
+export function Timeline({ environmentId, threadId }: { environmentId: EnvironmentId; threadId: ThreadId }) {
+  const threadRef = useMemo(() => scopeThreadRef(environmentId, threadId), [environmentId, threadId]);
+  // Keyed by thread: switching threads starts a fresh list, like web's list identity.
+  return <ThreadTimeline key={scopedThreadKey(threadRef)} threadRef={threadRef} />;
+}
+
+/**
+ * The chat lane, after resolveChatCanvasLayout (chat/chatCanvasLayout.ts): a
+ * 736px column centered in the canvas with 48px gutters, kept 32px clear of
+ * the floating details card.
+ */
+export function resolveChatLane(width: number, detailsCardOpen: boolean) {
+  const padding = LAYOUT.chatLanePadding;
+  const laneRight = detailsCardOpen ? width - 12 - LAYOUT.detailsCardWidth - 32 : width - padding;
+  const laneWidth = Math.max(0, Math.min(LAYOUT.chatMaxWidth, width - padding * 2, laneRight - padding));
+  const left = Math.max(padding, Math.min((width - laneWidth) / 2, laneRight - laneWidth));
+  return { left: Math.round(left), width: Math.round(laneWidth) };
+}
+
+function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
   const theme = useTheme();
+  const threadKey = scopedThreadKey(threadRef);
+  const { environmentId, threadId } = threadRef;
+
+  const structure = useAtomValue(environmentThreadDetails.quietThreadAtom(threadRef));
+  const projection = structure?.projection ?? null;
+  const visibleTurnItems = useAtomValue(environmentThreadDetails.visibleTurnItemsAtom(threadRef));
+  const history = useAtomValue(environmentThreadDetails.historyAtom(threadRef));
+  const status = useAtomValue(environmentThreadDetails.statusAtom(threadRef));
+  const checkpointSummaries = useAtomValue(environmentThreadDetails.checkpointSummariesAtom(threadRef));
+  const shell = useAtomValue(environmentThreadShells.threadShellAtom(threadRef));
+  const projectId = shell?.projectId ?? projection?.thread.projectId ?? null;
+  const project = useAtomValue(
+    projectId === null ? NO_PROJECT_ATOM : environmentProjects.projectAtom({ environmentId, projectId }),
+  );
+  const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
+  const parentRef =
+    shell?.lineage.relationshipToParent === "subagent" && shell.lineage.parentThreadId
+      ? scopeThreadRef(environmentId, shell.lineage.parentThreadId)
+      : null;
+  const parentShell = useAtomValue(
+    environmentThreadShells.threadShellAtom(parentRef ?? scopeThreadRef(environmentId, ThreadId.make("__none__"))),
+  );
+  const localErrors = useAtomValue(timelineLocalErrorsAtom);
+  const rewinding = useAtomValue(rewindingThreadKeysAtom).has(threadKey);
+
+  // ── Run and runtime state (ChatView.tsx:740-1420) ─────────────────────────
+  // Web relies on the React Compiler to cache these per projection; the rows
+  // hook compares its inputs by identity, so they must be memoized here.
+  const { latestRun, activityRun, runtime, runlessWorkStartedAt } = useMemo(
+    () => ({
+      latestRun: projection === null ? null : deriveLatestThreadRun(projection),
+      activityRun: projection === null ? null : deriveThreadActivityRun(projection),
+      runtime: projection === null ? null : deriveThreadStructureRuntime(projection),
+      runlessWorkStartedAt: projection === null ? null : deriveRunlessWorkStartedAt(projection),
+    }),
+    [projection],
+  );
+  const phase = derivePhase(runtime);
+  const compactionRunning =
+    projection?.turnItems.some(
+      (item) =>
+        item.type === "compaction" &&
+        item.runId !== null &&
+        item.runId === runtime?.activeRunId &&
+        item.status === "running",
+    ) ?? false;
+  const isCompacting = (phase === "connecting" || phase === "running") && compactionRunning;
+  const isWorking = phase === "running" || isCompacting || runlessWorkStartedAt !== null;
+  const latestRunSettled = isLatestRunSettled(latestRun, runtime);
+  const activeWorkStartedAt = deriveActiveWorkStartedAt(activityRun, runtime, null) ?? runlessWorkStartedAt;
+  const providerStatus = providers?.find((provider) => provider.instanceId === runtime?.providerInstanceId) ?? null;
+  const supportsConversationRollback =
+    providerStatus === null || providerStatus.supportsConversationRollback !== false;
+  const availableRevertTurnCounts = useMemo(() => deriveAvailableRevertTurnCounts(projection), [projection]);
+  const threadStartCheckpointReady =
+    !history.hasMoreHistory && findRevertCheckpoint(projection?.checkpoints ?? [], 0) !== undefined;
+  const workspaceRoot = shell?.worktreePath ?? project?.workspaceRoot ?? undefined;
+  const markdownCwd = workspaceRoot;
+
+  // ── Worktree setup (useWorktreeSetup.ts) ──────────────────────────────────
+  const runPreparing = activityRun?.status === "preparing";
+  const [heldSnapshot, setHeldSnapshot] = useState<WorktreeSetupSnapshot | null>(null);
+  const setupResult = useAtomValue(
+    runPreparing || heldSnapshot?.phase === "running"
+      ? timelineVcs.worktreeSetup({ environmentId, input: { threadId } })
+      : EMPTY_SETUP_ATOM,
+  );
+  const latestSnapshot = setupResult._tag === "Success" ? setupResult.value : null;
+  useEffect(() => {
+    if (latestSnapshot && latestSnapshot !== heldSnapshot) {
+      setHeldSnapshot((current) =>
+        current?.threadId === latestSnapshot.threadId && current.sequence > latestSnapshot.sequence ? current : latestSnapshot,
+      );
+    }
+  }, [latestSnapshot, heldSnapshot]);
+  const { snapshot: liveSetup, isPreparingWorktree } = resolveWorktreeSetupProgress({
+    threadId,
+    localPreparing: false,
+    runStatus: activityRun?.status,
+    latest: latestSnapshot,
+    held: heldSnapshot,
+  });
+  const turnStarted = activityRun?.startedAt != null;
+  const worktreeSetup = useMemo(
+    () => resolveVisibleWorktreeSetup({ live: liveSetup, recorded: null, turnStarted, followUpSent: false }),
+    [liveSetup, turnStarted],
+  );
+  const retryableKey = [
+    ...workspacePreparationRetryRunIds(projection?.runs ?? [], projection?.turnItems ?? []),
+  ].join("\n");
+  const retryableRunIds = useMemo(
+    () => (retryableKey === "" ? EMPTY_RUN_IDS : new Set(retryableKey.split("\n") as RunId[])),
+    [retryableKey],
+  );
+
+  // ── Entries and rows ──────────────────────────────────────────────────────
+  const timelineEntries = useIncrementalTimelineEntries(threadKey, {
+    visibleTurnItems,
+    optimisticMessages: EMPTY_MESSAGES,
+    ...(projection === null ? {} : { attempts: projection.attempts, nodes: projection.nodes, plans: projection.plans }),
+  });
+  const remembered = rememberedFor(threadKey);
+  const [expandedRunIds, setExpandedRunIds] = useState(remembered.runs);
+  const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState(remembered.workGroups);
+  const [expandedAttemptIds, setExpandedAttemptIds] = useState(remembered.attempts);
+  const [changedFilesExpanded, setChangedFilesExpanded] = useState(remembered.changedFiles);
+  remembered.runs = expandedRunIds;
+  remembered.workGroups = expandedWorkGroupIds;
+  remembered.attempts = expandedAttemptIds;
+  remembered.changedFiles = changedFilesExpanded;
+
+  // A new run collapses the previous run's fold again; an interrupted run opens (MessagesTimeline.tsx:516).
+  const previousLatestRunRef = useRef(activityRun);
+  useEffect(() => {
+    const previous = previousLatestRunRef.current;
+    previousLatestRunRef.current = activityRun;
+    if (!activityRun || previous?.runId === undefined) return;
+    if (activityRun.runId === previous.runId) {
+      if (previous.status === "running" && activityRun.status === "interrupted") {
+        setExpandedRunIds((existing) => new Set(existing).add(activityRun.runId));
+      }
+      return;
+    }
+    setExpandedRunIds((existing) => {
+      if (!existing.has(previous.runId)) return existing;
+      const next = new Set(existing);
+      next.delete(previous.runId);
+      return next;
+    });
+  }, [activityRun]);
+
+  const rawRows = useIncrementalTimelineRows(`${threadKey}\0${workspaceRoot ?? ""}`, {
+    timelineEntries,
+    latestRun: activityRun,
+    runningRunId: runtime?.activeRunId ?? null,
+    expandedRunIds,
+    expandedAttemptIds,
+    expandedWorkGroupIds,
+    isWorking,
+    runlessWorkActive: runlessWorkStartedAt !== null,
+    activeTurnStartedAt: activeWorkStartedAt,
+    turnDiffSummaries: checkpointSummaries,
+    supportsConversationRollback,
+    threadStartCheckpointReady,
+    availableRevertTurnCounts,
+    worktreeSetup,
+  });
+  const rows = useStableRows(rawRows, threadKey);
+  const runs = useStableHandoffRuns((projection?.runs ?? EMPTY_HANDOFF_RUNS) as ReadonlyArray<HandoffTimelineRun>);
+
+  // ── Actions ───────────────────────────────────────────────────────────────
+  const setLocalError = (error: string | null) => {
+    const next = new Map(appAtomRegistry.get(timelineLocalErrorsAtom));
+    if (error === null) next.delete(threadKey);
+    else next.set(threadKey, error);
+    appAtomRegistry.set(timelineLocalErrorsAtom, next);
+  };
+  const setRewinding = (active: boolean) => {
+    const next = new Set(appAtomRegistry.get(rewindingThreadKeysAtom));
+    if (active) next.add(threadKey);
+    else next.delete(threadKey);
+    appAtomRegistry.set(rewindingThreadKeysAtom, next);
+  };
+
+  const onRevertToTurnCount = useStableCallback((turnCount: number, messageId: MessageId) => {
+    if (rewinding) return;
+    if (!supportsConversationRollback) {
+      setLocalError("This provider does not support reverting conversation history. Start a new thread instead.");
+      return;
+    }
+    if (phase === "running") {
+      setLocalError("Interrupt the current turn before reverting checkpoints.");
+      return;
+    }
+    appAtomRegistry.set(revertConfirmAtom, { threadKey, turnCount, messageId });
+  });
+
+  const confirmRevert = useStableCallback(async (turnCount: number, messageId: MessageId, restoreFiles: boolean) => {
+    const message = timelineEntries.flatMap((entry) => (entry.kind === "message" && entry.message.id === messageId ? [entry.message] : []))[0];
+    if (!message || message.role !== "user") return;
+    setRewinding(true);
+    setLocalError(null);
+    const checkpoint = findRevertCheckpoint(projection?.checkpoints ?? [], turnCount);
+    const result = await runAtomCommand(appAtomRegistry, threadEnvironment.revertCheckpoint, {
+      environmentId,
+      input: {
+        commandId: CommandId.make(crypto.randomUUID()),
+        threadId,
+        turnCount,
+        restoreFiles,
+        ...(checkpoint === undefined ? {} : { checkpointId: checkpoint.id, scopeId: checkpoint.scopeId }),
+      },
+    });
+    setRewinding(false);
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setLocalError(error instanceof Error ? error.message : "Failed to revert thread state.");
+      }
+      return;
+    }
+    const prompt = recallableComposerPrompt(message.text);
+    if (prompt.length > 0) appAtomRegistry.set(restoredPromptAtom, { threadId, prompt, nonce: Date.now() });
+  });
+
+  const [pendingRollback, setPendingRollback] = useState<{ checkpointId: string; scopeId: string } | null>(null);
+  const onRollbackCheckpoint = useStableCallback((input: { readonly checkpointId: string; readonly scopeId: string }) => {
+    if (rewinding) return;
+    if (phase === "running") {
+      setLocalError("Interrupt the current turn before reverting checkpoints.");
+      return;
+    }
+    setPendingRollback(input);
+  });
+  const confirmRollback = useStableCallback(async () => {
+    const input = pendingRollback;
+    setPendingRollback(null);
+    if (!input) return;
+    setRewinding(true);
+    setLocalError(null);
+    const result = await runAtomCommand(appAtomRegistry, threadEnvironment.revertCheckpoint, {
+      environmentId,
+      input: { commandId: CommandId.make(crypto.randomUUID()), threadId, ...input },
+    });
+    setRewinding(false);
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      setLocalError(error instanceof Error ? error.message : "Failed to revert thread state.");
+    }
+  });
+
+  const onOpenThread = useStableCallback((target: ThreadId) => {
+    appAtomRegistry.set(routeAtom, { kind: "thread", environmentId, threadId: target });
+  });
+
+  const onForkFromRun = useStableCallback(async (input: { readonly sourceThreadId: ThreadId; readonly runId: RunId }) => {
+    const targetThreadId = ThreadId.make(crypto.randomUUID());
+    const result = await runAtomCommand(appAtomRegistry, threadEnvironment.forkFromRun, {
+      environmentId,
+      input: {
+        commandId: CommandId.make(crypto.randomUUID()),
+        sourceThreadId: input.sourceThreadId,
+        targetThreadId,
+        runId: input.runId,
+        title: `${shell?.title ?? projection?.thread.title ?? "Thread"} fork`,
+      },
+    });
+    if (result._tag === "Failure") {
+      if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        setLocalError(error instanceof Error ? error.message : "Failed to fork this response.");
+      }
+      return;
+    }
+    appAtomRegistry.set(routeAtom, { kind: "thread", environmentId, threadId: targetThreadId });
+  });
+
+  const onOpenTurnDiff = useStableCallback((runId: RunId, filePath?: string) => {
+    appAtomRegistry.set(turnDiffRequestAtom, { environmentId, threadId, runId, filePath: filePath ?? null, nonce: Date.now() });
+    appAtomRegistry.set(rightPanelSurfaceAtom, "diff");
+    appAtomRegistry.set(rightPanelOpenAtom, true);
+  });
+
+  const onCancelWorktreeSetup = useStableCallback(() => {
+    if (!worktreeSetup || worktreeSetup.phase !== "running") return;
+    void runAtomCommand(appAtomRegistry, timelineVcs.cancelWorktreeSetup, {
+      environmentId,
+      input: { threadId: worktreeSetup.threadId },
+    });
+  });
+  const onRetryWorkspacePreparation = useStableCallback((runId: RunId) => {
+    void runAtomCommand(appAtomRegistry, threadEnvironment.retryWorkspacePreparation, {
+      environmentId,
+      input: { threadId, runId },
+    });
+  });
+
+  const onToggleTurnFold = useStableCallback((runId: RunId) => setExpandedRunIds((current) => toggleIn(current, runId)));
+  const onToggleAttemptFold = useStableCallback((attemptId: RunAttemptId) =>
+    setExpandedAttemptIds((current) => toggleIn(current, attemptId)),
+  );
+  const onToggleWorkGroup = useStableCallback((groupId: string) => setExpandedWorkGroupIds((current) => toggleIn(current, groupId)));
+  const onToggleChangedFilesExpanded = useStableCallback((runId: RunId) =>
+    setChangedFilesExpanded((current) => toggleIn(current, runId)),
+  );
+
+  const sharedState = useMemo<TimelineRowSharedState>(
+    () => ({
+      timestampFormat: DEFAULT_TIMESTAMP_FORMAT,
+      routeThreadKey: threadKey,
+      threadRef,
+      markdownCwd,
+      workspaceRoot,
+      runs,
+      activeThreadEnvironmentId: environmentId,
+      onRevertToTurnCount,
+      onOpenTurnDiff,
+      onOpenThread,
+      onForkFromRun,
+      onRollbackCheckpoint,
+      onToggleTurnFold,
+      onToggleAttemptFold,
+      onToggleWorkGroup,
+      onCancelWorktreeSetup,
+      retryableWorkspacePreparationRunIds: retryableRunIds,
+      onRetryWorkspacePreparation,
+      onOpenWorktreeSetupTerminal: null,
+      workGroupViewState: remembered.workGroupViewState,
+      changedFilesExpandedRunIds: changedFilesExpanded,
+      onToggleChangedFilesExpanded,
+    }),
+    // The callbacks are stable; only data the rows read invalidates the context.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [threadKey, threadRef, markdownCwd, workspaceRoot, runs, environmentId, retryableRunIds, changedFilesExpanded],
+  );
+
+  const backgroundWorktreeSetup =
+    worktreeSetup !== null &&
+    worktreeSetup.phase === "running" &&
+    worktreeSetupAgentStarted(worktreeSetup) &&
+    activityRun?.startedAt != null
+      ? worktreeSetup
+      : null;
+  const compactionAwaitingRow = isCompacting && !rows.some((row) => row.kind === "context-compaction" && row.active);
+  const activityState = useMemo<TimelineRowActivityState>(
+    () => ({
+      isWorking,
+      isCompacting: compactionAwaitingRow,
+      isRevertingCheckpoint: rewinding,
+      activeTurnInProgress: isWorking || !latestRunSettled,
+      awaitingUser: false,
+      isPreparingWorktree,
+      latestRunId: activityRun?.runId ?? null,
+      backgroundWorktreeSetup,
+    }),
+    [isWorking, compactionAwaitingRow, rewinding, latestRunSettled, isPreparingWorktree, activityRun?.runId, backgroundWorktreeSetup],
+  );
+
+  // ── Find in thread (ThreadFindProvider + useThreadFind) ───────────────────
+  const findOpen = useAtomValue(findBarOpenAtom);
+  const [find, setFind] = useState<ThreadFindState | null>(null);
+  const onFindChange = useStableCallback((next: ThreadFindState) => {
+    setFind(next);
+    const entryId = next.match?.entryId;
+    if (!entryId) return;
+    // Reveal the match: open the turn fold and superseded attempt that hide it.
+    const foldRunId = timelineTurnFoldRunIdsByEntryId({
+      timelineEntries,
+      latestRun: activityRun,
+      runningRunId: runtime?.activeRunId ?? null,
+      isWorking,
+      runlessWorkActive: runlessWorkStartedAt !== null,
+    }).get(entryId);
+    if (foldRunId) setExpandedRunIds((current) => (current.has(foldRunId) ? current : new Set(current).add(foldRunId)));
+    const attemptId = timelineEntries.find((entry) => entry.id === entryId)?.attempt?.id;
+    if (attemptId) setExpandedAttemptIds((current) => (current.has(attemptId) ? current : new Set(current).add(attemptId)));
+  });
+  const closeFind = useStableCallback(() => {
+    appAtomRegistry.set(findBarOpenAtom, false);
+    setFind(null);
+  });
+  const activeFind = findOpen ? find : null;
+
+  // ── History paging ────────────────────────────────────────────────────────
+  const loadEarlier = useStableCallback(() => {
+    if (!history.hasMoreHistory || history.loading) return;
+    void runAtomCommand(appAtomRegistry, threadEnvironment.loadEarlierHistory, { environmentId, input: { threadId } });
+  });
+
+  const threadError = localErrors.get(threadKey) ?? runtime?.lastError ?? null;
+  const [dismissedError, setDismissedError] = useState<string | null>(null);
+  const visibleThreadError = threadError !== null && threadError !== dismissedError ? threadError : null;
+
+  const syncing = projection === null && status !== "deleted";
+  const showHistoryControl = history.hasMoreHistory || history.error !== null;
+  const parentThreadLink = parentRef === null ? null : { threadId: parentRef.threadId, title: parentShell?.title ?? "Parent thread" };
+
+  let body: ReactNode;
+  if (rows.length === 0 && !isWorking && parentThreadLink === null && !showHistoryControl) {
+    body = syncing ? (
+      <div style={{ flexGrow: 1 }} />
+    ) : (
+      <EmptyTimeline />
+    );
+  } else {
+    body = (
+      <TimelineRowCtx value={sharedState}>
+        <TimelineRowActivityCtx value={activityState}>
+          <TimelineList
+            rows={rows}
+            find={activeFind}
+            history={showHistoryControl ? history : null}
+            onLoadEarlier={loadEarlier}
+            parentThreadLink={parentThreadLink}
+            onOpenThread={onOpenThread}
+          />
+        </TimelineRowActivityCtx>
+      </TimelineRowCtx>
+    );
+  }
+
+  const pendingRevert = useAtomValue(revertConfirmAtom);
+  const revertForThisThread = pendingRevert?.threadKey === threadKey ? pendingRevert : null;
+  const closeRevert = () => appAtomRegistry.set(revertConfirmAtom, null);
+
   return (
-    <div style={{ flexGrow: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+    <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, minWidth: 0, position: "relative", backgroundColor: theme.background }}>
+      {visibleThreadError ? (
+        <ThreadErrorBanner
+          error={visibleThreadError}
+          errorClass={localErrors.has(threadKey) ? null : (runtime?.lastErrorClass ?? null)}
+          onDismiss={() => {
+            setLocalError(null);
+            setDismissedError(visibleThreadError);
+          }}
+        />
+      ) : null}
+      {body}
+      {findOpen ? (
+        <div style={{ position: "absolute", top: 12, right: 12, width: 280, display: "flex", pointerEvents: "none" }}>
+          <ThreadFindBar environmentId={environmentId} threadId={threadId} onChange={onFindChange} onClose={closeFind} />
+        </div>
+      ) : null}
+      <Dialog
+        open={revertForThisThread !== null}
+        onOpenChange={(open) => {
+          if (!open) closeRevert();
+        }}
+        title="Edit from here?"
+        description="Rewind chat to before this message. Your prompt and attachments return to the composer. “Revert files too” also undoes your own edits."
+        width={512}
+        testId="revert-confirm"
+        footer={
+          <>
+            <Button variant="outline" size="sm" onClick={closeRevert}>
+              Cancel
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              testId="revert-files-too"
+              style={{ borderColor: theme.input }}
+              onClick={() => {
+                const pending = revertForThisThread;
+                closeRevert();
+                if (pending) void confirmRevert(pending.turnCount, pending.messageId, true);
+              }}
+            >
+              <Text size="sm" weight={500} color={theme.errorForeground}>
+                Revert files too
+              </Text>
+            </Button>
+            <Button
+              size="sm"
+              testId="revert-keep-changes"
+              onClick={() => {
+                const pending = revertForThisThread;
+                closeRevert();
+                if (pending) void confirmRevert(pending.turnCount, pending.messageId, false);
+              }}
+            >
+              Revert and keep changes
+            </Button>
+          </>
+        }
+      />
+      <Dialog
+        open={pendingRollback !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRollback(null);
+        }}
+        title="Roll back this thread?"
+        description="Roll back this thread to the selected checkpoint? This action cannot be undone."
+        footer={
+          <>
+            <Button variant="outline" size="sm" onClick={() => setPendingRollback(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" size="sm" onClick={() => void confirmRollback()}>
+              Roll back
+            </Button>
+          </>
+        }
+      />
+    </div>
+  );
+}
+
+const EMPTY_HANDOFF_RUNS: ReadonlyArray<HandoffTimelineRun> = [];
+
+const NO_PROJECT_ATOM = Atom.make(null);
+const EMPTY_SETUP_ATOM = Atom.make(AsyncResult.initial<WorktreeSetupSnapshot | null, never>(false));
+
+function EmptyTimeline() {
+  const theme = useTheme();
+  const inset = useAtomValue(composerInsetAtom);
+  return (
+    <div style={{ display: "flex", flexGrow: 1, alignItems: "center", justifyContent: "center", paddingBottom: inset }}>
+      <Text size="sm" color={alpha(theme.mutedForeground, 0.3)}>
+        Send a message to start the conversation.
+      </Text>
+    </div>
+  );
+}
+
+// ── The list ────────────────────────────────────────────────────────────────
+
+const TimelineList = memo(function TimelineList({
+  rows,
+  find,
+  history,
+  onLoadEarlier,
+  parentThreadLink,
+  onOpenThread,
+}: {
+  rows: ReadonlyArray<MessagesTimelineRow>;
+  find: ThreadFindState | null;
+  history: { readonly hasMoreHistory: boolean; readonly loading: boolean; readonly error: string | null } | null;
+  onLoadEarlier: () => void;
+  parentThreadLink: { readonly threadId: ThreadId; readonly title: string } | null;
+  onOpenThread: (threadId: ThreadId) => void;
+}) {
+  const theme = useTheme();
+  const renderer = useGpuixRequired();
+  const listRef = useRef<PublicInstance | null>(null);
+  const composerInset = useAtomValue(composerInsetAtom);
+  const detailsOpen = useAtomValue(detailsPanelOpenAtom);
+  const [width, setWidth] = useState(0);
+  const lane = resolveChatLane(width, detailsOpen);
+  const [atEnd, setAtEnd] = useState(true);
+  const leadingRows = (history ? 1 : 0) + (parentThreadLink ? 1 : 0) + 1;
+  const rowCount = leadingRows + rows.length + 1;
+
+  const checkAtEnd = () => {
+    const id = listRef.current?.id;
+    if (id == null) return;
+    const top = renderer.getListScrollTop?.(id);
+    if (!top) return;
+    // gpui reports item index === count when a bottom-aligned list rests at its end.
+    const next = (top[0] ?? 0) >= rowCount - 1;
+    setAtEnd((current) => (current === next ? current : next));
+  };
+
+  // Rows added or removed (a rewind, a load) move the end without a scroll event.
+  useEffect(() => {
+    const id = setTimeout(checkAtEnd, 120);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows.length]);
+
+  const scrollToEnd = () => {
+    const id = listRef.current?.id;
+    if (id != null) renderer.scrollToItem?.(id, rowCount - 1);
+    setAtEnd(true);
+  };
+
+  // The row that holds the active match: its own id, or the work row that groups it.
+  const findRowIndex =
+    find?.match == null
+      ? -1
+      : rows.findIndex(
+          (row) =>
+            row.id === find.match!.entryId ||
+            (row.kind === "work" && row.groupedEntries.some((entry) => entry.id === find.match!.entryId)) ||
+            (row.kind === "work-toggle" && row.id === `work-toggle:${find.match!.entryId}`),
+        );
+  useEffect(() => {
+    const id = listRef.current?.id;
+    if (findRowIndex < 0 || id == null) return;
+    renderer.scrollToItem?.(id, leadingRows + findRowIndex, -96);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findRowIndex, find?.navigationId, find?.match?.entryId]);
+  const highlightColors = findHighlightColors(theme);
+  const findQuery = find && find.query.length > 0 ? find.query : null;
+
+  const frame = (key: string, children: ReactNode, rowIndex = -1) => (
+    <div
+      key={key}
+      {...(findQuery
+        ? {
+            highlight: {
+              query: findQuery,
+              ...highlightColors,
+              ...(rowIndex >= 0 && rowIndex === findRowIndex && find?.match ? { activeIndex: find.match.occurrence } : {}),
+            },
+          }
+        : {})}
+      style={{ display: "flex", flexDirection: "row", paddingLeft: lane.left }}
+    >
+      <div style={{ display: "flex", flexDirection: "column", width: lane.width, minWidth: 0 }}>{children}</div>
+    </div>
+  );
+
+  return (
+    <div
+      testId="timeline-list"
+      style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, position: "relative" }}
+      // The list itself takes no onScroll; wheel deltas reach this wrapper.
+      onScroll={() => queueMicrotask(checkAtEnd)}
+      onLayout={(event) => {
+        const next = Math.round(event.width ?? 0);
+        if (next > 0 && next !== width) setWidth(next);
+      }}
+    >
       <virtual-list
+        ref={listRef}
         alignment="bottom"
         followTail
-        estimatedItemHeight={60}
+        estimatedItemHeight={90}
+        overdraw={800}
+        onVisibleRange={(event) => {
+          if (history?.hasMoreHistory && !history.loading && Math.floor(event.startIndex ?? 1) === 0) onLoadEarlier();
+          checkAtEnd();
+        }}
         style={{ flexGrow: 1, minHeight: 0, scrollbarColor: theme.scrollbar }}
       >
-        {items.map((projected) => (
-          <div
-            key={projected.item.id}
-            style={{ display: "flex", flexDirection: "row", justifyContent: "center", paddingLeft: LAYOUT.chatLanePadding, paddingRight: LAYOUT.chatLanePadding }}
-          >
-            <div style={{ display: "flex", flexDirection: "column", width: "100%", maxWidth: LAYOUT.chatMaxWidth }}>
-              <TimelineRow projected={projected} />
-            </div>
-          </div>
-        ))}
-        <div style={{ height: 180 }} />
+        <div key="timeline-header" style={{ height: 16 }} />
+        {history ? frame("timeline-history", <TimelineHistoryControl {...history} onLoadEarlier={onLoadEarlier} />) : null}
+        {parentThreadLink
+          ? frame(
+              "timeline-parent",
+              <div style={{ paddingTop: 8 }}>
+                <TimelineSystemDivider
+                  label="Subagent of"
+                  detail={parentThreadLink.title}
+                  icon="bot"
+                  actionLabel="Open parent thread"
+                  onAction={() => onOpenThread(parentThreadLink.threadId)}
+                />
+              </div>,
+            )
+          : null}
+        {rows.map((row, index) => frame(row.id, <TimelineRowContent row={row} />, index))}
+        <div key="timeline-footer" style={{ height: composerInset + 16 }} />
       </virtual-list>
+      {atEnd ? null : <ScrollToEndButton bottom={composerInset + 4} left={lane.left} width={lane.width} onScrollToEnd={scrollToEnd} />}
     </div>
   );
 });
 
-function TimelineRow({ projected }: { projected: OrchestrationV2ProjectedTurnItem }) {
+function TimelineHistoryControl(props: {
+  readonly hasMoreHistory: boolean;
+  readonly loading: boolean;
+  readonly error: string | null;
+  readonly onLoadEarlier: () => void;
+}) {
   const theme = useTheme();
-  const item = projected.item;
-  switch (item.type) {
-    case "user_message":
-      return (
-        <div style={{ display: "flex", flexDirection: "row", justifyContent: "flex-end", paddingTop: 8, paddingBottom: 16 }}>
-          <div style={{ maxWidth: "80%", borderRadius: 18, padding: 12, backgroundColor: theme.messageSurface }}>
-            <Text style={{ lineHeight: 23 }}>{item.text}</Text>
-          </div>
-        </div>
-      );
-    case "assistant_message":
-      return (
-        <div style={{ paddingTop: 2, paddingBottom: 8, paddingLeft: 4, paddingRight: 4 }}>
-          <markdown
-            source={item.text}
-            theme={{
-              appearance: theme.appearance,
-              text: alpha(theme.foreground, 0.8),
-              bg: theme.background,
-              accent: theme.infoForeground,
-              fontSans: FONTS.sans,
-              fontMono: FONTS.mono,
-              metrics: { mdTextSize: 14, mdLineHeight: 23, mdBlockGap: 10, mdHeadingSizes: [20, 18, 16, 14] },
-            }}
-          />
-        </div>
-      );
-    default:
-      return (
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minHeight: 24, paddingTop: 2, paddingBottom: 2 }}>
-          <div style={{ display: "flex", width: 24, justifyContent: "center" }}>
-            <Icon name="wrench" size={16} color={theme.mutedForeground} />
-          </div>
-          <Text color={theme.mutedForeground} truncate>
-            {item.type.replaceAll("_", " ")}
+  const [hovered, setHovered] = useState(false);
+  const line = <div style={{ height: 1, flexGrow: 1, backgroundColor: alpha(theme.border, 0.7) }} />;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 8 }}>
+      {props.hasMoreHistory ? (
+        <div
+          testId="load-earlier-turns"
+          onClick={props.loading ? undefined : props.onLoadEarlier}
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+          style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 12, paddingTop: 6, paddingBottom: 6, cursor: props.loading ? "default" : "pointer" }}
+        >
+          {line}
+          <Text size="xs" color={hovered && !props.loading ? theme.foreground : theme.mutedForeground} style={{ flexShrink: 0 }}>
+            {props.loading ? "Loading earlier turns…" : "Load earlier turns"}
           </Text>
+          {line}
         </div>
-      );
-  }
+      ) : null}
+      {props.error !== null ? (
+        <Text size="xs" color={theme.mutedForeground} style={{ textAlign: "center" }}>
+          {props.error}
+        </Text>
+      ) : null}
+    </div>
+  );
 }
 
+/** TimelineOverlays.tsx ScrollToEndButton: a glass pill 4px above the composer. */
+function ScrollToEndButton({ bottom, left, width, onScrollToEnd }: { bottom: number; left: number; width: number; onScrollToEnd: () => void }) {
+  const theme = useTheme();
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left,
+        width,
+        bottom,
+        display: "flex",
+        flexDirection: "row",
+        justifyContent: "center",
+        paddingTop: 6,
+        paddingBottom: 6,
+        pointerEvents: "none",
+      }}
+    >
+      <div
+        testId="scroll-to-end"
+        onClick={onScrollToEnd}
+        style={{
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 4,
+          height: 24,
+          paddingLeft: 9,
+          paddingRight: 9,
+          borderRadius: 999,
+          borderWidth: 1,
+          borderColor: alpha(theme.border, 0.6),
+          backgroundColor: theme.appearance === "dark" ? "#141414f2" : "#fffffff2",
+          boxShadow: { offsetX: 0, offsetY: 1, blurRadius: 3, spreadRadius: 0, color: "#0000001a" },
+          cursor: "pointer",
+          pointerEvents: "auto",
+          hover: { borderColor: theme.border },
+        }}
+      >
+        <Icon name="chevron-down" size={14} color={theme.mutedForeground} />
+        <Text size="xs" weight={500}>
+          Scroll to end
+        </Text>
+      </div>
+    </div>
+  );
+}
