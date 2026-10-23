@@ -74,6 +74,7 @@ const substitute = (value: unknown, index: number): unknown =>
 async function runSteps(list: any[]) {
   for (const step of list) {
     if (step.perf) await perfCommand(`phase ${step.perf}`);
+    if (step.layout) await perfCommand(`layout ${step.layout}`);
     if (step.perfEnd) await perfCommand("end");
     if (Object.keys(step).some((key) => !nonInputSteps.has(key))) perfSends.push(performance.timeOrigin + performance.now());
     if (step.repeat) {

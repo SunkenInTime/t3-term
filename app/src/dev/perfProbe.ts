@@ -17,10 +17,12 @@
 // Reading the frame counter is a synchronous round trip to the UI thread, so
 // it waits out a frame in progress. Latencies taken with the probe on are a
 // little pessimistic; the draw percentiles are not affected.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { EventPayload, GpuixRenderer } from "@gpuix/native";
+import { GpuixRenderer, type EventPayload } from "@gpuix/native";
+
+import { auditApplyBatch, layoutAuditReport } from "./layoutAudit.ts";
 
 type Phase = {
   label: string;
@@ -161,6 +163,27 @@ function startPhase(label: string) {
   timer = setInterval(poll, POLL_MS);
 }
 
+// Patched on the prototype, before render() creates the renderer, so the
+// layout audit sees the mount batch too.
+if (dir) {
+  const applyBatch = GpuixRenderer.prototype.applyBatch;
+  GpuixRenderer.prototype.applyBatch = function (this: GpuixRenderer, json: string) {
+    const started = performance.now();
+    const destroyed = applyBatch.call(this, json);
+    const elapsed = performance.now() - started;
+    const ops = JSON.parse(json) as unknown[][];
+    auditApplyBatch(ops);
+    if (process.env.PERF_DEBUG && phase) {
+      const kinds: Record<string, number> = {};
+      for (const op of ops) kinds[String(op[0])] = (kinds[String(op[0])] ?? 0) + 1;
+      console.error("[perfdbg] batch", json.length, JSON.stringify(kinds));
+      if (process.env.PERF_DEBUG === "ops") console.error(json.slice(0, 4000));
+    }
+    onCommit(elapsed);
+    return destroyed;
+  };
+}
+
 /** Call once after render(). Reads phase commands from <dir>/ctl.txt. */
 export function installPerfProbe() {
   if (!dir) return;
@@ -170,21 +193,6 @@ export function installPerfProbe() {
   mkdirSync(dir, { recursive: true });
   // Stats are recorded only while the overlay is on.
   if (renderer.getDebugFrameOverlay() === "hidden") renderer.setDebugFrameOverlay("minimal");
-  const native = renderer;
-  const applyBatch = native.applyBatch.bind(native);
-  native.applyBatch = (json: string) => {
-    const started = performance.now();
-    if (process.env.PERF_DEBUG && phase) {
-      const ops = JSON.parse(json) as unknown[][];
-      const kinds: Record<string, number> = {};
-      for (const op of ops) kinds[String(op[0])] = (kinds[String(op[0])] ?? 0) + 1;
-      console.error("[perfdbg] batch", json.length, JSON.stringify(kinds));
-      if (process.env.PERF_DEBUG === "ops") console.error(json.slice(0, 4000));
-    }
-    const destroyed = applyBatch(json);
-    onCommit(performance.now() - started);
-    return destroyed;
-  };
   // Commands: "<seq> phase <label>" or "<seq> end". Polled, not sent as input,
   // so markers never cause a frame of their own.
   const control = join(dir, "ctl.txt");
@@ -198,6 +206,7 @@ export function installPerfProbe() {
     lastSeq = seq;
     if (command === "phase") startPhase(rest.join(" "));
     else if (command === "end") endPhase();
+    else if (command === "layout") writeFileSync(join(dir, `${rest.join(" ") || "layout"}.layout.txt`), layoutAuditReport());
   }, 20);
 }
 
