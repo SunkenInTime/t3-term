@@ -161,7 +161,6 @@ const ALL_RUNTIME_MODE_OPTIONS: ReadonlyArray<RuntimeModeOption> = runtimeModes.
 const NO_SKILLS: ServerProvider["skills"] = [];
 const NO_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
 const DEFAULT_PLACEHOLDER = "Ask anything, @tag files/folders, $use skills, or / for commands";
-const EMPTY_THREAD_PLACEHOLDER = "Ask for changes, send follow-ups, or attach images";
 const PROMPT_LINE_HEIGHT = 23;
 
 /** Where the caret sits after an edit from `previous` to `next`: the end of what changed. */
@@ -1004,7 +1003,6 @@ function ComposerBody({
   };
 
   // ── Placeholder ───────────────────────────────────────────────────────
-  const threadStarted = threadShellHasStarted(shell);
   const placeholder = isComposerApprovalState
     ? "Send a message to decline and redirect the agent"
     : activePendingProgress
@@ -1015,11 +1013,10 @@ function ComposerBody({
         ? "Add feedback to refine the plan, or leave this blank to implement it"
         : showProviderUnavailable
           ? "Enable a provider in Settings to send a message"
-          : environmentUnavailable
+          : // web: a thread without a runtime yet (never run, or a new draft) is "disconnected".
+            environmentUnavailable || derivePhase(runtime) === "disconnected"
             ? DISCONNECTED_COMPOSER_PLACEHOLDER
-            : threadId !== null && !threadStarted
-              ? EMPTY_THREAD_PLACEHOLDER
-              : DEFAULT_PLACEHOLDER;
+            : DEFAULT_PLACEHOLDER;
 
   // ── Render ────────────────────────────────────────────────────────────
   const controlsSize = isResting ? "xs" : "sm";
