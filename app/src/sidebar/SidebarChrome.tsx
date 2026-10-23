@@ -11,7 +11,8 @@ import {
   sidebarClientSettingsAtom,
 } from "../state/sidebar.ts";
 import { shortcutLabelForCommand } from "./shortcutLabel.ts";
-import { routeAtom, sidebarOpenAtom } from "../state/ui.ts";
+import { routeAtom, sidebarOpenAtom, type Route } from "../state/ui.ts";
+import { appAtomRegistry } from "../runtime/runtime.ts";
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Tooltip } from "../ui/overlay.tsx";
 import { IconButton, Text } from "../ui/primitives.tsx";
@@ -94,6 +95,51 @@ export function SidebarChromeHeader() {
 }
 
 // ── Footer ──────────────────────────────────────────────────────────────
+
+/** web mainAppLocation.ts isSidebarUtilityPage: pages whose sidebar footer is a Back button. */
+function isUtilityRoute(route: Route): boolean {
+  return route.kind === "usage" || route.kind === "pull-requests" || route.kind === "settings";
+}
+
+// web MainAppLocationTracker: the last chat route, where Back returns to.
+let mainAppRoute: Route | null = isUtilityRoute(appAtomRegistry.get(routeAtom)) ? null : appAtomRegistry.get(routeAtom);
+appAtomRegistry.subscribe(routeAtom, (route) => {
+  if (!isUtilityRoute(route)) mainAppRoute = route;
+});
+
+/** SidebarMenuButton with ArrowLeft + "Back" (web SidebarUtilityMenu on a utility page). */
+function SidebarBackButton() {
+  const theme = useTheme();
+  const setRoute = useAtomSet(routeAtom);
+  const [hovered, setHovered] = useState(false);
+  // SidebarMenuButton: sidebar muted foreground at 80% until hovered.
+  const color = hovered ? theme.sidebar.foreground : alpha(theme.sidebar.mutedForeground, 0.8);
+  return (
+    <div
+      testId="sidebar-back"
+      onClick={() => setRoute(mainAppRoute ?? { kind: "home" })}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        flexGrow: 1,
+        minWidth: 0,
+        height: 32,
+        paddingLeft: 8,
+        paddingRight: 8,
+        borderRadius: RADIUS.md,
+        cursor: "pointer",
+        backgroundColor: hovered ? theme.sidebar.rowHover : "#00000000",
+      }}
+    >
+      <Icon name="arrow-left" size={16} color={color} />
+      <text style={{ fontSize: 14, lineHeight: 20, fontWeight: 500, fontFamily: FONTS.sans, color }}>Back</text>
+    </div>
+  );
+}
 
 function UtilityButton({
   icon,
@@ -240,6 +286,7 @@ function SidebarProviderUpdatePill() {
 
 export function SidebarChromeFooter({ children }: { children?: ReactNode }) {
   const setRoute = useAtomSet(routeAtom);
+  const onUtilityPage = isUtilityRoute(useAtomValue(routeAtom));
   const configs = useAtomValue(environmentServerConfigsAtom);
   const pullRequestsSupported = [...configs.values()].some(
     (config) => config.environment.capabilities.pullRequests === true,
@@ -249,11 +296,17 @@ export function SidebarChromeFooter({ children }: { children?: ReactNode }) {
       <SidebarThreadUndoNotice />
       <SidebarProviderUpdatePill />
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>
-        <UtilityButton icon="settings" label="Settings" testId="open-settings" onClick={() => setRoute({ kind: "settings", page: "general" })} />
-        {pullRequestsSupported ? (
-          <UtilityButton icon="git-pull-request-arrow" label="Pull Requests" testId="open-pull-requests" onClick={() => setRoute({ kind: "pull-requests" })} />
-        ) : null}
-        <UtilityButton icon="chart-no-axes-column" label="Usage" testId="open-usage" onClick={() => setRoute({ kind: "usage" })} />
+        {onUtilityPage ? (
+          <SidebarBackButton />
+        ) : (
+          <>
+            <UtilityButton icon="settings" label="Settings" testId="open-settings" onClick={() => setRoute({ kind: "settings", page: "general" })} />
+            {pullRequestsSupported ? (
+              <UtilityButton icon="git-pull-request-arrow" label="Pull Requests" testId="open-pull-requests" onClick={() => setRoute({ kind: "pull-requests" })} />
+            ) : null}
+            <UtilityButton icon="chart-no-axes-column" label="Usage" testId="open-usage" onClick={() => setRoute({ kind: "usage" })} />
+          </>
+        )}
         {children}
       </div>
     </div>
