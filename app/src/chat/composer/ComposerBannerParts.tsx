@@ -75,7 +75,8 @@ export function BannerRoot({
         borderTopRightRadius: radius,
         borderBottomLeftRadius: attached ? 0 : radius,
         borderBottomRightRadius: attached ? 0 : radius,
-        backgroundColor: alpha(theme.card, 0.94),
+        // Opaque: web blurs the glass behind banners; GPUI can't, and timeline text would show through.
+        backgroundColor: theme.appearance === "dark" ? "#101010" : theme.card,
         boxShadow:
           theme.appearance === "dark"
             ? { offsetX: 0, offsetY: 14, blurRadius: 32, spreadRadius: -18, color: "#000000bf" }
