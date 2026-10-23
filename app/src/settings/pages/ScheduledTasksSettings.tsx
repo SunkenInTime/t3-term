@@ -203,7 +203,8 @@ export function ScheduledTasksSettings() {
   const defaultEnvironment = environment ?? connectedEnvironments[0];
   const canCreate = useAtomValue(serverEnvironment.upsertScheduledTask.permissionAtom(defaultEnvironment?.environmentId ?? null));
   return (
-    <SettingsPageContainer>
+    <>
+    <SettingsPageContainer virtual>
       <SettingsSection
         title="Scheduled tasks"
         variant="plain"
@@ -242,15 +243,17 @@ export function ScheduledTasksSettings() {
           </div>
         )}
       </SettingsSection>
-      {editor ? (
-        <ScheduledTaskEditorDialog
-          key={`${editor.environmentId}:${editor.task?.id ?? "new"}`}
-          initialEnvironmentId={editor.environmentId}
-          task={editor.task}
-          onClose={() => setEditor(null)}
-        />
-      ) : null}
     </SettingsPageContainer>
+    {/* Outside the virtual list, so the dialog never depends on its item being mounted. */}
+    {editor ? (
+      <ScheduledTaskEditorDialog
+        key={`${editor.environmentId}:${editor.task?.id ?? "new"}`}
+        initialEnvironmentId={editor.environmentId}
+        task={editor.task}
+        onClose={() => setEditor(null)}
+      />
+    ) : null}
+    </>
   );
 }
 
