@@ -1,7 +1,7 @@
 // Ported from apps/web/src/components/files/projectFilesQueryState.ts, with the pieces of
 // apps/web/src/state/{queries,query,filesystem}.ts it reads (useProjectPathSearch,
-// useEnvironmentQuery, useFilesystemReadAccess). The optimistic-edit helpers are left
-// out: t3-term's file preview does not edit files.
+// useEnvironmentQuery, useFilesystemReadAccess), and the optimistic-edit helpers the
+// Files editor writes through (setProjectFileQueryData, confirmProjectFileQueryData).
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { presentConnectionState } from "@t3tools/client-runtime/connection";
 import { resolveFilesystemReadAccess } from "@t3tools/client-runtime/state/filesystem";
@@ -17,9 +17,11 @@ import {
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
 
+import { appAtomRegistry } from "../../../runtime/runtime.ts";
 import { environmentCatalog, environmentSession, projectEnvironment } from "../../../state/environment.ts";
 
 const EMPTY_PROJECT_FILE_PATH = "";
@@ -174,6 +176,23 @@ export function useProjectPathSearch(
 
 // ── apps/web/src/components/files/projectFilesQueryState.ts ─────────────
 
+export function optimisticFileAtom(
+  environmentId: EnvironmentId,
+  cwd: string,
+  relativePath: string,
+) {
+  return projectEnvironment.optimisticFile({ environmentId, cwd, relativePath });
+}
+
+// Dirty contents must survive a closed preview, including failed or unauthorized saves.
+const unsavedFileMounts = new Map<ReturnType<typeof optimisticFileAtom>, () => void>();
+
+function releaseUnsavedFile(atom: ReturnType<typeof optimisticFileAtom>): void {
+  const unmount = unsavedFileMounts.get(atom);
+  unsavedFileMounts.delete(atom);
+  unmount?.();
+}
+
 interface ProjectQueryState<A> {
   readonly data: A | null;
   readonly error: string | null;
@@ -211,6 +230,95 @@ export function getProjectFileQueryAtom(
       ...(relativePath === T3_PROJECT_FILE_NAME ? { allowMissing: true } : {}),
     },
   });
+}
+
+export function setProjectFileQueryData(
+  environmentId: EnvironmentId,
+  cwd: string,
+  relativePath: string,
+  contents: string,
+): void {
+  const atom = optimisticFileAtom(environmentId, cwd, relativePath);
+  if (!unsavedFileMounts.has(atom)) {
+    unsavedFileMounts.set(atom, appAtomRegistry.mount(atom));
+  }
+  appAtomRegistry.set(atom, {
+    confirmedAgainst: undefined,
+    data: {
+      relativePath,
+      contents,
+      byteLength: new TextEncoder().encode(contents).byteLength,
+      truncated: false,
+    },
+  });
+}
+
+export function getOptimisticProjectFileQueryData(
+  environmentId: EnvironmentId,
+  cwd: string,
+  relativePath: string,
+): ProjectReadFileResult | null {
+  return appAtomRegistry.get(optimisticFileAtom(environmentId, cwd, relativePath))?.data ?? null;
+}
+
+export function getProjectFileContents(
+  environmentId: EnvironmentId,
+  cwd: string,
+  relativePath: string,
+): string | undefined {
+  const optimistic = getOptimisticProjectFileQueryData(environmentId, cwd, relativePath);
+  if (optimistic) return optimistic.contents;
+  const result = appAtomRegistry.get(getProjectFileQueryAtom(environmentId, cwd, relativePath));
+  const data = Option.getOrUndefined(AsyncResult.value(result));
+  return data?.exists === false ? undefined : data?.contents;
+}
+
+export function getUnsavedProjectFileQueryData(
+  environmentId: EnvironmentId,
+  cwd: string,
+  relativePath: string,
+): ProjectReadFileResult | null {
+  const optimistic = appAtomRegistry.get(optimisticFileAtom(environmentId, cwd, relativePath));
+  return optimistic?.confirmedAgainst === undefined ? (optimistic?.data ?? null) : null;
+}
+
+export function confirmProjectFileQueryData(
+  environmentId: EnvironmentId,
+  cwd: string,
+  relativePath: string,
+  contents: string,
+): boolean {
+  const atom = optimisticFileAtom(environmentId, cwd, relativePath);
+  const optimisticFile = appAtomRegistry.get(atom);
+  if (optimisticFile?.data.contents !== contents) return false;
+
+  const queryAtom = getProjectFileQueryAtom(environmentId, cwd, relativePath);
+  const confirmed = {
+    ...optimisticFile,
+    confirmedAgainst: appAtomRegistry.get(queryAtom),
+  };
+  appAtomRegistry.set(atom, confirmed);
+  releaseUnsavedFile(atom);
+  appAtomRegistry.refresh(queryAtom);
+  void executeAtomQuery(appAtomRegistry, queryAtom, {
+    reportDefect: false,
+    reportFailure: false,
+  }).then((result) => {
+    if (result._tag === "Success" && appAtomRegistry.get(atom) === confirmed) {
+      appAtomRegistry.set(atom, null);
+    }
+  });
+  return true;
+}
+
+export function clearProjectFileQueryData(
+  environmentId: EnvironmentId,
+  cwd: string,
+  relativePath: string,
+): void {
+  const atom = optimisticFileAtom(environmentId, cwd, relativePath);
+  appAtomRegistry.set(atom, null);
+  releaseUnsavedFile(atom);
 }
 
 function failureCause<A>(result: AsyncResult.AsyncResult<A, unknown>): unknown {
@@ -301,9 +409,13 @@ export function useProjectFileQuery(
   const refresh = () => refreshAtom();
   const readData = Option.getOrNull(AsyncResult.value(result));
   const isMissing = readData?.exists === false;
+  const optimisticResult = useAtomValue(
+    optimisticFileAtom(environmentId, cwd, relativePath ?? EMPTY_PROJECT_FILE_PATH),
+  );
+  const optimisticFile = relativePath === null ? null : optimisticResult;
   const cause = failureCause(result);
   const readError = isProjectReadFileError(cause) ? cause : null;
-  const data = canReadFiles ? (isMissing ? null : readData) : null;
+  const data = canReadFiles ? (optimisticFile?.data ?? (isMissing ? null : readData)) : null;
   const isNotFile = readError?.failure === "path_not_file";
 
   return {
@@ -312,7 +424,7 @@ export function useProjectFileQuery(
       !isQueryEnabled || fileAccess.isPending
         ? null
         : canReadFiles
-          ? isMissing
+          ? isMissing && !optimisticFile
             ? `'${relativePath}' does not exist.`
             : errorMessage(cause)
           : (fileAccess.error ?? "This connection cannot read host files."),
