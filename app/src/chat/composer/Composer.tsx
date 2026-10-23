@@ -728,6 +728,9 @@ function ComposerBody({
     // Plan follow-up: blank implements the plan, text refines it (web submitPlanFollowUp).
     if (showPlanFollowUpPrompt && latestProposedPlan && attachments.length === 0 && threadId) {
       const followUp = resolvePlanFollowUpSubmission({ draftText: promptAtSend, planMarkdown: latestProposedPlan.planMarkdown });
+      // web useProposedPlanSend: the composer follows the follow-up's mode, so implementing
+      // a plan leaves it on Build for the turns after.
+      setComposerInteractionMode(draftKey, followUp.interactionMode);
       void dispatchSend({
         prompt: promptAtSend,
         text: followUp.text,
