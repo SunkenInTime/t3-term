@@ -33,6 +33,7 @@ import {
 import { resolveProviderSkillsForCwd, resolveProviderSlashCommandsForCwd } from "@t3tools/client-runtime/providerSkills";
 import {
   deriveReportedModelSelection,
+  deriveThreadActivityRun,
   deriveThreadStructureRuntime,
   threadRuntimeHasInterruptibleRun,
 } from "@t3tools/client-runtime/state/thread-execution";
@@ -83,6 +84,7 @@ import {
 } from "../../state/composer.ts";
 import {
   environmentSession,
+  environmentThreadDetails,
   environmentThreadShells,
   environmentThreads,
   projectIndexAtom,
@@ -136,7 +138,17 @@ import { type AppModelOption, getAppModelOptionsForInstance, resolveAppModelSele
 import { shortcutLabelForCommand } from "../../web/keybindings.ts";
 import { getProviderModelCapabilities } from "../../web/providerModels.ts";
 import { resolvePlanFollowUpSubmission } from "../../web/proposedPlan.ts";
-import { derivePhase, findLatestProposedPlan, hasActionableProposedPlan } from "../../web/session-logic.ts";
+import {
+  deriveActivePlanState,
+  derivePhase,
+  findLatestProposedPlan,
+  hasActionableProposedPlan,
+  isLatestRunSettled,
+  selectComposerTasksPlan,
+} from "../../web/session-logic.ts";
+import { resolveThreadSyncPhase } from "../../web/threadSync.ts";
+import { useDelayedStatus } from "../../web/hooks/useDelayedStatus.ts";
+import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import { BranchToolbar } from "./BranchToolbar.tsx";
 import {
   ComposerAttachButton,
@@ -194,6 +206,7 @@ const RESTING_PICKER_LABEL_MAX_SURFACE_PX = 640;
 const SM_BREAKPOINT = 640;
 
 const NO_THREAD_SHELL_ATOM = Atom.make<EnvironmentThreadShell | null>(null);
+const NO_THREAD_STATUS_ATOM = Atom.make<EnvironmentThreadStatus>("live");
 const NO_THREAD_STATE_ATOM = Atom.make(
   AsyncResult.initial() as ReturnType<typeof environmentThreads.stateAtom> extends Atom.Atom<infer T> ? T : never,
 );
@@ -752,6 +765,41 @@ function ComposerBody({
     setHighlightedItemId(next?.id ?? null);
     setHighlightedSearchKey(menuSearchKey);
   };
+
+  // ── Tasks and sync activity (web ChatView ~1018-1042, 496) ────────────
+  const activeActivityRun = projection ? deriveThreadActivityRun(projection) : null;
+  const activeActivityRunSettled = isLatestRunSettled(activeActivityRun, runtime);
+  const composerTasksPlan = selectComposerTasksPlan(
+    projection,
+    deriveActivePlanState(projection, activeActivityRun?.runId),
+    activeActivityRun?.runId ?? null,
+    activeActivityRunSettled,
+  );
+  const composerTasks = (() => {
+    if (!composerTasksPlan || composerTasksPlan.steps.length === 0) return null;
+    const steps = composerTasksPlan.steps;
+    return {
+      progress: {
+        step:
+          steps.find((candidate) => candidate.status === "inProgress")?.step ??
+          steps.find((candidate) => candidate.status === "pending")?.step ??
+          steps.at(-1)!.step,
+        completedSteps: steps.filter((step) => step.status === "completed").length,
+        totalSteps: steps.length,
+        live: !activeActivityRunSettled && composerTasksPlan.runId === activeActivityRun?.runId,
+      },
+      steps,
+    };
+  })();
+  const threadStatus = useAtomValue(
+    threadId ? environmentThreadDetails.statusAtom({ environmentId, threadId }) : NO_THREAD_STATUS_ATOM,
+  );
+  const threadSyncPhase = resolveThreadSyncPhase({
+    detailExists: projection !== null,
+    shellExists: shell !== null,
+    status: threadStatus,
+  });
+  const shownSyncPhase = useDelayedStatus(draftKey, environmentUnavailable ? null : threadSyncPhase);
 
   // ── Notices ───────────────────────────────────────────────────────────
   // The banner lane above the timeline shows this provider's status (web ChatBannerLane).
@@ -1637,6 +1685,9 @@ function ComposerBody({
         }
         requests={requests}
         bannerItems={bannerItems}
+        tasks={composerTasks}
+        syncPhase={shownSyncPhase}
+        surfaceWidth={surfaceWidth}
         canOperateThread={true}
         showPlanFollowUp={showPlanFollowUpPrompt && latestProposedPlan !== null}
         planFollowUpTitle={
