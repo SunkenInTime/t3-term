@@ -94,6 +94,7 @@ const BUTTON_SIZES_SMALL_VIEWPORT = {
 export function Button({
   children,
   icon,
+  leading,
   trailingIcon,
   variant = "default",
   size = "default",
@@ -104,6 +105,8 @@ export function Button({
 }: {
   children?: ReactNode;
   icon?: IconName;
+  /** A non-lucide leading glyph (a brand mark), in place of `icon`. */
+  leading?: ReactNode;
   trailingIcon?: IconName;
   variant?: ButtonVariant;
   size?: ButtonSize;
@@ -146,7 +149,7 @@ export function Button({
         ...style,
       }}
     >
-      {icon ? <Icon name={icon} size={dims.icon} color={palette.icon} /> : null}
+      {icon ? <Icon name={icon} size={dims.icon} color={palette.icon} /> : leading}
       {children === undefined ? null : (
         <Text size={dims.text} weight={500} color={palette.fg}>
           {children}

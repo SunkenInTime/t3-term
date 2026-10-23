@@ -1,7 +1,7 @@
 // Port of apps/web/src/components/settings/AddProviderInstanceDialog.tsx with
 // AddProviderInstanceWizardSteps, ui/wizard.tsx, AcpRegistrySearchStep.tsx and
-// ProviderWizardAuthenticationStep.tsx. Not ported: "Continue with ChatGPT" (the managed
-// Codex account flow in CodexSetupSection.tsx), shown disabled; registry agents draw
+// ProviderWizardAuthenticationStep.tsx. "Continue with ChatGPT" swaps the wizard for
+// CodexSetupSection.tsx's AddManagedCodexAccountDialog, as web does. Registry agents draw
 // their initials instead of the registry's remote icon.
 import { useAtomValue } from "@effect/atom-react";
 import * as DialogPrimitive from "@gpuix/react/dialog";
@@ -45,6 +45,7 @@ import { openExternal } from "../openExternal.ts";
 import { ProviderSettingsForm, deriveProviderSettingsFields, type SettingsFormDefinition } from "../ProviderSettingsForm.tsx";
 import { useEnvironmentQuery } from "../query.ts";
 import { AccentColorPicker } from "./AccentColorPicker.tsx";
+import { AddManagedCodexAccountDialog, ChatGptConnectionButton } from "./CodexSetupSection.tsx";
 import { DriverIcon } from "./parts.tsx";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection.tsx";
 import { ProviderEnvironmentSection } from "./ProviderInstanceCard.tsx";
@@ -98,6 +99,7 @@ export function AddProviderDialog({
   const persistProviderInstance = usePersistProviderInstance(environmentId);
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const [wizardStep, setWizardStep] = useState(0);
+  const [addingChatGptAccount, setAddingChatGptAccount] = useState(false);
   const [driver, setDriver] = useState<ProviderDriverKind>(DEFAULT_DRIVER_KIND);
   const [identityByDriver, setIdentityByDriver] = useState<Record<string, ProviderIdentityDraft>>({});
   const [selectedAcp, setSelectedAcp] = useState<AcpRegistrySearchAgent | null>(null);
@@ -241,6 +243,8 @@ export function AddProviderDialog({
     setLocalEnvironment([]);
     setHasAttemptedSubmit(false);
   };
+
+  if (addingChatGptAccount) return <AddManagedCodexAccountDialog environmentId={environmentId} onClose={onClose} />;
 
   const stepsDisabled = isSaving || isPreparingRegistryAgent || createdInstanceId !== null;
   let panel: ReactNode;
@@ -438,11 +442,7 @@ export function AddProviderDialog({
             <Button variant="outline" size="sm" onClick={() => navigateToStep(1)} testId="add-provider-manual">
               Configure manually
             </Button>
-            <Tooltip content="Signing in with ChatGPT is not available in t3-term yet." side="top">
-              <Button size="sm" icon="sparkles" disabled>
-                Continue with ChatGPT
-              </Button>
-            </Tooltip>
+            <ChatGptConnectionButton size="sm" testId="add-provider-chatgpt" onClick={() => setAddingChatGptAccount(true)} />
           </>
         ) : wizardStep < (isAcpRegistry ? 1 : 2) ? (
           <Button size="sm" disabled={isPreparingRegistryAgent} onClick={() => navigateToStep(wizardStep + 1)} testId="add-provider-next">
@@ -472,20 +472,22 @@ export function AddProviderDialog({
 
 // ── Wizard shell (ui/wizard.tsx) ────────────────────────────────────────
 
-function WizardDialog({
+export function WizardDialog({
   onClose,
   title,
   description,
   steps,
   children,
   footer,
+  testId = "add-provider-dialog",
 }: {
   onClose: () => void;
   title: string;
   description: string;
-  steps: ReactNode;
+  steps?: ReactNode;
   children: ReactNode;
   footer: ReactNode;
+  testId?: string;
 }) {
   const theme = useTheme();
   const dark = theme.appearance === "dark";
@@ -494,7 +496,7 @@ function WizardDialog({
       <DialogPrimitive.Portal>
         <DialogPrimitive.Backdrop style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: theme.overlay, pointerEvents: "auto" }} />
         <DialogPrimitive.Popup
-          testId="add-provider-dialog"
+          testId={testId}
           style={{
             display: "flex",
             flexDirection: "column",
@@ -514,7 +516,7 @@ function WizardDialog({
               {title}
             </Text>
             <Text color={theme.mutedForeground}>{description}</Text>
-            <div style={{ display: "flex", flexDirection: "column", marginTop: 10 }}>{steps}</div>
+            {steps ? <div style={{ display: "flex", flexDirection: "column", marginTop: 10 }}>{steps}</div> : null}
           </div>
           <div
             style={{
