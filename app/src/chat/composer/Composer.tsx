@@ -174,6 +174,7 @@ import { sendQueuedRunNow } from "./QueuedRunsControl.tsx";
 import { usePendingThreadRequests } from "./usePendingThreadRequests.ts";
 import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
+import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
 
 export type { ComposerTarget } from "../../state/composer.ts";
 
@@ -1323,6 +1324,9 @@ function ComposerBody({
             ? DISCONNECTED_COMPOSER_PLACEHOLDER
             : DEFAULT_PLACEHOLDER;
 
+  // ── Notices ───────────────────────────────────────────────────────────
+  const bannerItems = useComposerBannerItems({ environmentId });
+
   // ── Render ────────────────────────────────────────────────────────────
   const controlsSize = isResting ? "xs" : "sm";
   const pendingAction = activePendingProgress
@@ -1534,6 +1538,7 @@ function ComposerBody({
           />
         }
         requests={requests}
+        bannerItems={bannerItems}
         canOperateThread={true}
         showPlanFollowUp={showPlanFollowUpPrompt && latestProposedPlan !== null}
         planFollowUpTitle={

@@ -4,7 +4,7 @@
 // Web draws the surface on a ::before layer with a backdrop blur and masks it where
 // the composer overlaps. GPUI has neither, so the surface is the composer's own
 // near-opaque card color, and the composer (painted later) covers the 17px overlap.
-import { createContext, useContext, useEffect, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
 import { Icon as LucideIcon, type IconName } from "../../ui/Icon.tsx";
 import type { Style } from "../../ui/primitives.tsx";
@@ -399,6 +399,52 @@ export function BannerIconButton({
       }}
     >
       <LucideIcon name={icon} size={14} color={muted ? theme.mutedForeground : theme.foreground} />
+    </div>
+  );
+}
+
+/**
+ * web ui/button InlineButton: medium-weight text that underlines on hover. `muted`
+ * starts muted and turns foreground on hover. Used inside banner titles and descriptions.
+ */
+export function InlineButton({
+  children,
+  onClick,
+  tone = "default",
+  truncate = false,
+  testId,
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+  tone?: "default" | "muted";
+  truncate?: boolean;
+  testId?: string;
+}) {
+  const theme = useTheme();
+  const [hovered, setHovered] = useState(false);
+  const color = tone === "muted" && !hovered ? theme.mutedForeground : theme.foreground;
+  return (
+    <div
+      testId={testId}
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ display: "flex", flexDirection: "row", minWidth: 0, flexShrink: truncate ? 1 : 0, cursor: "pointer" }}
+    >
+      <text
+        style={{
+          color,
+          fontSize: TEXT.xs[0],
+          lineHeight: TEXT.xs[1],
+          fontFamily: FONTS.sans,
+          fontWeight: 500,
+          whiteSpace: "nowrap",
+          ...(truncate ? { textOverflow: "ellipsis", overflow: "hidden", minWidth: 0 } : {}),
+          ...(hovered ? { textDecoration: "underline" } : {}),
+        }}
+      >
+        {children}
+      </text>
     </div>
   );
 }
