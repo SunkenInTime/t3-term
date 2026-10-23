@@ -33,6 +33,7 @@ type Phase = {
   events: number[];
   commits: number[];
   frameTimes: number[];
+  drawTimes: number[];
 };
 
 const QUIET_MS = 150;
@@ -53,10 +54,13 @@ function frames(): number {
 }
 
 function poll() {
-  if (!phase) return;
-  const count = frames();
-  if (count > phase.frames) {
-    phase.frames = count;
+  if (!phase || !renderer) return;
+  const stats = renderer.getDebugFrameOverlayStats();
+  if (stats.frames > phase.frames) {
+    // One new frame since the last poll: its own draw time is `currentMs`. The
+    // median of these is far steadier than p90 on a loaded machine.
+    if (stats.frames === phase.frames + 1 && stats.currentMs !== undefined) phase.drawTimes.push(stats.currentMs);
+    phase.frames = stats.frames;
     phase.frameTimes.push(wallNow());
   }
 }
@@ -124,6 +128,7 @@ function endPhase() {
     label: current.label,
     seconds: round((end - current.startedAt) / 1000),
     inputs: sends.length,
+    drawP50: round(percentile(current.drawTimes, 50)),
     drawP90: round(stats.p90Ms),
     drawP99: round(stats.p99Ms),
     drawMax: round(stats.maxMs),
@@ -159,6 +164,7 @@ function startPhase(label: string) {
     events: [],
     commits: [],
     frameTimes: [],
+    drawTimes: [],
   };
   timer = setInterval(poll, POLL_MS);
 }
