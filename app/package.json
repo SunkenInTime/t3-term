@@ -13,6 +13,7 @@
   "dependencies": {
     "@effect/atom-react": "catalog:",
     "@gpuix/native": "0.11.0",
+    "@pierre/diffs": "catalog:",
     "@gpuix/react": "0.11.0",
     "@t3tools/client-runtime": "workspace:*",
     "@t3tools/contracts": "workspace:*",
