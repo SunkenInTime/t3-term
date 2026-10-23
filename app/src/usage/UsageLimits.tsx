@@ -36,7 +36,12 @@ import { createContext, Fragment, useContext, useEffect, useRef, useState, type 
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { serverEnvironment } from "../state/environment.ts";
-import { environmentPresentations, readEnvironmentScope, useEnvironmentScope } from "../state/usage.ts";
+import {
+  environmentPresentations,
+  readEnvironmentScope,
+  useEnvironmentScope,
+  useUsageOverlay,
+} from "../state/usage.ts";
 import { PROVIDER_PRESENTATION } from "../web/components/usage/usageProviders.ts";
 import { redactedPlaceholder } from "../web/components/usage/redactedPlaceholder.ts";
 import { formatUpcomingTimestamp } from "../web/components/usage/usageTimestamp.ts";
@@ -134,6 +139,7 @@ export function ResetCreditDialog({
   readonly onConfirm: () => void;
   readonly disabled?: boolean;
 }) {
+  useUsageOverlay(open);
   return (
     <Dialog
       open={open}

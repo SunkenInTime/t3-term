@@ -54,6 +54,7 @@ import {
   updateUsagePagePreferences,
   usagePagePreferencesAtom,
   useUsage,
+  useUsageOverlay,
   type EnvironmentUsageStatus,
 } from "../state/usage.ts";
 import { shortcutLabelForCommand } from "../web/keybindings.ts";
@@ -1313,6 +1314,7 @@ function UsageEnvironmentFilter({
 }) {
   const theme = useTheme();
   const [open, setOpen] = useState(false);
+  useUsageOverlay(open);
   const allSelected = selectedEnvironmentIds === null;
   const label = allSelected
     ? "All environments"
@@ -1439,6 +1441,7 @@ function UsageProviderFilter({
 }) {
   const theme = useTheme();
   const [open, setOpen] = useState(false);
+  useUsageOverlay(open);
   const visible = PROVIDER_ORDER.filter((provider) => !hiddenProviders.has(provider));
   const label =
     visible.length === PROVIDER_ORDER.length

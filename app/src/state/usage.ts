@@ -18,7 +18,7 @@ import { needsCursorKeychainAccess, refreshUsage } from "@t3tools/client-runtime
 import { resolveUsageAccess } from "@t3tools/client-runtime/state/usage-access";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
 import { appAtomRegistry } from "../runtime/runtime.ts";
@@ -333,6 +333,8 @@ export function applyUsageShortcutCommand(command: string): boolean {
   const metricOption = METRIC_OPTIONS.find((option) => option.command === command);
   const periodOption = WINDOW_OPTIONS.find((option) => option.command === command);
   if (!metricOption && !periodOption) return false;
+  // Bare keys reach the window handler even while a price input has focus.
+  if (isUsageOverlayOpen()) return false;
   const showingLimits = appAtomRegistry.get(usagePagePreferencesAtom).metric === "limits";
   if (metricOption) selectUsageMetric(metricOption.value);
   if (periodOption && !showingLimits) selectUsageWindow(periodOption.days);
@@ -392,3 +394,23 @@ export const usagePriceTargetsAtom = Atom.make((get): readonly UsagePriceTarget[
     };
   }),
 ).pipe(Atom.withLabel("usage:price-targets"));
+
+// ── Open overlays (web ignores usage keys whose target is in a dialog or popup) ──
+
+const openUsageOverlays = new Set<symbol>();
+
+/** Registers an open Usage dialog or menu so bare usage keys do not fire under it. */
+export function useUsageOverlay(open: boolean): void {
+  useEffect(() => {
+    if (!open) return;
+    const token = Symbol("usage-overlay");
+    openUsageOverlays.add(token);
+    return () => {
+      openUsageOverlays.delete(token);
+    };
+  }, [open]);
+}
+
+export function isUsageOverlayOpen(): boolean {
+  return openUsageOverlays.size > 0;
+}

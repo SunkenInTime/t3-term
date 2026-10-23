@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 
 import { IconButton, Text } from "../ui/primitives.tsx";
 import { RADIUS, alpha, useTheme } from "../ui/theme.ts";
+import { useUsageOverlay } from "../state/usage.ts";
 
 export function UsageDialog({
   open,
@@ -32,6 +33,7 @@ export function UsageDialog({
 }) {
   const theme = useTheme();
   const { height: viewportHeight } = useWindowSize();
+  useUsageOverlay(open);
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
