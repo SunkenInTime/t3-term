@@ -41,6 +41,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { clientSettingsAtom } from "./clientSettings.ts";
+import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
@@ -201,15 +202,38 @@ export const sidebarDraftsAtom = Atom.make((get): ReadonlyArray<SidebarDraftEntr
       branch: draft.branch ?? null,
     });
   }
-  return entries.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  entries.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  // composerDraftsAtom changes on every keystroke in any composer; hand back the
+  // previous array unless an entry changed, so the sidebar does not re-render.
+  const previous = Option.getOrUndefined(get.self<ReadonlyArray<SidebarDraftEntry>>());
+  return previous !== undefined && sameDraftEntries(previous, entries) ? previous : entries;
 });
+function sameDraftEntries(left: ReadonlyArray<SidebarDraftEntry>, right: ReadonlyArray<SidebarDraftEntry>): boolean {
+  return (
+    left.length === right.length &&
+    left.every((entry, index) => {
+      const other = right[index]!;
+      return (
+        entry.draftId === other.draftId &&
+        entry.environmentId === other.environmentId &&
+        entry.projectId === other.projectId &&
+        entry.preview === other.preview &&
+        entry.createdAt === other.createdAt &&
+        entry.worktreePath === other.worktreePath &&
+        entry.branch === other.branch
+      );
+    })
+  );
+}
 /** Scoped thread keys (`env:thread`) whose composer holds an unsent draft. */
 export const threadKeysWithUnsentDraftAtom = Atom.make((get): ReadonlySet<string> => {
   const keys = new Set<string>();
   for (const [key, draft] of Object.entries(get(composerDraftsAtom))) {
     if (key.startsWith("thread:") && composerDraftHasUserContent(draft)) keys.add(key.slice("thread:".length));
   }
-  return keys;
+  // Same set as before: keep its identity, so typing does not re-render every row.
+  const previous = Option.getOrUndefined(get.self<ReadonlySet<string>>());
+  return previous !== undefined && previous.size === keys.size && [...keys].every((key) => previous.has(key)) ? previous : keys;
 });
 /** The sidebar's discard buttons clear the composer draft they point at. */
 export const sidebarDraftDiscardAtom = Atom.make<{
