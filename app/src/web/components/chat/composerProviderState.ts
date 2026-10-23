@@ -1,0 +1,194 @@
+// Ported from apps/web/src/components/chat/composerProviderState.tsx (logic only; the
+// traits render helpers live with the view in app/src/chat/composer/TraitsPicker.tsx).
+import {
+  type ModelCapabilities,
+  type ModelSelection,
+  type ProviderDriverKind,
+  type ProviderInstanceId,
+  type ProviderOptionSelection,
+  type ServerProviderModel,
+} from "@t3tools/contracts";
+import {
+  buildExplicitProviderOptionSelectionsFromDescriptors,
+  getProviderOptionCurrentValue,
+  getProviderOptionDescriptors,
+  isClaudeUltrathinkPrompt,
+  normalizeModelSlug,
+} from "@t3tools/shared/model";
+
+import { getProviderModelCapabilities } from "../../providerModels";
+import { getReasoningTraitStep } from "./TraitsPicker.logic";
+
+export type ComposerProviderStateInput = {
+  provider: ProviderDriverKind;
+  model: string;
+  models: ReadonlyArray<ServerProviderModel>;
+  promptInjectionState?: ComposerPromptInjectionState;
+  modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined;
+  planModeEnabled: boolean;
+};
+
+export type ComposerPromptInjectionState = "none" | "ultrathink";
+
+export type ComposerProviderState = {
+  provider: ProviderDriverKind;
+  promptEffort: string | null;
+  modelOptionsForDispatch: ReadonlyArray<ProviderOptionSelection> | undefined;
+  composerFrameClassName?: string;
+  composerSurfaceClassName?: string;
+  modelPickerIconClassName?: string;
+};
+
+
+export function getComposerPromptInjectionState(prompt: string): ComposerPromptInjectionState {
+  return isClaudeUltrathinkPrompt(prompt) ? "ultrathink" : "none";
+}
+
+/**
+ * Cursor ACP can report `fastMode: true` as the provider default. T3 only
+ * treats Fast as selected when the user chose it (draft/sticky/settings).
+ */
+export function withImplicitFastModeDefault(
+  caps: ModelCapabilities,
+  modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+): ReadonlyArray<ProviderOptionSelection> | undefined {
+  const hasExplicitFastMode = modelOptions?.some((selection) => selection.id === "fastMode");
+  if (hasExplicitFastMode) {
+    return modelOptions ?? undefined;
+  }
+  const hasFastModeDescriptor = caps.optionDescriptors?.some(
+    (descriptor) => descriptor.type === "boolean" && descriptor.id === "fastMode",
+  );
+  if (!hasFastModeDescriptor) {
+    return modelOptions ?? undefined;
+  }
+  return [...(modelOptions ?? []), { id: "fastMode", value: false }];
+}
+
+function resolveComposerOptionSelections(
+  models: ReadonlyArray<ServerProviderModel>,
+  model: string,
+  provider: ProviderDriverKind,
+  modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+  planModeEnabled: boolean,
+): {
+  caps: ModelCapabilities;
+  selections: ReadonlyArray<ProviderOptionSelection> | undefined;
+} {
+  const caps = getProviderModelCapabilities(models, model, provider, planModeEnabled);
+  return { caps, selections: withImplicitFastModeDefault(caps, modelOptions) };
+}
+
+export function getComposerProviderState(input: ComposerProviderStateInput): ComposerProviderState {
+  const {
+    provider,
+    model,
+    models,
+    modelOptions,
+    promptInjectionState = "none",
+    planModeEnabled,
+  } = input;
+  if (provider === "opencode") {
+    const normalizedModel = normalizeModelSlug(model, provider);
+    const modelIsInCatalog = models.some((candidate) => candidate.slug === normalizedModel);
+    if (!modelIsInCatalog) {
+      const preservedOptions = modelOptions?.filter(
+        (option) => planModeEnabled || option.id !== "agent" || option.value !== "plan",
+      );
+      return {
+        provider,
+        promptEffort: null,
+        modelOptionsForDispatch:
+          preservedOptions && preservedOptions.length > 0 ? preservedOptions : undefined,
+      };
+    }
+  }
+  const { caps, selections } = resolveComposerOptionSelections(
+    models,
+    model,
+    provider,
+    modelOptions,
+    planModeEnabled,
+  );
+  const descriptors = getProviderOptionDescriptors({ caps, selections });
+  const primarySelectDescriptor = descriptors.find(
+    (descriptor): descriptor is Extract<(typeof descriptors)[number], { type: "select" }> =>
+      descriptor.type === "select",
+  );
+  const primaryValue = getProviderOptionCurrentValue(primarySelectDescriptor ?? null);
+  const promptEffort = typeof primaryValue === "string" ? primaryValue : null;
+  const ultrathinkActive =
+    (primarySelectDescriptor?.promptInjectedValues?.length ?? 0) > 0 &&
+    promptInjectionState === "ultrathink";
+
+  return {
+    provider,
+    promptEffort,
+    modelOptionsForDispatch: buildExplicitProviderOptionSelectionsFromDescriptors(
+      descriptors,
+      selections,
+    ),
+    ...(ultrathinkActive
+      ? {
+          composerFrameClassName: "ultrathink-frame",
+          composerSurfaceClassName: "shadow-[0_0_0_1px_rgba(255,255,255,0.07)_inset]",
+          modelPickerIconClassName: "ultrathink-chroma",
+        }
+      : {}),
+  };
+}
+
+/**
+ * `cursor` is an expanded caret in `prompt`; the result's `cursor` keeps it on
+ * the same character when the Ultrathink prefix is added or removed.
+ */
+export function getComposerReasoningStep(input: {
+  provider: ProviderDriverKind;
+  instanceId: ProviderInstanceId;
+  model: string;
+  models: ReadonlyArray<ServerProviderModel>;
+  modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined;
+  reportedModelSelection?: ModelSelection | null | undefined;
+  prompt: string;
+  cursor: number;
+  planModeEnabled: boolean;
+  direction: 1 | -1;
+}): {
+  prompt: string;
+  cursor: number;
+  modelOptions?: ReadonlyArray<ProviderOptionSelection>;
+} | null {
+  const { prompt, cursor } = input;
+  const { selections } = resolveComposerOptionSelections(
+    input.models,
+    input.model,
+    input.provider,
+    input.modelOptions,
+    input.planModeEnabled,
+  );
+  const step = getReasoningTraitStep({
+    provider: input.provider,
+    instanceId: input.instanceId,
+    model: input.model,
+    models: input.models,
+    modelOptions: selections,
+    reportedModelSelection: input.reportedModelSelection,
+    prompt,
+    planModeEnabled: input.planModeEnabled,
+    direction: input.direction,
+  });
+  if (!step) return null;
+  const modelOptions = "modelOptions" in step ? { modelOptions: step.modelOptions } : {};
+  if (step.prompt === prompt) return { prompt, cursor, ...modelOptions };
+  // Adding the prefix also trims the prompt, so the kept text starts right after the prefix.
+  const keptStart = "modelOptions" in step ? 0 : step.prompt.length - prompt.trim().length;
+  const offset =
+    "modelOptions" in step
+      ? step.prompt.length - prompt.length
+      : keptStart - (prompt.length - prompt.trimStart().length);
+  return {
+    prompt: step.prompt,
+    cursor: Math.min(step.prompt.length, Math.max(keptStart, cursor + offset)),
+    ...modelOptions,
+  };
+}
