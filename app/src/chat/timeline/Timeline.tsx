@@ -1,6 +1,7 @@
 // The chat timeline: apps/web/src/components/chat/ThreadTimeline.tsx +
 // MessagesTimeline.tsx, with the thread-state wiring ChatView.tsx does for them
 // (latest run, working state, checkpoints, history paging, rewind and fork).
+import { openDiffSurface } from "../../state/git.ts";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { HandoffTimelineRun } from "@t3tools/client-runtime/handoff";
@@ -45,7 +46,7 @@ import {
   timelineVcs,
   turnDiffRequestAtom,
 } from "../../state/timeline.ts";
-import { detailsPanelOpenAtom, findBarOpenAtom, rightPanelOpenAtom, rightPanelSurfaceAtom, routeAtom } from "../../state/ui.ts";
+import { detailsPanelOpenAtom, findBarOpenAtom, routeAtom } from "../../state/ui.ts";
 import { Dialog } from "../../ui/overlay.tsx";
 import { Button, Text } from "../../ui/primitives.tsx";
 import { LAYOUT, alpha, useTheme } from "../../ui/theme.ts";
@@ -127,13 +128,8 @@ export function Timeline({ environmentId, threadId }: { environmentId: Environme
  * 736px column centered in the canvas with 48px gutters, kept 32px clear of
  * the floating details card.
  */
-export function resolveChatLane(width: number, detailsCardOpen: boolean) {
-  const padding = LAYOUT.chatLanePadding;
-  const laneRight = detailsCardOpen ? width - 12 - LAYOUT.detailsCardWidth - 32 : width - padding;
-  const laneWidth = Math.max(0, Math.min(LAYOUT.chatMaxWidth, width - padding * 2, laneRight - padding));
-  const left = Math.max(padding, Math.min((width - laneWidth) / 2, laneRight - laneWidth));
-  return { left: Math.round(left), width: Math.round(laneWidth) };
-}
+export { resolveChatLane } from "../chatLane.ts";
+import { resolveChatLane } from "../chatLane.ts";
 
 function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
   const theme = useTheme();
@@ -396,8 +392,7 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
 
   const onOpenTurnDiff = useStableCallback((runId: RunId, filePath?: string) => {
     appAtomRegistry.set(turnDiffRequestAtom, { environmentId, threadId, runId, filePath: filePath ?? null, nonce: Date.now() });
-    appAtomRegistry.set(rightPanelSurfaceAtom, "diff");
-    appAtomRegistry.set(rightPanelOpenAtom, true);
+    openDiffSurface({ environmentId, threadId }, { turnId: runId, ...(filePath ? { filePath } : {}) });
   });
 
   const onCancelWorktreeSetup = useStableCallback(() => {

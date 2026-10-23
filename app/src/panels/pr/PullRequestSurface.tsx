@@ -53,7 +53,7 @@ import {
   pullRequestChecksState,
   resolvePullRequestDetailChecks,
   resolvePullRequestPrimaryControl,
-} from "../../web/components/pullRequest/pullRequestDetail.logic.ts";
+} from "../../web/components/pullRequest/pullRequestSurface.logic.ts";
 import { useEnvironmentQuery } from "../../web/state/query.ts";
 import { readEnvironmentScope } from "../../web/state/session.ts";
 import { openExternalUrl } from "./openExternal.ts";

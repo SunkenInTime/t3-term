@@ -18,6 +18,10 @@
 // Ctrl+Enter sends with the alternate dispatch (queue ↔ steer) while a turn runs.
 // The caret position is not exposed by gpuix, so trigger detection uses the caret implied
 // by each edit (the end of the inserted text, or the deletion point).
+import { composerInsetAtom, restoredPromptAtom } from "../../state/timeline.ts";
+import { detailsPresentationAtom } from "../../state/git.ts";
+import { resolveChatLane } from "../chatLane.ts";
+import { newThreadContextRequestAtom } from "../../state/sidebar.ts";
 import { useAtomValue } from "@effect/atom-react";
 import { useGpuixRequired, type KeyEvent } from "@gpuix/react";
 import {
@@ -55,6 +59,9 @@ import {
   type ComposerTarget,
   addComposerAttachments,
   composerDraftAtom,
+  focusComposer,
+  restoreComposerContent,
+  setDraftWorkspace,
   composerEffortStepAtom,
   composerFocusRequestAtom,
   composerMenuOpenAtom,
@@ -77,7 +84,7 @@ import {
   serverEnvironment,
   threadEnvironment,
 } from "../../state/environment.ts";
-import { modelPickerOpenAtom, routeAtom } from "../../state/ui.ts";
+import { detailsPanelOpenAtom, modelPickerOpenAtom, routeAtom } from "../../state/ui.ts";
 import { toast } from "../../ui/toast.tsx";
 import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { Text } from "../../ui/primitives.tsx";
@@ -199,24 +206,7 @@ export function Composer({
 }) {
   const lane = <ComposerLane target={target} />;
   return layout === "overlay" ? (
-    <div
-      style={{
-        position: "absolute",
-        left: 0,
-        right: 0,
-        bottom: 0,
-        display: "flex",
-        flexDirection: "row",
-        justifyContent: "center",
-        paddingTop: 8,
-        paddingLeft: LAYOUT.chatLanePadding,
-        paddingRight: LAYOUT.chatLanePadding,
-        paddingBottom: 20,
-        pointerEvents: "none",
-      }}
-    >
-      {lane}
-    </div>
+    <ComposerOverlay>{lane}</ComposerOverlay>
   ) : (
     <div
       style={{
@@ -229,6 +219,45 @@ export function Composer({
       }}
     >
       {lane}
+    </div>
+  );
+}
+
+/**
+ * Pins the composer to the bottom of the chat canvas, in the same column the
+ * timeline uses so both clear the inline details card.
+ */
+function ComposerOverlay({ children }: { children: ReactNode }) {
+  const [width, setWidth] = useState(0);
+  const detailsOpen = useAtomValue(detailsPanelOpenAtom);
+  const detailsInline = useAtomValue(detailsPresentationAtom) === "inline";
+  const lane = resolveChatLane(width, detailsOpen && detailsInline);
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: 0,
+        right: 0,
+        bottom: 0,
+        display: "flex",
+        flexDirection: "row",
+        paddingTop: 8,
+        paddingLeft: width > 0 ? lane.left : LAYOUT.chatLanePadding,
+        paddingBottom: 20,
+        pointerEvents: "none",
+      }}
+      onLayout={(event) => {
+        const size = event as { width?: number; height?: number };
+        if (typeof size.width === "number" && Math.abs(size.width - width) > 0.5) setWidth(size.width);
+        // The timeline pads its end by the overlay's height so the last row clears it.
+        if (typeof size.height === "number" && Math.abs(appAtomRegistry.get(composerInsetAtom) - size.height) > 0.5) {
+          appAtomRegistry.set(composerInsetAtom, size.height);
+        }
+      }}
+    >
+      <div style={{ display: "flex", flexDirection: "row", justifyContent: "center", width: width > 0 ? lane.width : "100%" }}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -313,6 +342,32 @@ function ComposerBody({
   const renderer = useGpuixRequired();
   const draftKey = composerTargetKey(target);
   const draft = useAtomValue(composerDraftAtom(draftKey));
+  const restoredPrompt = useAtomValue(restoredPromptAtom);
+  useEffect(() => {
+    // "Edit from here" in the timeline hands the reverted prompt back to this thread's composer.
+    if (restoredPrompt === null || threadId === null || restoredPrompt.threadId !== threadId) return;
+    appAtomRegistry.set(restoredPromptAtom, null);
+    restoreComposerContent(draftKey, { prompt: restoredPrompt.prompt, attachments: [] });
+    focusComposer();
+  }, [restoredPrompt, threadId, draftKey]);
+  const newThreadContext = useAtomValue(newThreadContextRequestAtom);
+  useEffect(() => {
+    // "New thread on <branch>" from the sidebar seeds this project's draft with that workspace.
+    if (
+      newThreadContext === null ||
+      draftProjectId === null ||
+      newThreadContext.projectId !== draftProjectId ||
+      newThreadContext.environmentId !== environmentId
+    ) {
+      return;
+    }
+    appAtomRegistry.set(newThreadContextRequestAtom, null);
+    setDraftWorkspace(draftKey, {
+      envMode: newThreadContext.envMode,
+      branch: newThreadContext.branch,
+      worktreePath: newThreadContext.worktreePath,
+    });
+  }, [newThreadContext, draftProjectId, environmentId, draftKey]);
   // Editing a queued message repurposes the editor: its text lives in a per-run draft and
   // submit saves it in place (web useQueuedRunEdit). Model and mode stay the thread's.
   const queuedEdit = useQueuedRunEdit({ environmentId, threadId });

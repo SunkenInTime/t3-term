@@ -42,7 +42,7 @@ import {
 } from "../web/components/Sidebar.logic.ts";
 import { resolveSnoozePresets, type SnoozePreset } from "../web/components/Sidebar.snooze.ts";
 import { claimClick, consumeClaimedClick } from "./clickGuard.ts";
-import { requestCustomSnooze } from "./dialogRequests.ts";
+import { requestCustomSnooze } from "../dialogs/CustomSnoozeDialog.tsx";
 import { ProjectFavicon } from "./ProjectFavicon.tsx";
 import { ProviderIcon } from "./ProviderIcon.tsx";
 import { resolvePullRequestBadge } from "./pullRequestBadge.ts";

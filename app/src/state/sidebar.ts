@@ -3,6 +3,7 @@
 // ordered list the sidebar renders, plus the sidebar's own UI state.
 // Partition and ordering mirror apps/web/src/components/Sidebar.tsx
 // (useSidebarThreads, partitionSidebarThreads).
+import { clearComposerContent, composerDraftHasUserContent, composerDraftsAtom } from "./composer.ts";
 import * as NodeFs from "node:fs";
 import * as NodePath from "node:path";
 
@@ -182,16 +183,45 @@ export interface SidebarDraftEntry {
   readonly worktreePath: string | null;
   readonly branch: string | null;
 }
-export const sidebarDraftsAtom = Atom.make<ReadonlyArray<SidebarDraftEntry>>([]).pipe(Atom.keepAlive);
-/** Scoped thread keys whose composer holds an unsent draft. */
-export const threadKeysWithUnsentDraftAtom = Atom.make<ReadonlySet<string>>(new Set<string>()).pipe(
-  Atom.keepAlive,
-);
-/** The composer registers how to discard a draft; the sidebar's discard buttons call it. */
+/** Drafts for new threads that hold unsent content, from the composer's draft store. */
+export const sidebarDraftsAtom = Atom.make((get): ReadonlyArray<SidebarDraftEntry> => {
+  const entries: SidebarDraftEntry[] = [];
+  for (const [key, draft] of Object.entries(get(composerDraftsAtom))) {
+    if (!key.startsWith("draft:") || !composerDraftHasUserContent(draft)) continue;
+    const [, environmentId, projectId] = key.split(":");
+    if (!environmentId || !projectId || environmentId === "-" || projectId === "-") continue;
+    const firstLine = draft.prompt.trim().split(/\r?\n/)[0] ?? "";
+    entries.push({
+      draftId: key,
+      environmentId: environmentId as EnvironmentId,
+      projectId: projectId as ProjectId,
+      preview:
+        firstLine.length > 0
+          ? firstLine
+          : `${draft.attachments.length} attachment${draft.attachments.length === 1 ? "" : "s"}`,
+      createdAt: draft.updatedAt ?? new Date(0).toISOString(),
+      worktreePath: draft.worktreePath ?? null,
+      branch: draft.branch ?? null,
+    });
+  }
+  return entries.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+});
+/** Scoped thread keys (`env:thread`) whose composer holds an unsent draft. */
+export const threadKeysWithUnsentDraftAtom = Atom.make((get): ReadonlySet<string> => {
+  const keys = new Set<string>();
+  for (const [key, draft] of Object.entries(get(composerDraftsAtom))) {
+    if (key.startsWith("thread:") && composerDraftHasUserContent(draft)) keys.add(key.slice("thread:".length));
+  }
+  return keys;
+});
+/** The sidebar's discard buttons clear the composer draft they point at. */
 export const sidebarDraftDiscardAtom = Atom.make<{
   readonly discardDraft: (draftId: string) => void;
   readonly discardThreadDraft: (threadRef: ScopedThreadRef) => void;
-} | null>(null).pipe(Atom.keepAlive);
+} | null>({
+  discardDraft: (draftId) => clearComposerContent(draftId),
+  discardThreadDraft: (threadRef) => clearComposerContent(`thread:${threadRef.environmentId}:${threadRef.threadId}`),
+}).pipe(Atom.keepAlive);
 
 // ── Environment lookups ─────────────────────────────────────────────────
 

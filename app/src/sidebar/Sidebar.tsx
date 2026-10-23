@@ -65,9 +65,8 @@ import {
 import { searchSidebarThreads, shouldCreateNewThreadInCurrentProject } from "../web/components/Sidebar.logic.ts";
 import { resolveSnoozePresets, snoozeWakeLabel } from "../web/components/Sidebar.snooze.ts";
 import { ContextMenu } from "./ContextMenu.tsx";
-import { requestCustomSnooze } from "./dialogRequests.ts";
+import { requestCustomSnooze } from "../dialogs/CustomSnoozeDialog.tsx";
 import { SidebarChromeFooter, SidebarChromeHeader, useStageIdentification } from "./SidebarChrome.tsx";
-import { SidebarDialogs } from "./SidebarDialogs.tsx";
 import { SidebarDraftBlock } from "./SidebarDraftBlock.tsx";
 import { SidebarSectionHeader } from "./SidebarListMarkers.tsx";
 import { SidebarThreadHeader } from "./SidebarThreadHeader.tsx";
@@ -233,9 +232,8 @@ export function Sidebar() {
       });
       return;
     }
-    // Web opens the palette's "New thread in…" picker here. Until the palette
-    // implements that mode, start the draft in the current project as well.
-    setRoute({ kind: "draft", environmentId: newThreadContextProject.environmentId, projectId: newThreadContextProject.projectId });
+    // Web opens the palette's "New thread in…" picker here.
+    openCommandPaletteMode("new-thread-in");
   };
 
   // web: newThreadShortcutLabel / newThreadInProjectShortcutLabel / showNewThreadInProjectHint
@@ -447,7 +445,6 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
       </ScrollFadeRegion>
       <SidebarChromeFooter />
       <SidebarContextMenuHost />
-      <SidebarDialogs />
       <RouteVisitWatermark />
     </div>
   );
