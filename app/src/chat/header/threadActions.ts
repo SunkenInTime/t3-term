@@ -2,6 +2,7 @@
 // parts of hooks/useThreadActions.ts it calls. Item building is the ported
 // buildThreadActionMenuItems; this file runs the chosen action.
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { requestCustomSnooze } from "../../dialogs/CustomSnoozeDialog.tsx";
 import {
   isAtomCommandInterrupted,
   runAtomCommand,
@@ -129,13 +130,11 @@ export async function runThreadAction(action: ThreadActionMenuId, context: Threa
   }
   if (action.startsWith("snooze:")) {
     const preset = context.presets.find((candidate) => `snooze:${candidate.id}` === action);
-    if (!preset) {
-      // web opens CustomSnoozeDialog for "snooze:custom"; t3-term offers the presets only.
-      toast({ type: "info", title: "Pick a preset", description: "Custom snooze times are not available in t3-term yet." });
-      return;
-    }
+    // "snooze:custom" asks for a time in CustomSnoozeDialog, like web.
+    const snoozedUntil = preset ? preset.snoozedUntil : (await requestCustomSnooze())?.snoozedUntil;
+    if (!snoozedUntil) return;
     await reportFailure("Failed to snooze thread", () =>
-      command(threadEnvironment.snooze, ref, { threadId: ref.threadId, snoozedUntil: preset.snoozedUntil }),
+      command(threadEnvironment.snooze, ref, { threadId: ref.threadId, snoozedUntil }),
     );
     return;
   }

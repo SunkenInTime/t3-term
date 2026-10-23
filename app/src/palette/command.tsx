@@ -1,0 +1,545 @@
+// Palette primitives: port of apps/web/src/components/ui/command.tsx,
+// CommandPaletteContent.tsx and CommandPaletteResults.tsx.
+//   popup: dialog-glass, radius 18 (rounded-2xl), max-w 576 (max-w-xl), max-h 420, 10vh from top
+//   input row: py 6 px 8, 36px input, Search icon 16 icon-muted
+//   list: py 8 px 8; heading px 8 py 6 12px medium muted; item min-h 28 py 6 px 8 radius 6, gap 8
+//   footer: bg fg 2.5%, py 10 px 16, 14px medium muted, kbd bg fg 8% fg text
+import { useWindowSize } from "@gpuix/react";
+import * as DialogPrimitive from "@gpuix/react/dialog";
+import type { KeyEvent } from "@gpuix/react";
+import type { ResolvedKeybindingsConfig } from "@t3tools/contracts";
+import { memo, useEffect, useRef, type ReactNode, type RefObject } from "react";
+
+import { Icon, type IconName } from "../ui/Icon.tsx";
+import { Text } from "../ui/primitives.tsx";
+import { FONTS, RADIUS, alpha, useTheme, type Palette } from "../ui/theme.ts";
+import type {
+  CommandPaletteActionItem,
+  CommandPaletteRow,
+  CommandPaletteSubmenuItem,
+} from "../web/components/CommandPalette.logic.ts";
+import { shortcutLabelForCommand } from "../web/keybindings.ts";
+
+export type PaletteItem = CommandPaletteActionItem | CommandPaletteSubmenuItem;
+
+const POPUP_WIDTH = 576;
+const POPUP_MAX_HEIGHT = 420;
+
+export function paletteSurface(theme: Palette) {
+  return {
+    background: theme.appearance === "dark" ? "#090909" : theme.background,
+    border: theme.appearance === "dark" ? alpha("#ffffff", 0.08) : alpha(theme.foreground, 0.1),
+  };
+}
+
+/** The dialog: dimmed backdrop and the popup 10vh from the top. */
+export function PaletteFrame({
+  onClose,
+  height,
+  initialFocus,
+  children,
+  testId = "command-palette",
+}: {
+  onClose: () => void;
+  /** Fixed height (content search uses h-105); otherwise the popup hugs its content. */
+  height?: number;
+  initialFocus?: RefObject<{ id: number } | null>;
+  children: ReactNode;
+  testId?: string;
+}) {
+  const theme = useTheme();
+  const { height: windowHeight } = useWindowSize();
+  const surface = paletteSurface(theme);
+  const top = Math.max(16, Math.round((windowHeight || 900) * 0.1));
+  return (
+    <DialogPrimitive.Root
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      {/* The layer lays out as a column: center across, start down. */}
+      <DialogPrimitive.Portal style={{ flexDirection: "column", alignItems: "center", justifyContent: "flex-start", paddingTop: top }}>
+        <DialogPrimitive.Backdrop style={{ backgroundColor: theme.overlay, pointerEvents: "auto" }} />
+        <DialogPrimitive.Popup
+          testId={testId}
+          {...(initialFocus ? { initialFocus: initialFocus as never } : {})}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            width: POPUP_WIDTH,
+            maxWidth: "92%",
+            ...(height === undefined ? { maxHeight: POPUP_MAX_HEIGHT } : { height }),
+            borderRadius: RADIUS["2xl"],
+            borderWidth: 1,
+            borderColor: surface.border,
+            backgroundColor: surface.background,
+            boxShadow: [
+              { offsetX: 0, offsetY: 24, blurRadius: 64, spreadRadius: -24, color: "#000000a6" },
+            ],
+            overflow: "hidden",
+          }}
+        >
+          {children}
+        </DialogPrimitive.Popup>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
+  );
+}
+
+/** CommandInput: a borderless 36px input behind a leading icon or back button. */
+export function PaletteInput({
+  value,
+  placeholder,
+  onChange,
+  onKeyDown,
+  onSubmit,
+  leading = "search",
+  onBack,
+  accessory,
+  accessoryWidth = 0,
+  disabled,
+  inputRef,
+  testId = "command-palette-input",
+}: {
+  value: string;
+  placeholder: string;
+  onChange: (value: string) => void;
+  onKeyDown?: (event: KeyEvent) => void;
+  onSubmit?: () => void;
+  leading?: "search" | "back" | IconName;
+  onBack?: () => void;
+  accessory?: ReactNode;
+  accessoryWidth?: number;
+  disabled?: boolean;
+  inputRef?: RefObject<{ id: number } | null>;
+  testId?: string;
+}) {
+  const theme = useTheme();
+  const icon: IconName = leading === "search" ? "search" : leading === "back" ? "arrow-left" : leading;
+  return (
+    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", paddingTop: 6, paddingBottom: 6, paddingLeft: 8, paddingRight: 8, flexShrink: 0 }}>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "center",
+          flexGrow: 1,
+          height: 36,
+          opacity: disabled ? 0.64 : 1,
+        }}
+      >
+        <div
+          testId={leading === "back" ? "command-palette-back" : undefined}
+          onClick={leading === "back" ? onBack : undefined}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 32,
+            height: 36,
+            paddingLeft: 2,
+            flexShrink: 0,
+            cursor: leading === "back" ? "pointer" : "default",
+          }}
+        >
+          <Icon name={icon} size={16} color={leading === "back" ? theme.foreground : theme.mutedForeground} />
+        </div>
+        <input
+          ref={inputRef as never}
+          testId={testId}
+          autoFocus
+          value={value}
+          placeholder={placeholder}
+          readOnly={disabled}
+          theme={{ caret: theme.foreground }}
+          onChange={(event) => onChange(event.value ?? "")}
+          onSubmit={() => onSubmit?.()}
+          onKeyDown={onKeyDown}
+          style={{
+            flexGrow: 1,
+            height: 34,
+            minWidth: 0,
+            paddingLeft: 1,
+            paddingRight: 8 + accessoryWidth,
+            fontSize: 14,
+            lineHeight: 20,
+            fontFamily: FONTS.sans,
+            color: theme.foreground,
+          }}
+        />
+      </div>
+      {accessory}
+    </div>
+  );
+}
+
+export function PaletteKbd({ children, icon }: { children?: string; icon?: IconName }) {
+  const theme = useTheme();
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        height: 20,
+        minWidth: 20,
+        paddingLeft: 4,
+        paddingRight: 4,
+        borderRadius: 4,
+        backgroundColor: alpha(theme.foreground, 0.08),
+        flexShrink: 0,
+      }}
+    >
+      {icon ? <Icon name={icon} size={12} color={theme.foreground} /> : null}
+      {children ? (
+        <Text size="xs" weight={500} color={theme.foreground}>
+          {children}
+        </Text>
+      ) : null}
+    </div>
+  );
+}
+
+function KbdGroup({ children }: { children: ReactNode }) {
+  return <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>{children}</div>;
+}
+
+/** CommandFooter with the hint row. */
+export function PaletteFooter({
+  actionLabel = "Select",
+  escapeLabel = "Close",
+  backHint,
+  trailing,
+}: {
+  actionLabel?: string | null;
+  escapeLabel?: string;
+  /** Submenus: how to go back. gpuix inputs swallow Backspace, so it is Esc here. */
+  backHint?: string | null;
+  trailing?: ReactNode;
+}) {
+  const theme = useTheme();
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+        paddingTop: 10,
+        paddingBottom: 10,
+        paddingLeft: 16,
+        paddingRight: 16,
+        backgroundColor: alpha(theme.foreground, 0.025),
+        flexShrink: 0,
+      }}
+    >
+      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 12 }}>
+        <KbdGroup>
+          <PaletteKbd icon="arrow-up" />
+          <PaletteKbd icon="arrow-down" />
+          <Text weight={500} color={theme.mutedForeground}>
+            Navigate
+          </Text>
+        </KbdGroup>
+        {actionLabel ? (
+          <KbdGroup>
+            <PaletteKbd>Enter</PaletteKbd>
+            <Text weight={500} color={theme.mutedForeground}>
+              {actionLabel}
+            </Text>
+          </KbdGroup>
+        ) : null}
+        {backHint ? (
+          <KbdGroup>
+            <PaletteKbd>Esc</PaletteKbd>
+            <Text weight={500} color={theme.mutedForeground}>
+              {backHint}
+            </Text>
+          </KbdGroup>
+        ) : (
+          <KbdGroup>
+            <PaletteKbd>Esc</PaletteKbd>
+            <Text weight={500} color={theme.mutedForeground}>
+              {escapeLabel}
+            </Text>
+          </KbdGroup>
+        )}
+      </div>
+      {trailing}
+    </div>
+  );
+}
+
+/** Scrolling results region (CommandPanel + list padding). */
+/**
+ * Rows must be direct children: gpuix's scrollIntoView scrolls the scroller to
+ * the direct child that contains the target.
+ */
+export function PalettePanel({ children, fill, padding }: { children: ReactNode; fill?: boolean; padding?: { y: number; x: number } }) {
+  const theme = useTheme();
+  return (
+    <div
+      testId="command-palette-results"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        ...(padding ? { paddingTop: padding.y, paddingBottom: padding.y, paddingLeft: padding.x, paddingRight: padding.x } : {}),
+        flexGrow: fill ? 1 : 0,
+        flexShrink: 1,
+        minHeight: 0,
+        overflowY: "scroll",
+        scrollbarColor: theme.scrollbar,
+        scrollbarWidth: 6,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+export function PaletteEmptyState({ message }: { message: string }) {
+  const theme = useTheme();
+  return (
+    <div style={{ display: "flex", justifyContent: "center", paddingTop: 40, paddingBottom: 40, paddingLeft: 16, paddingRight: 16 }}>
+      <Text color={theme.mutedForeground} style={{ textAlign: "center" }}>
+        {message}
+      </Text>
+    </div>
+  );
+}
+
+export function PaletteNotice({ message }: { message: string }) {
+  const theme = useTheme();
+  return (
+    <div style={{ paddingTop: 12, paddingBottom: 12, paddingLeft: 16, paddingRight: 16, flexShrink: 0 }}>
+      <Text color={theme.mutedForeground}>{message}</Text>
+    </div>
+  );
+}
+
+function renderTitle(title: ReactNode, color: string) {
+  return typeof title === "string" ? (
+    <Text color={color} truncate>
+      {title}
+    </Text>
+  ) : (
+    title
+  );
+}
+
+const PaletteRowView = memo(function PaletteRowView({
+  item,
+  active,
+  disabled,
+  shortcutLabel,
+  onExecute,
+  onHover,
+  rowRef,
+}: {
+  item: PaletteItem;
+  active: boolean;
+  disabled: boolean;
+  shortcutLabel: string | null;
+  onExecute: (item: PaletteItem) => void;
+  onHover: (value: string) => void;
+  rowRef?: (instance: { scrollIntoView?: () => void } | null) => void;
+}) {
+  const theme = useTheme();
+  const hasSecondLine = item.description !== undefined || item.threadContentMatch !== undefined;
+  return (
+    <div
+      ref={rowRef as never}
+      testId={`palette-item-${item.value}`}
+      onClick={disabled ? undefined : () => onExecute(item)}
+      onMouseEnter={disabled ? undefined : () => onHover(item.value)}
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: hasSecondLine ? "flex-start" : "center",
+        gap: 8,
+        minHeight: 28,
+        paddingTop: 6,
+        paddingBottom: 6,
+        paddingLeft: 8,
+        paddingRight: 8,
+        borderRadius: RADIUS.sm,
+        backgroundColor: active ? theme.accent : "#00000000",
+        opacity: disabled ? 0.64 : 1,
+        cursor: disabled ? "default" : "pointer",
+        flexShrink: 0,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", height: 20, flexShrink: 0, pointerEvents: "none" }}>{item.icon}</div>
+      <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, flexShrink: 1, minWidth: 0, pointerEvents: "none" }}>
+        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, height: 20 }}>
+          {item.titleLeadingContent}
+          {renderTitle(item.title, theme.foreground)}
+        </div>
+        {item.threadContentMatch ? (
+          <Text size="xs" color={alpha(theme.mutedForeground, 0.9)} truncate>
+            {item.threadContentMatch.snippet}
+          </Text>
+        ) : null}
+        {item.description !== undefined ? (
+          typeof item.description === "string" ? (
+            <Text size="xs" color={alpha(theme.mutedForeground, 0.7)} style={{ minWidth: 0 }}>
+              {item.description}
+            </Text>
+          ) : (
+            item.description
+          )
+        ) : null}
+      </div>
+      {item.titleTrailingContent ? (
+        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", height: 20, flexShrink: 0 }}>
+          {item.titleTrailingContent}
+        </div>
+      ) : null}
+      {item.timestamp ? (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", minWidth: 48, height: 20, flexShrink: 0, pointerEvents: "none" }}>
+          <Text size="xs" color={alpha(theme.mutedForeground, 0.7)}>
+            {item.timestamp}
+          </Text>
+        </div>
+      ) : null}
+      {shortcutLabel ? (
+        <div style={{ display: "flex", alignItems: "center", height: hasSecondLine ? undefined : 20, alignSelf: "center", flexShrink: 0, pointerEvents: "none" }}>
+          <Text size="xs" weight={500} color={theme.mutedForeground}>
+            {shortcutLabel}
+          </Text>
+        </div>
+      ) : null}
+      {item.kind === "submenu" ? (
+        <div style={{ display: "flex", alignItems: "center", height: 20, marginRight: -2, flexShrink: 0, pointerEvents: "none" }}>
+          <Icon name="chevron-right" size={16} color={alpha(theme.mutedForeground, 0.7)} />
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+/**
+ * CommandPaletteVirtualizedResults: headings and items. Keyboard highlight
+ * scrolls its row into view. Rows past `limit` are not built; the palette
+ * narrows long lists by typing, like web's virtualized list makes them cheap.
+ */
+export function PaletteRows({
+  rows,
+  highlightedValue,
+  keybindings,
+  onExecute,
+  onHighlight,
+  scrollToHighlight,
+  emptyMessage,
+  limit = 300,
+}: {
+  rows: ReadonlyArray<CommandPaletteRow>;
+  highlightedValue: string | null;
+  keybindings: ResolvedKeybindingsConfig;
+  onExecute: (item: PaletteItem) => void;
+  onHighlight: (value: string) => void;
+  /** Bumped when the keyboard moves the highlight. */
+  scrollToHighlight: number;
+  emptyMessage: string;
+  limit?: number;
+}) {
+  const theme = useTheme();
+  const rowRefs = useRef(new Map<string, { scrollIntoView?: () => void }>());
+  useEffect(() => {
+    if (highlightedValue === null) return;
+    rowRefs.current.get(highlightedValue)?.scrollIntoView?.();
+  }, [scrollToHighlight]);
+  if (rows.length === 0) {
+    return <PaletteEmptyState message={emptyMessage} />;
+  }
+  return (
+    <PalettePanel padding={{ y: 8, x: 8 }}>
+      {rows.slice(0, limit).map((row) =>
+          row.kind === "label" ? (
+            <div key={row.key} style={{ paddingTop: row.first ? 0 : 6, flexShrink: 0 }}>
+              <div style={{ paddingTop: 6, paddingBottom: 6, paddingLeft: 8, paddingRight: 8 }}>
+                <Text size="xs" weight={500} color={theme.mutedForeground}>
+                  {row.label}
+                </Text>
+              </div>
+            </div>
+          ) : (
+            <PaletteRowView
+              key={row.key}
+              item={row.item}
+              active={row.itemIndex !== null && highlightedValue === row.item.value}
+              disabled={row.itemIndex === null}
+              shortcutLabel={
+                row.itemIndex !== null && row.item.shortcutCommand
+                  ? shortcutLabelForCommand(keybindings, row.item.shortcutCommand)
+                  : null
+              }
+              onExecute={onExecute}
+              onHover={onHighlight}
+              rowRef={(instance) => {
+                if (instance) rowRefs.current.set(row.item.value, instance);
+                else rowRefs.current.delete(row.item.value);
+              }}
+            />
+          ),
+        )}
+    </PalettePanel>
+  );
+}
+
+/** ITEM_ICON_CLASS: size-4 text-icon-muted. */
+export function ItemIcon({ name, color }: { name: IconName; color?: string }) {
+  const theme = useTheme();
+  return <Icon name={name} size={16} color={color ?? theme.mutedForeground} />;
+}
+
+/** CommandPaletteSubmitButton: an outline xs button with the shortcut in a Kbd. */
+export function PaletteSubmitButton({
+  label,
+  shortcutLabel,
+  disabled,
+  onSubmit,
+}: {
+  label: string;
+  shortcutLabel: string;
+  disabled?: boolean;
+  onSubmit: () => void;
+}) {
+  const theme = useTheme();
+  const dark = theme.appearance === "dark";
+  return (
+    <div
+      testId="command-palette-submit"
+      onClick={disabled ? undefined : onSubmit}
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        height: 24,
+        paddingLeft: 7,
+        paddingRight: 4,
+        marginRight: 2,
+        borderRadius: RADIUS.md,
+        borderWidth: 1,
+        borderColor: theme.input,
+        backgroundColor: dark ? alpha("#ffffff", 0.026) : theme.popover,
+        opacity: disabled ? 0.64 : 1,
+        cursor: disabled ? "default" : "pointer",
+        flexShrink: 0,
+        ...(disabled ? {} : { hover: { backgroundColor: dark ? alpha("#ffffff", 0.05) : theme.accent } }),
+      }}
+    >
+      <Text size="xs" weight={500}>
+        {label}
+      </Text>
+      <div style={{ display: "flex", alignItems: "center", height: 18, paddingLeft: 4, paddingRight: 4, borderRadius: 4, backgroundColor: theme.muted }}>
+        <Text size="xs" weight={500} color={theme.mutedForeground}>
+          {shortcutLabel}
+        </Text>
+      </div>
+    </div>
+  );
+}

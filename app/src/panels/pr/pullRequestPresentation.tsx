@@ -8,7 +8,7 @@ import {
   pullRequestCheckStatusLabel,
   summarizePullRequestChecks,
   type PullRequestChecksState,
-} from "../../web/components/pullRequest/pullRequestDetail.logic.ts";
+} from "../../web/components/pullRequest/pullRequestSurface.logic.ts";
 import { Icon, type IconName } from "../../ui/Icon.tsx";
 import { Popover } from "../../ui/overlay.tsx";
 import { Button, Text } from "../../ui/primitives.tsx";

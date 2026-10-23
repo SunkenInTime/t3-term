@@ -475,3 +475,6 @@ export function terminalNavigationShortcutData(
 
   return null;
 }
+
+/** `navigator.platform` equivalent for the machine t3-term runs on. */
+export const HOST_PLATFORM = navigatorPlatform;

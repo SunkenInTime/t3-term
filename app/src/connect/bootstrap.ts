@@ -1,5 +1,9 @@
 import { ConnectionOnboarding } from "@t3tools/client-runtime/connection";
-import { createRuntimeCommand, runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import {
+  createRuntimeCommand,
+  runAtomCommand,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
@@ -48,7 +52,7 @@ export function parseArgs(argv: ReadonlyArray<string>): Args {
   };
 }
 
-const registerPairing = createRuntimeCommand(connectionAtomRuntime, {
+export const registerPairing = createRuntimeCommand(connectionAtomRuntime, {
   label: "t3term:register-pairing",
   execute: (input: ConnectionOnboarding.PairingConnectionInput) =>
     ConnectionOnboarding.ConnectionOnboarding.pipe(
@@ -75,7 +79,7 @@ export async function bootstrapConnections(args: Args): Promise<Boot> {
         environmentCatalog.register,
         bearerRegistration({ descriptor, httpBaseUrl: args.url, token: args.token }),
       );
-      if (result._tag === "Failure") throw new Error(String(result.cause));
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       return { environmentId: descriptor.environmentId, error: null };
     }
     if (args.pair) {
@@ -83,7 +87,7 @@ export async function bootstrapConnections(args: Args): Promise<Boot> {
         ? { pairingUrl: args.pair }
         : { host: args.url ?? "", pairingCode: args.pair };
       const result = await runAtomCommand(appAtomRegistry, registerPairing, input);
-      if (result._tag === "Failure") throw new Error(String(result.cause));
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       return { environmentId: result.value, error: null };
     }
     if (args.local) return await connectLocalServer();
