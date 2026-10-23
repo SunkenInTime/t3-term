@@ -34,7 +34,7 @@ const PROVIDER_OPTIONS = sourceControlClients.definitions.map((definition) => ({
   label: definition.pickerLabel,
   pathPlaceholder: definition.repositoryPathHint,
   definition,
-  icon: (definition.icon === "github" ? "github" : definition.icon === "gitlab" ? "gitlab" : "git-pull-request") as IconName,
+  icon: (definition.icon === "github" ? "brand-github" : definition.icon === "gitlab" ? "gitlab" : "git-pull-request") as IconName,
 }));
 
 function readiness(provider: SourceControlProviderKind, discovered: ReadonlyArray<SourceControlProviderDiscoveryItem>) {

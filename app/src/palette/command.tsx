@@ -96,6 +96,7 @@ export function PaletteInput({
   onSubmit,
   leading = "search",
   onBack,
+  onBackspaceWhenEmpty,
   accessory,
   accessoryWidth = 0,
   disabled,
@@ -109,6 +110,8 @@ export function PaletteInput({
   onSubmit?: () => void;
   leading?: "search" | "back" | IconName;
   onBack?: () => void;
+  /** Backspace on an already empty query (web: steps back out of a submenu). */
+  onBackspaceWhenEmpty?: () => void;
   accessory?: ReactNode;
   accessoryWidth?: number;
   disabled?: boolean;
@@ -117,6 +120,9 @@ export function PaletteInput({
 }) {
   const theme = useTheme();
   const icon: IconName = leading === "search" ? "search" : leading === "back" ? "arrow-left" : leading;
+  // The input runs Backspace as an editing action, so onKeyDown never sees it; the
+  // key-up still arrives. A Backspace that changed nothing found the query empty.
+  const editedSinceKeyUp = useRef(false);
   return (
     <div style={{ display: "flex", flexDirection: "row", alignItems: "center", paddingTop: 6, paddingBottom: 6, paddingLeft: 8, paddingRight: 8, flexShrink: 0 }}>
       <div
@@ -153,9 +159,17 @@ export function PaletteInput({
           placeholder={placeholder}
           readOnly={disabled}
           theme={{ caret: theme.foreground }}
-          onChange={(event) => onChange(event.value ?? "")}
+          onChange={(event) => {
+            editedSinceKeyUp.current = true;
+            onChange(event.value ?? "");
+          }}
           onSubmit={() => onSubmit?.()}
           onKeyDown={onKeyDown}
+          onKeyUp={(event) => {
+            const edited = editedSinceKeyUp.current;
+            editedSinceKeyUp.current = false;
+            if (event.key === "backspace" && !edited && value === "") onBackspaceWhenEmpty?.();
+          }}
           style={{
             flexGrow: 1,
             height: 34,
@@ -214,7 +228,7 @@ export function PaletteFooter({
 }: {
   actionLabel?: string | null;
   escapeLabel?: string;
-  /** Submenus: how to go back. gpuix inputs swallow Backspace, so it is Esc here. */
+  /** Submenus: the Backspace hint shown before Esc (web "Backspace Back · Esc Close"). */
   backHint?: string | null;
   trailing?: ReactNode;
 }) {
@@ -253,19 +267,18 @@ export function PaletteFooter({
         ) : null}
         {backHint ? (
           <KbdGroup>
-            <PaletteKbd>Esc</PaletteKbd>
+            <PaletteKbd>Backspace</PaletteKbd>
             <Text weight={500} color={theme.mutedForeground}>
               {backHint}
             </Text>
           </KbdGroup>
-        ) : (
-          <KbdGroup>
-            <PaletteKbd>Esc</PaletteKbd>
-            <Text weight={500} color={theme.mutedForeground}>
-              {escapeLabel}
-            </Text>
-          </KbdGroup>
-        )}
+        ) : null}
+        <KbdGroup>
+          <PaletteKbd>Esc</PaletteKbd>
+          <Text weight={500} color={theme.mutedForeground}>
+            {escapeLabel}
+          </Text>
+        </KbdGroup>
       </div>
       {trailing}
     </div>

@@ -1,7 +1,8 @@
 // The thread title menu, after apps/web/src/hooks/useThreadActionMenu.ts and the
 // parts of hooks/useThreadActions.ts it calls. Item building is the ported
 // buildThreadActionMenuItems; this file runs the chosen action.
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { scopeProjectRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { startNewThread } from "../../palette/actions.ts";
 import { requestCustomSnooze } from "../../dialogs/CustomSnoozeDialog.tsx";
 import {
   isAtomCommandInterrupted,
@@ -142,7 +143,7 @@ export async function runThreadAction(action: ThreadActionMenuId, context: Threa
   switch (action) {
     case "new-thread-on-branch":
       // The draft opens in the thread's project; the composer owns branch/worktree seeding.
-      appAtomRegistry.set(routeAtom, { kind: "draft", environmentId: ref.environmentId, projectId: thread.projectId });
+      startNewThread(scopeProjectRef(ref.environmentId, thread.projectId));
       return;
     case "project-settings":
       openProjectSettings({ environmentId: ref.environmentId, projectId: thread.projectId });

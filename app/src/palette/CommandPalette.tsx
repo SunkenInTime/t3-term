@@ -4,10 +4,11 @@
 // nested views, the add-project flow), files (Go to file) and content
 // (Search project contents).
 //
-// gpuix differences: the <input> swallows Backspace, so Esc steps back out of a
-// nested view (web: Backspace on an empty query) and the footer says so. There
-// is no virtualized list; long result lists are capped by PaletteRows.
+// gpuix differences: the <input> runs Backspace as an editing action, so the
+// "Backspace on an empty query steps back" rule listens on key-up. There is no
+// virtualized list; long result lists are capped by PaletteRows.
 import { useAtomValue } from "@effect/atom-react";
+import { availableScratchWorkspaceRoot } from "@t3tools/client-runtime/operations/projects";
 import { useGpuixRequired, type KeyEvent } from "@gpuix/react";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -84,6 +85,7 @@ import {
   projectEnvironment,
 } from "../state/environment.ts";
 import { environmentPresentations } from "../state/navigation.ts";
+import { sidebarProjectGroupsAtom } from "../state/sidebar.ts";
 import {
   commandPaletteDetailAtom,
   dispatchCommandPalette,
@@ -135,7 +137,6 @@ import {
   openThread,
   readActiveThreadReferenceCopyTarget,
   reportError,
-  scratchEnvironmentId,
   sortProjectsByActivity,
   startNewThread,
   startScratchThread,
@@ -348,6 +349,7 @@ function CommandModePalette({
   const keybindings = useAtomValue(activeKeybindingsAtom);
   const route = useAtomValue(routeAtom);
   const projects = useAtomValue(environmentProjects.projectsAtom);
+  const projectGroups = useAtomValue(sidebarProjectGroupsAtom);
   const threads = useAtomValue(environmentThreadShells.navigationThreadShellsAtom);
   const environments = usePaletteEnvironments();
   const activeThread = useRouteThreadShell();
@@ -389,7 +391,22 @@ function CommandModePalette({
       : null;
   const currentProjectCwd = currentProject?.workspaceRoot ?? null;
 
-  const scratchTargetEnvironmentId = scratchEnvironmentId(currentProjectEnvironmentId ?? primaryEnvironmentId);
+  // useScratchProject.scratchEnvironmentId over the subscribed presentations, so the
+  // action appears as soon as the connection lands (a registry read can be stale).
+  const scratchRootFor = (environmentId: EnvironmentId) => {
+    const environment = environments.find((candidate) => candidate.environmentId === environmentId);
+    return environment ? availableScratchWorkspaceRoot(environment.phase as never, environment.serverConfig) : null;
+  };
+  const scratchCandidate = currentProjectEnvironmentId ?? primaryEnvironmentId;
+  const scratchOffering = environments.filter((environment) => scratchRootFor(environment.environmentId) !== null);
+  const scratchTargetEnvironmentId =
+    scratchCandidate !== null
+      ? scratchRootFor(scratchCandidate) !== null
+        ? scratchCandidate
+        : null
+      : scratchOffering.length === 1
+        ? (scratchOffering[0]?.environmentId ?? null)
+        : null;
 
   // Projects in picker order: the contextual one first, then by activity.
   const sortedProjects = sortProjectsByActivity(
@@ -398,10 +415,45 @@ function CommandModePalette({
   );
   const contextualProject =
     currentProject && currentProject.isScratch !== true ? currentProject : (sortedProjects[0] ?? null);
-  const pickerProjects: CommandPaletteProject[] = [
-    ...(contextualProject ? [contextualProject] : []),
-    ...sortedProjects.filter((project) => project !== contextualProject),
-  ].map((project) => ({ ...(project as never as CommandPaletteProject), displayName: project.title }));
+  // web buildSidebarProjectPickerEntries over the sidebar's logical project groups
+  // (grouped by repository by default): one entry per group, titled with the group
+  // name, targeting the contextual member or the group's representative, with the
+  // contextual group first.
+  const contextualRef = contextualProject
+    ? { environmentId: contextualProject.environmentId, projectId: contextualProject.id }
+    : null;
+  const isContextualMember = (ref: { readonly environmentId: string; readonly projectId: string }) =>
+    contextualRef !== null && ref.environmentId === contextualRef.environmentId && ref.projectId === contextualRef.projectId;
+  const pickerEntries = projectGroups
+    .filter((group) => group.isScratch !== true)
+    .flatMap((group) => {
+      const preferred = contextualRef
+        ? (group.memberProjects.find(
+            (project) => project.environmentId === contextualRef.environmentId && project.id === contextualRef.projectId,
+          ) ?? null)
+        : null;
+      const target =
+        preferred ??
+        group.memberProjects.find((project) => project.environmentId === group.environmentId && project.id === group.id) ??
+        group.memberProjects[0];
+      return target ? [{ group, target, isPreferred: group.memberProjectRefs.some(isContextualMember) }] : [];
+    });
+  const preferredEntryIndex = pickerEntries.findIndex((entry) => entry.isPreferred);
+  const orderedPickerEntries =
+    preferredEntryIndex <= 0
+      ? pickerEntries
+      : [
+          pickerEntries[preferredEntryIndex]!,
+          ...pickerEntries.slice(0, preferredEntryIndex),
+          ...pickerEntries.slice(preferredEntryIndex + 1),
+        ];
+  const projectGroupByTargetKey = new Map(
+    orderedPickerEntries.map(({ group, target }) => [`${target.environmentId}:${target.id}`, group] as const),
+  );
+  const pickerProjects: CommandPaletteProject[] = orderedPickerEntries.map(({ group, target }) => ({
+    ...(target as never as CommandPaletteProject),
+    displayName: group.displayName,
+  }));
 
   const runThread = async (thread: { readonly environmentId: EnvironmentId; readonly id: ThreadId }) => {
     openThread({ environmentId: thread.environmentId, threadId: thread.id });
@@ -447,7 +499,16 @@ function CommandModePalette({
         searchTerms: (project) => [locationByEnvironmentId.get(project.environmentId)?.label ?? ""],
         renderDescription: projectDescription,
         icon: projectIcon,
-        runProject: async (project) => startNewThread(scopeProjectRef(project.environmentId, project.id)),
+        runProject: async (project) => {
+          // A group that holds the contextual project starts the thread there.
+          const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
+          const useContextual = contextualRef !== null && group?.memberProjectRefs.some(isContextualMember) === true;
+          startNewThread(
+            useContextual && contextualRef
+              ? scopeProjectRef(contextualRef.environmentId, contextualRef.projectId)
+              : scopeProjectRef(project.environmentId, project.id),
+          );
+        },
       }),
     );
     if (scratchTargetEnvironmentId === null) return items;
@@ -515,9 +576,17 @@ function CommandModePalette({
     setHighlightCleared(false);
   }
 
+  // Clicking a row or the back arrow moves focus off the search field; web's rows
+  // never take focus, so put it back for typing, arrows and Backspace.
+  function focusSearchInput(): void {
+    const id = inputRef.current?.id;
+    if (id != null) renderer.focusElement?.(id);
+  }
+
   function pushPaletteView(view: CommandPaletteView): void {
     dispatchSearch({ type: "push", view });
     resetHighlight();
+    focusSearchInput();
   }
 
   function popView(): void {
@@ -530,6 +599,7 @@ function CommandModePalette({
     }
     dispatchSearch({ type: "back" });
     resetHighlight();
+    focusSearchInput();
   }
 
   function handleQueryChange(nextQuery: string): void {
@@ -1640,14 +1710,9 @@ function CommandModePalette({
     const key = event.key;
     const modifiers = event.modifiers;
     const primaryModifier = HOST_PLATFORM === "MacIntel" ? modifiers?.cmd === true : modifiers?.ctrl === true;
-    if (key === "escape") {
-      if (viewStack.length > 0) {
-        event.preventDefault();
-        event.stopPropagation();
-        popView();
-      }
-      return;
-    }
+    // Esc closes the palette from any view, like web; Backspace on an empty
+    // query steps back (PaletteInput onBackspaceWhenEmpty).
+    if (key === "escape") return;
     if (key === "enter" && primaryModifier) {
       event.preventDefault();
       event.stopPropagation();
@@ -1797,6 +1862,7 @@ function CommandModePalette({
         onSubmit={handleSubmit}
         leading={isSubmenu ? "back" : isBrowsing ? "folder-plus" : "search"}
         onBack={popView}
+        onBackspaceWhenEmpty={isSubmenu ? popView : undefined}
         accessory={inputAccessory}
       />
       {newProjectPathPreview !== null ? (

@@ -18,7 +18,9 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { canSnooze, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import * as ThreadUndo from "@t3tools/client-runtime/state/thread-undo";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
+import { startNewThread } from "../palette/actions.ts";
 import * as Cause from "effect/Cause";
 import { AsyncResult, Atom } from "effect/reactivity";
 
@@ -112,11 +114,7 @@ export function navigateToThread(ref: ScopedThreadRef): void {
 }
 
 function navigateToNewThread(environmentId: EnvironmentId, projectId: string): void {
-  appAtomRegistry.set(routeAtom, {
-    kind: "draft",
-    environmentId,
-    projectId: projectId as never,
-  });
+  startNewThread(scopeProjectRef(environmentId, projectId as never));
 }
 
 // ── Undo notice (hooks/showThreadUndoNotice.ts) ─────────────────────────

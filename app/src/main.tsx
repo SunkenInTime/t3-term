@@ -36,6 +36,10 @@ render(<App boot={boot} />, {
   onKeyDown: (event) => handleGlobalKeyDown(event),
   onKeyUp: (event) => handleGlobalKeyUp(event),
   titlebarTransparent: process.platform === "darwin",
+  // GPUI on Windows draws text with ClearType-style subpixel AA (coloured fringes)
+  // in an opaque window and grayscale AA in a transparent one; web is grayscale.
+  // The app paints every pixel with its own background, so nothing shows through.
+  ...(process.platform === "win32" && !args.terminal ? { windowBackground: "transparent" as const } : {}),
   trafficLightX: 16,
   trafficLightY: 18,
 });

@@ -19,8 +19,7 @@
 // The caret position is not exposed by gpuix, so trigger detection uses the caret implied
 // by each edit (the end of the inserted text, or the deletion point).
 import { composerInsetAtom, restoredPromptAtom } from "../../state/timeline.ts";
-import { detailsPresentationAtom } from "../../state/git.ts";
-import { resolveChatLane } from "../chatLane.ts";
+import { ChatLane, useDetailsCardInline } from "../chatLane.tsx";
 import { newThreadContextRequestAtom } from "../../state/sidebar.ts";
 import { useAtomValue } from "@effect/atom-react";
 import { useGpuixRequired, type KeyEvent } from "@gpuix/react";
@@ -34,6 +33,7 @@ import {
   deriveThreadStructureRuntime,
   threadRuntimeHasInterruptibleRun,
 } from "@t3tools/client-runtime/state/thread-execution";
+import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thread-workflows";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
   type EnvironmentId,
@@ -84,7 +84,7 @@ import {
   serverEnvironment,
   threadEnvironment,
 } from "../../state/environment.ts";
-import { detailsPanelOpenAtom, modelPickerOpenAtom, routeAtom } from "../../state/ui.ts";
+import { modelPickerOpenAtom, routeAtom } from "../../state/ui.ts";
 import { toast } from "../../ui/toast.tsx";
 import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { Text } from "../../ui/primitives.tsx";
@@ -201,10 +201,14 @@ export function Composer({
   layout = target.kind === "thread" ? "overlay" : "inline",
 }: {
   target: ComposerTarget;
-  /** `overlay` pins the composer to the bottom of the chat canvas; `inline` leaves placement to the parent. */
-  layout?: "overlay" | "inline";
+  /**
+   * `overlay` pins the composer to the bottom of the chat canvas; `inline` centers it
+   * with the lane padding; `lane` fills a parent that is already a ChatLane.
+   */
+  layout?: "overlay" | "inline" | "lane";
 }) {
   const lane = <ComposerLane target={target} />;
+  if (layout === "lane") return <div style={{ display: "flex", flexDirection: "row", width: "100%" }}>{lane}</div>;
   return layout === "overlay" ? (
     <ComposerOverlay>{lane}</ComposerOverlay>
   ) : (
@@ -228,10 +232,7 @@ export function Composer({
  * timeline uses so both clear the inline details card.
  */
 function ComposerOverlay({ children }: { children: ReactNode }) {
-  const [width, setWidth] = useState(0);
-  const detailsOpen = useAtomValue(detailsPanelOpenAtom);
-  const detailsInline = useAtomValue(detailsPresentationAtom) === "inline";
-  const lane = resolveChatLane(width, detailsOpen && detailsInline);
+  const cardInline = useDetailsCardInline();
   return (
     <div
       style={{
@@ -239,25 +240,21 @@ function ComposerOverlay({ children }: { children: ReactNode }) {
         left: 0,
         right: 0,
         bottom: 0,
-        display: "flex",
-        flexDirection: "row",
         paddingTop: 8,
-        paddingLeft: width > 0 ? lane.left : LAYOUT.chatLanePadding,
         paddingBottom: 20,
         pointerEvents: "none",
       }}
       onLayout={(event) => {
-        const size = event as { width?: number; height?: number };
-        if (typeof size.width === "number" && Math.abs(size.width - width) > 0.5) setWidth(size.width);
+        const size = event as { height?: number };
         // The timeline pads its end by the overlay's height so the last row clears it.
         if (typeof size.height === "number" && Math.abs(appAtomRegistry.get(composerInsetAtom) - size.height) > 0.5) {
           appAtomRegistry.set(composerInsetAtom, size.height);
         }
       }}
     >
-      <div style={{ display: "flex", flexDirection: "row", justifyContent: "center", width: width > 0 ? lane.width : "100%" }}>
-        {children}
-      </div>
+      <ChatLane cardInline={cardInline}>
+        <div style={{ display: "flex", flexDirection: "row", justifyContent: "center", width: "100%" }}>{children}</div>
+      </ChatLane>
     </div>
   );
 }
@@ -302,9 +299,11 @@ function surfaceStyle(theme: ReturnType<typeof useTheme>) {
     borderWidth: 1,
     borderColor: theme.appearance === "dark" ? alpha("#ffffff", 0.05) : "#00000014",
     backgroundColor: glass,
+    // web --shadow-composer: 0 12px 28px -18px. GPUI's blurRadius spreads about
+    // twice as far as a CSS blur, so 14 here matches web's 28 pixel for pixel.
     ...(theme.appearance === "dark"
       ? {}
-      : { boxShadow: { offsetX: 0, offsetY: 12, blurRadius: 28, spreadRadius: -18, color: "#00000066" } }),
+      : { boxShadow: { offsetX: 0, offsetY: 12, blurRadius: 14, spreadRadius: -18, color: "#00000066" } }),
   };
 }
 
@@ -420,6 +419,10 @@ function ComposerBody({
     threadProvider: shell?.modelSelection.instanceId ?? null,
     providers: providerStatuses,
   });
+  // web ChatView: a thread whose provider session can hand off to another
+  // provider leaves the model picker unlocked.
+  const supportsProviderSwitchingViaHandoff = threadSupportsProviderHandoff(projection);
+  const modelPickerLockedProvider = supportsProviderSwitchingViaHandoff ? null : lockedProvider;
   const draftThreadModelSelection: ModelSelection | null =
     (sticky.activeProvider ? (sticky.modelSelectionByProvider[sticky.activeProvider] ?? null) : null) ??
     settings.defaultModelSelection ??
@@ -892,7 +895,7 @@ function ComposerBody({
       ? {
           providers: providerStatuses,
           hasStartedSession: runtime !== null,
-          supportsProviderSwitchingViaHandoff: false,
+          supportsProviderSwitchingViaHandoff,
           currentModelSelection: shell.modelSelection,
           currentProviderInstanceId: runtime?.providerInstanceId ?? null,
         }
@@ -900,7 +903,7 @@ function ComposerBody({
   );
   const onProviderModelSelect = (instanceId: ProviderInstanceId, model: string) => {
     const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-    if (lockedProvider !== null && entry && entry.driver !== lockedProvider) return;
+    if (!supportsProviderSwitchingViaHandoff && lockedProvider !== null && entry && entry.driver !== lockedProvider) return;
     const resolved = resolveAppModelSelectionForInstance(instanceId, settings, providerStatuses, model);
     if (!resolved) return;
     const remembered = sticky.modelSelectionByProvider[instanceId];
@@ -1103,7 +1106,7 @@ function ComposerBody({
         environmentId={environmentId}
         activeInstanceId={selectedInstanceId}
         model={selectedModel}
-        lockedProvider={lockedProvider}
+        lockedProvider={modelPickerLockedProvider}
         lockedContinuationGroupKey={lockedContinuationGroupKey}
         instanceEntries={providerInstanceEntries}
         modelOptionsByInstance={modelOptionsByInstance}

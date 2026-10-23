@@ -28,6 +28,7 @@ Bundled highlight languages: Rust, TS, TSX, JS, JSX, Python, Go, JSON, Bash, TOM
 - Sizes: number (px) or `"100%"`. Everything else px numbers. No shorthand strings, no calc/em/rem.
 - Flex and grid (grid templates are a track count). `position: relative|absolute`, top/right/bottom/left. **No z-index**: tree order is paint order; use `<anchored deferred>` to paint on top.
 - `backgroundColor`, `background` (2-stop linear gradient object), `opacity`, per-side `borderXWidth`, one `borderColor`, per-corner radii, `borderStyle: dashed`, `boxShadow` object/array, `outline*`.
+- `boxShadow.blurRadius` spreads about twice as far as a CSS blur of the same number: halve web's blur (measured on the light composer shadow, `0 12px 28px -18px` → `blurRadius: 14`).
 - Text: `fontSize`, `fontFamily`, `fontWeight`, `textAlign`, `lineHeight` (px), `whiteSpace: nowrap`, `textOverflow: ellipsis|ellipsis-start`, `lineClamp`, `textDecoration`. No letterSpacing, no italic, no `pre` (split lines yourself).
 - `overflow*: hidden|scroll`, `scrollbarColor`, `scrollbarWidth`.
 - `hover`, `active`, `focusVisible`: one level of nested state style, native. No group-hover: use `onMouseEnter`/`onMouseLeave` state for hover-reveal.

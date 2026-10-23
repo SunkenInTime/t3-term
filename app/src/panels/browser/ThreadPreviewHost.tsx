@@ -29,6 +29,8 @@ import {
 import { rightPanelActions, rightPanelThreadStateAtom } from "../../state/rightPanel.ts";
 import { rightPanelOpenAtom } from "../../state/ui.ts";
 import { detailsCardRectAtom } from "../../state/git.ts";
+import { appAtomRegistry } from "../../runtime/runtime.ts";
+import { chatLaneMiniPlayerAtom } from "../../chat/chatLane.tsx";
 import { useClientSettings } from "../../web/browser/clientSettings.ts";
 import { type BrowserViewportResizeDirection } from "../../web/browser/browserViewportLayout.ts";
 import {
@@ -184,6 +186,16 @@ function BrowserMiniPlayer({ threadRef, miniPlayer }: { threadRef: ScopedThreadR
   const sourceSize = streamViewport ?? resolvePreviewMiniPlayerSourceSize(snapshot?.viewport ?? FILL_PREVIEW_VIEWPORT, null, snapshot?.zoomFactor ?? 1);
   const detailsCard = useAtomValue(detailsCardRectAtom);
   const frame = container ? miniPlayerFrame(miniPlayer, sourceSize, container, detailsCard) : null;
+  // The chat lane narrows to sit beside the player (chat/chatLane.tsx).
+  const frameLeft = frame ? Math.round(frame.x) : null;
+  const canvasWidth = container?.width ?? null;
+  useEffect(() => {
+    appAtomRegistry.set(
+      chatLaneMiniPlayerAtom,
+      frameLeft !== null && canvasWidth !== null ? { left: frameLeft, canvasWidth } : null,
+    );
+  }, [frameLeft, canvasWidth]);
+  useEffect(() => () => appAtomRegistry.set(chatLaneMiniPlayerAtom, null), []);
   const radius = PREVIEW_MINI_PLAYER_CORNER_RADIUS;
   const pillInset = Math.max(8, Math.round(radius * 0.55));
 

@@ -432,12 +432,22 @@ function TraitsRadioItem(props: {
         // max-w-56 sits on the span; a gpuix <text> wraps to its parent's width.
         <div style={{ maxWidth: 224 }}>
           <text style={{ color: alpha(theme.mutedForeground, 0.8), fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans }}>
-            {props.description}
+            {withoutOrphan(props.description)}
           </text>
         </div>
       ) : null}
     </div>
   );
+}
+
+/**
+ * Web sets `text-pretty`, which keeps a lone word off the last line. gpuix has no
+ * text-wrap, so the last two words are joined with a no-break space instead.
+ */
+const NO_BREAK_SPACE = String.fromCharCode(0xa0);
+
+function withoutOrphan(text: string): string {
+  return text.replace(/ (\S+)$/, `${NO_BREAK_SPACE}$1`);
 }
 
 /** Group label: px 8, pt 6 pb 4 (py 6 for On/Off groups), 12px medium muted. */

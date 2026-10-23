@@ -116,7 +116,7 @@ export function ProjectFavicon({
   opacity?: number;
   /**
    * Web's receded rows use `grayscale`. gpuix has no image filters, so a
-   * server favicon keeps its colours; generated icons turn grey.
+   * server favicon is dimmed further instead; generated icons turn grey.
    */
   grayscale?: boolean;
 }) {
@@ -171,7 +171,17 @@ export function ProjectFavicon({
     }
     return wrap(<Icon name="folder-code" size={size} color={theme.mutedForeground} />);
   }
-  return wrap(
+  // gpuix images take no CSS filter, so a receded server favicon cannot turn grey.
+  // Dimming it a further quarter takes the colour down about as far as web's
+  // grayscale + 40% opacity reads at 16px.
+  const imageOpacity = grayscale && opacity !== undefined ? opacity * 0.75 : opacity;
+  const wrapImage = (child: React.ReactNode) =>
+    imageOpacity === undefined ? (
+      child
+    ) : (
+      <div style={{ display: "flex", flexShrink: 0, opacity: imageOpacity, pointerEvents: "none" }}>{child}</div>
+    );
+  return wrapImage(
     <img
       src={src}
       objectFit="contain"

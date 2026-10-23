@@ -16,7 +16,10 @@ import { sortProjectsByActivity, startNewThread } from "../palette/actions.ts";
 import { ProjectGlyph } from "../sidebar/ProjectGlyph.tsx";
 import { Text } from "../ui/primitives.tsx";
 import { LAYOUT, useTheme } from "../ui/theme.ts";
+import { composerTargetKey } from "../state/composer.ts";
+import { ChatLane, useDetailsCardInline } from "./chatLane.tsx";
 import { Composer } from "./composer/Composer.tsx";
+import { DraftDetailsCard } from "./details/ThreadDetailsCard.tsx";
 import { DraftHeroHeadline } from "./draft/DraftHeroHeadline.tsx";
 import { NoActiveThreadState, NoProjectsHero } from "./draft/EmptyStates.tsx";
 
@@ -28,6 +31,7 @@ const COMPOSER_SLOT_HEIGHT = 140;
 
 export function DraftView({ environmentId, projectId }: { environmentId: EnvironmentId | null; projectId: ProjectId | null }) {
   const theme = useTheme();
+  const cardInline = useDetailsCardInline();
   const projects = useAtomValue(environmentProjects.projectsAtom);
   const project =
     environmentId !== null && projectId !== null
@@ -42,7 +46,8 @@ export function DraftView({ environmentId, projectId }: { environmentId: Environ
               <>
                 <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1, minWidth: 0 }}>
                   <ProjectGlyph project={project} size={14} />
-                  <Text weight={500} color={theme.mutedForeground} truncate>
+                  {/* web ChatHeader BreadcrumbText: the project name stops at 160px. */}
+                  <Text weight={500} color={theme.mutedForeground} truncate style={{ maxWidth: 160 }}>
                     {project.title}
                   </Text>
                 </div>
@@ -57,26 +62,36 @@ export function DraftView({ environmentId, projectId }: { environmentId: Environ
           </>
         }
       />
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          flexGrow: 1,
-          minHeight: 0,
-          paddingLeft: LAYOUT.chatLanePadding,
-          paddingRight: LAYOUT.chatLanePadding,
-          // Lift the group a little above center, like web's hero.
-          paddingBottom: 140,
-        }}
-      >
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%", paddingBottom: 16 }}>
-          <DraftHeroHeadline environmentId={environmentId} projectId={projectId} />
+      {/* The chat canvas: the hero and composer share the thread view's lane, so they
+          clear the details card the same way (web renders drafts through ChatView). */}
+      <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, position: "relative" }}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "center",
+            flexGrow: 1,
+            minHeight: 0,
+            // Lift the group a little above center, like web's hero.
+            paddingBottom: 140,
+          }}
+        >
+          <ChatLane cardInline={cardInline}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%", paddingBottom: 16 }}>
+              <DraftHeroHeadline environmentId={environmentId} projectId={projectId} />
+            </div>
+            <div style={{ position: "relative", width: "100%", height: COMPOSER_SLOT_HEIGHT, flexShrink: 0 }}>
+              <Composer target={{ kind: "draft", environmentId, projectId }} layout="lane" />
+            </div>
+          </ChatLane>
         </div>
-        <div style={{ position: "relative", width: "100%", height: COMPOSER_SLOT_HEIGHT, flexShrink: 0 }}>
-          <Composer target={{ kind: "draft", environmentId, projectId }} />
-        </div>
+        {project && environmentId !== null && projectId !== null ? (
+          <DraftDetailsCard
+            environmentId={environmentId}
+            projectId={projectId}
+            draftKey={composerTargetKey({ kind: "draft", environmentId, projectId })}
+          />
+        ) : null}
       </div>
     </div>
   );

@@ -22,9 +22,16 @@ import type {
   ServerConfig,
   ThreadId,
 } from "@t3tools/contracts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resolveThreadReferenceCopyTarget } from "@t3tools/shared/threadReference";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
+import {
+  composerTargetKey,
+  readComposerDraft,
+  setComposerInteractionMode,
+  setComposerModelSelection,
+} from "../state/composer.ts";
 import {
   environmentCatalog,
   environmentProjects,
@@ -153,7 +160,51 @@ export function openThread(ref: Pick<ScopedThreadRef, "environmentId" | "threadI
 }
 
 /** handleNewThread: open the draft for a project. */
+/**
+ * useHandleNewThread's carry-over: a new draft starts with the project's default
+ * model, else the model of the thread or draft the user is on (its composer pick
+ * first, then the thread's own), unless the user already picked one in that draft.
+ * The interaction mode (Build/Plan) comes along too.
+ */
+function carryComposerStateInto(projectRef: ScopedProjectRef): void {
+  const destinationKey = composerTargetKey({ kind: "draft", ...projectRef });
+  const route = appAtomRegistry.get(routeAtom);
+  const sourceKey =
+    route.kind === "thread"
+      ? composerTargetKey({ kind: "thread", environmentId: route.environmentId, threadId: route.threadId })
+      : route.kind === "draft"
+        ? composerTargetKey({ kind: "draft", environmentId: route.environmentId, projectId: route.projectId })
+        : null;
+  const sourceShell = route.kind === "thread" ? readThreadShell(scopeThreadRef(route.environmentId, route.threadId)) : null;
+  const sourceComposer = sourceKey ? readComposerDraft(sourceKey) : null;
+  const composerSelection = sourceComposer?.activeProvider
+    ? (sourceComposer.modelSelectionByProvider[sourceComposer.activeProvider] ?? null)
+    : null;
+  const carrySelection = composerSelection ?? sourceShell?.modelSelection ?? null;
+  const carryInteractionMode = sourceComposer?.interactionMode ?? sourceShell?.interactionMode ?? null;
+
+  const project = readProjects().find(
+    (candidate) => candidate.environmentId === projectRef.environmentId && candidate.id === projectRef.projectId,
+  );
+  const serverSettings = readServerConfig(projectRef.environmentId)?.settings;
+  const projectDefault =
+    serverSettings && project
+      ? (resolveProjectSettings(serverSettings, project.id, project).settings.defaultModelSelection ?? null)
+      : null;
+
+  if (carryInteractionMode) setComposerInteractionMode(destinationKey, carryInteractionMode);
+  const destination = readComposerDraft(destinationKey);
+  const explicitPick =
+    destination.modelSelectionExplicit === true &&
+    destination.activeProvider !== null &&
+    destination.modelSelectionByProvider[destination.activeProvider] !== undefined;
+  if (explicitPick) return;
+  const override = projectDefault ?? (sourceKey === destinationKey ? null : carrySelection);
+  if (override) setComposerModelSelection(destinationKey, override, { sticky: false, explicit: false, replaceOptions: true });
+}
+
 export function startNewThread(projectRef: ScopedProjectRef): void {
+  carryComposerStateInto(projectRef);
   appAtomRegistry.set(routeAtom, {
     kind: "draft",
     environmentId: projectRef.environmentId,

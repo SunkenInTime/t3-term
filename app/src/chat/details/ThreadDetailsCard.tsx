@@ -5,10 +5,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { EventPayload } from "@gpuix/native";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { useEffect, useState } from "react";
+import type { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
+import { composerDraftAtom } from "../../state/composer.ts";
 import { environmentThreadShells, projectIndexAtom } from "../../state/environment.ts";
 import {
   detailsCardRectAtom,
@@ -60,12 +61,50 @@ export function cardSurfaceStyle(theme: ReturnType<typeof useTheme>) {
 }
 
 export function ThreadDetailsCard({ environmentId, threadId }: { environmentId: EnvironmentId; threadId: ThreadId }) {
+  return (
+    <DetailsCardFrame contentKey={`${environmentId}:${threadId}`}>
+      {(density) => <ThreadDetailsContent environmentId={environmentId} threadId={threadId} density={density} />}
+    </DetailsCardFrame>
+  );
+}
+
+/** The details card of a new-thread draft (web ThreadDetailsPanel with a draftId). */
+export function DraftDetailsCard({
+  environmentId,
+  projectId,
+  draftKey,
+}: {
+  environmentId: EnvironmentId;
+  projectId: ProjectId;
+  draftKey: string;
+}) {
+  return (
+    <DetailsCardFrame contentKey={`draft:${draftKey}`}>
+      {(density) => (
+        <DraftDetailsContent environmentId={environmentId} projectId={projectId} draftKey={draftKey} density={density} />
+      )}
+    </DetailsCardFrame>
+  );
+}
+
+/**
+ * Measures the chat canvas it is mounted in, publishes whether the card fits
+ * inline, and floats the card at the canvas's top-right with the density that
+ * fits its height.
+ */
+function DetailsCardFrame({
+  contentKey,
+  children,
+}: {
+  contentKey: string;
+  children: (density: DetailsDensity) => ReactNode;
+}) {
   const theme = useTheme();
   const open = useAtomValue(detailsPanelOpenAtom);
   const [container, setContainer] = useState({ width: 0, height: 0 });
   const [heights, setHeights] = useState({ key: "", full: 0, compact: 0 });
   const placement = container.width > 0 ? resolvePlacement(container) : null;
-  const key = `${environmentId}:${threadId}`;
+  const key = contentKey;
   const measured = heights.key === key ? heights : { full: 0, compact: 0 };
   const density = placement ? resolveDensity(placement.height, measured) : "full";
 
@@ -125,10 +164,60 @@ export function ThreadDetailsCard({ environmentId, threadId }: { environmentId: 
               }}
               style={{ display: "flex", flexDirection: "column" }}
             >
-              <ThreadDetailsContent environmentId={environmentId} threadId={threadId} density={density} />
+              {children(density)}
             </div>
           </div>
         </div>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * A draft has no thread yet: its workspace and branch live on the composer
+ * draft, scripts wait for the thread's terminal, and there is no PR, automation
+ * or relationship to show (web hides those sections for drafts).
+ */
+function DraftDetailsContent({
+  environmentId,
+  projectId,
+  draftKey,
+  density,
+}: {
+  environmentId: EnvironmentId;
+  projectId: ProjectId;
+  draftKey: string;
+  density: DetailsDensity;
+}) {
+  const projects = useAtomValue(projectIndexAtom);
+  const draft = useAtomValue(composerDraftAtom(draftKey));
+  const project = projects.get(`${environmentId}:${projectId}`);
+  const gitCwd = project ? (draft.worktreePath ?? project.workspaceRoot) : null;
+  const status = useEnvironmentQuery(gitCwd ? vcsEnvironment.status({ environmentId, input: { cwd: gitCwd } }) : null);
+  if (!project) return null;
+  const isGitRepo = status.data?.isRepo ?? true;
+  return (
+    <>
+      <DetailsSection separated={false} testId="details-workspace">
+        {density === "full" ? (
+          <RunContextRow environmentId={environmentId} thread={null} draftKey={draftKey} project={project} envLocked={false} />
+        ) : null}
+        {density !== "essential" ? <OpenInRow environmentId={environmentId} openInCwd={gitCwd} /> : null}
+        <ProjectScriptsRow environmentId={environmentId} thread={null} project={project} gitCwd={gitCwd} />
+      </DetailsSection>
+      {gitCwd ? (
+        <DetailsSection separated={density === "full"} testId="details-version-control">
+          {isGitRepo ? (
+            <BranchRow environmentId={environmentId} thread={null} draftKey={draftKey} projectCwd={project.workspaceRoot} />
+          ) : null}
+          <GitActionsControl
+            environmentId={environmentId}
+            thread={null}
+            draftKey={draftKey}
+            gitCwd={gitCwd}
+            compact={density !== "full"}
+          />
+        </DetailsSection>
       ) : null}
     </>
   );

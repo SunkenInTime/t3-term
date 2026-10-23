@@ -12,7 +12,9 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/model
 import { canSnooze, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import { makeThreadSearchKey, threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
-import { THREAD_JUMP_KEYBINDING_COMMANDS, type ScopedThreadRef } from "@t3tools/contracts";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { THREAD_JUMP_KEYBINDING_COMMANDS, type ProjectId, type ScopedThreadRef } from "@t3tools/contracts";
+import { startNewThread } from "../palette/actions.ts";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
@@ -230,11 +232,11 @@ export function Sidebar() {
   })();
   const handleNewThread = (shiftKey: boolean) => {
     if (shouldCreateNewThreadInCurrentProject(shiftKey, groups.length) || newThreadContextProject === null) {
-      setRoute({
-        kind: "draft",
-        environmentId: newThreadContextProject?.environmentId ?? null,
-        projectId: newThreadContextProject?.projectId ?? null,
-      });
+      if (newThreadContextProject) {
+        startNewThread(scopeProjectRef(newThreadContextProject.environmentId, newThreadContextProject.projectId as ProjectId));
+        return;
+      }
+      setRoute({ kind: "draft", environmentId: null, projectId: null });
       return;
     }
     // Web opens the palette's "New thread in…" picker here.
@@ -547,8 +549,9 @@ function ShowMoreSettled({ count }: { count: number }) {
       }}
     >
       <Icon name="plus" size={16} color={color} />
-      <Text size="sm" color={color}>
-        Show {count} more
+      {/* One string: separate JSX children become separate gpuix text runs that wrap apart. */}
+      <Text size="sm" color={color} style={{ whiteSpace: "nowrap" }}>
+        {`Show ${count} more`}
       </Text>
     </div>
   );
