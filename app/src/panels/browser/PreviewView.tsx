@@ -6,7 +6,7 @@
 // recording/screenshot, element annotation, moving tabs between runtimes, the
 // zoom indicator and DevTools. A PDF tab shows the page frames instead of
 // web's <embed>.
-import type { EventPayload } from "@gpuix/react";
+import type { EventPayload, KeyEvent } from "@gpuix/react";
 import {
   AuthPreviewOperateScope,
   DEFAULT_BROWSER_PROFILE_ID,
@@ -90,6 +90,7 @@ export function PreviewView({
   const isServerTab = snapshot?.runtime === "server";
   const serverSurfaceRef = useRef<ServerBrowserHandle | null>(null);
   const [serverAspectRatioLocked, setServerAspectRatioLocked] = useState(false);
+  const [focusUrlNonce, setFocusUrlNonce] = useState(0);
   const [bodySize, setBodySize] = useState<{ width: number; height: number } | null>(null);
   const [serverControlledTabId, setServerControlledTabId] = useState<string | null>(null);
   const serverInputDisabled = isServerTab && serverControlledTabId !== runtimeTabId;
@@ -194,8 +195,37 @@ export function PreviewView({
     clearCache: () => void adjustServerTab({ clear: "cache" }),
   };
 
+  // Web's `when: "previewFocus"` shortcuts (packages/shared/src/keybindings.ts): they apply
+  // while focus is inside the preview, so they are handled where its keys bubble.
+  const onPreviewKeyDown = (event: KeyEvent) => {
+    const mods = event.modifiers;
+    const mod = process.platform === "darwin" ? mods?.cmd : mods?.ctrl;
+    if (!mod || mods?.alt || !canOperate) return;
+    const key = (event.key ?? "").toLowerCase();
+    const action =
+      key === "r" && !mods?.shift
+        ? handleRefresh
+        : key === "l" && !mods?.shift
+          ? () => setFocusUrlNonce((value) => value + 1)
+          : key === "=" || key === "+"
+            ? () => stepServerZoom(1)
+            : key === "-"
+              ? () => stepServerZoom(-1)
+              : key === "0"
+                ? () => stepServerZoom(0)
+                : null;
+    if (!action) return;
+    event.preventDefault();
+    event.stopPropagation();
+    action();
+  };
+
   return (
-    <div testId="preview-view" style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, backgroundColor: theme.background }}>
+    <div
+      testId="preview-view"
+      onKeyDown={onPreviewKeyDown}
+      style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, backgroundColor: theme.background }}
+    >
       <PreviewChromeRow
         url={url}
         loading={loading || serverStreamPending}
@@ -203,6 +233,7 @@ export function PreviewView({
         canGoForward={canGoForward && !serverInputDisabled}
         refreshDisabled={refreshDisabled || serverInputDisabled}
         inputDisabled={serverInputDisabled}
+        focusUrlNonce={focusUrlNonce || undefined}
         onBack={() => serverSurfaceRef.current?.history(-1)}
         onForward={() => serverSurfaceRef.current?.history(1)}
         onRefresh={handleRefresh}

@@ -62,6 +62,11 @@ export function PreviewChromeRow({
   useEffect(() => {
     if (focusUrlNonce == null || inputIdRef.current === null) return;
     renderer.focusElement?.(inputIdRef.current);
+    // Programmatic focus does not report onFocus, so enter the editing state here.
+    if (renderer.getFocusedElementId?.() === inputIdRef.current) {
+      setDraft(url);
+      setInputFocused(true);
+    }
   }, [focusUrlNonce]);
 
   const submit = () => {

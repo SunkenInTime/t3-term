@@ -66,3 +66,11 @@ Bundled highlight languages: Rust, TS, TSX, JS, JSX, Python, Go, JSON, Bash, TOM
 ## Terminal mode
 
 `render(..., { terminal: true })` or `GPUIX_TERMINAL=1`: frames go through the kitty graphics protocol (shared memory locally, zlib+base64 inline over SSH). kitty and Ghostty only; macOS and Linux only (Windows throws). Window size follows the terminal. Fonts: Segoe UI/Consolas (Windows), Helvetica/Menlo (macOS), DejaVu (Linux) by default; `renderer.registerFont(ttfBytes)` adds more.
+
+## Pointer findings from the Browser surface (gpuix 0.11.0, Windows)
+
+- A press reaches **every** element under the pointer with `onMouseDown`, not only the topmost. If one of them also has `onMouseMove` it captures the pointer, and a child button underneath never sees its release, so its `onClick` never fires. Act on `onMouseDown` in such a child, or keep capturing listeners off its ancestors.
+- Hover (`onMouseEnter`) goes to the topmost element only: a filled child (one with a background) ends its parent's hover. Give decorative children `pointerEvents: "none"`, or share one hover across parent and children.
+- A child cannot re-enable pointer events under a `pointerEvents: "none"` parent. Keep a full-cover `none` layout probe as a sibling of interactive overlays, not their parent.
+- `<img style={{ height: "100%" }}>` resolved against an outer definite ancestor rather than its flex parent; size live images in px from `onLayout`.
+- `renderer.focusElement(inputId)` focuses an `<input>` without firing its `onFocus`; check `renderer.getFocusedElementId()` and set any focused state yourself.

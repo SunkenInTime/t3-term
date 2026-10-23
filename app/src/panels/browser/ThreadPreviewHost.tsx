@@ -34,6 +34,7 @@ import { type BrowserViewportResizeDirection } from "../../web/browser/browserVi
 import {
   clampPreviewMiniPlayerPosition,
   PREVIEW_MINI_PLAYER_CORNER_RADIUS,
+  PREVIEW_MINI_PLAYER_EDGE_GAP,
   resizePreviewMiniPlayer,
   resolvePreviewMiniPlayerFrame,
   resolvePreviewMiniPlayerSourceSize,
@@ -128,10 +129,10 @@ const RESIZE_HANDLES: ReadonlyArray<{
 ];
 
 /**
- * chatCanvasLayout.ts places an unplaced player bottom-right and then narrows the
- * chat lane so the composer clears it. t3-term's timeline and composer do not move
- * aside, so the player keeps resolvePreviewMiniPlayerFrame's own default instead:
- * top-right, under the thread details card. A dragged player stays clear of the card.
+ * chatCanvasLayout.ts: an unplaced player sits bottom-right; a dragged one stays
+ * clear of the thread details card. Web also narrows the chat lane when the
+ * player would cover it; t3-term's timeline and composer do not move aside, so
+ * in a narrow window the player can overlap the composer.
  */
 function miniPlayerFrame(
   miniPlayer: PreviewMiniPlayerState,
@@ -139,13 +140,8 @@ function miniPlayerFrame(
   container: { width: number; height: number },
   detailsCard: { left: number; right: number; bottom: number } | null,
 ): PreviewMiniPlayerFrame {
-  const frame = resolvePreviewMiniPlayerFrame({
-    width: miniPlayer.width,
-    position: miniPlayer.position,
-    source,
-    container,
-    obstacles: { detailsCard, composer: null },
-  });
+  let frame = resolvePreviewMiniPlayerFrame({ width: miniPlayer.width, position: miniPlayer.position, source, container });
+  if (miniPlayer.position === null) frame = { ...frame, y: container.height - frame.height - PREVIEW_MINI_PLAYER_EDGE_GAP };
   const obstacle = miniPlayer.lastInteraction === "resize" ? null : detailsCard;
   return { ...frame, ...clampPreviewMiniPlayerPosition(frame, container, frame, { detailsCard: obstacle, composer: null }) };
 }
@@ -286,8 +282,8 @@ function BrowserMiniPlayer({ threadRef, miniPlayer }: { threadRef: ScopedThreadR
             onMouseDown={(event: EventPayload) => begin(event, null)}
             onMouseMove={move}
             onMouseUp={end}
-            // Explicit box: an absolute element sized by its content and placed with
-            // `right` reports its bounds at the origin in gpuix, so it never gets the pointer.
+            // Explicit box: placed with `right` and sized by its content, the handle
+            // reported its bounds at the window origin in testing and missed the pointer.
             style={{
               position: "absolute",
               top: pillInset,
