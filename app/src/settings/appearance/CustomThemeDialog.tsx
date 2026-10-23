@@ -1,36 +1,22 @@
-// Stand-in for apps/web/src/components/settings/{ThemeEditorPanel,
-// ThemeImportDialog}.tsx. Both write custom themes the app must then be able
-// to paint, and t3-term's palette resolution (state/clientSettings.ts:
-// sanitizeTheme, resolveActiveThemeId, resolvePalette) only knows the
-// built-in themes. Until that lands, the buttons open this dialog so the
-// click explains itself instead of doing nothing.
+// Stand-in for apps/web/src/components/settings/ThemeImportDialog.tsx. The
+// theme editor (ThemeEditorPanel.tsx) saves custom themes, but importing T3
+// Code or VS Code theme files (file picker, VS Code extension packages,
+// collections) is not ported, so "Add theme" opens this dialog so the click
+// explains itself instead of doing nothing.
 import { Dialog } from "../../ui/overlay.tsx";
 import { Button, Text } from "../../ui/primitives.tsx";
-import { RADIUS, alpha, getThemeDefinition, useTheme } from "../../ui/theme.ts";
+import { RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 
-export type CustomThemeDialogRequest =
-  | { readonly kind: "create"; readonly seedThemeId: string | null; readonly seedName: string | null }
-  | { readonly kind: "add" };
-
-export function CustomThemeDialog({ request, onClose }: { request: CustomThemeDialogRequest | null; onClose: () => void }) {
+export function CustomThemeDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const theme = useTheme();
-  const isCreate = request?.kind === "create";
-  const seedLabel =
-    request?.kind === "create"
-      ? (request.seedName ?? `${(request.seedThemeId ? getThemeDefinition(request.seedThemeId)?.label : null) ?? "T3 Code"} copy`)
-      : null;
   return (
     <Dialog
-      open={request !== null}
-      onOpenChange={(open) => {
-        if (!open) onClose();
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
-      title={isCreate ? "Create theme" : "Add a theme"}
-      description={
-        isCreate
-          ? "The theme editor is not available in t3-term yet."
-          : "Importing theme files is not available in t3-term yet."
-      }
+      title="Add a theme"
+      description="Importing theme files is not available in t3-term yet."
       testId="custom-theme-dialog"
       footer={
         <Button variant="outline" size="sm" onClick={onClose} testId="custom-theme-dialog-close">
@@ -40,9 +26,8 @@ export function CustomThemeDialog({ request, onClose }: { request: CustomThemeDi
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <Text color={theme.mutedForeground}>
-          {isCreate
-            ? `A new theme would start from ${seedLabel ?? "the active theme"}. t3-term can paint the built-in themes, but it cannot store or apply custom ones yet, so an edited theme would have nowhere to go.`
-            : "T3 Code and VS Code theme files need somewhere to live and a way to repaint the app. t3-term only resolves its built-in themes today."}
+          T3 Code and VS Code theme files cannot be read in t3-term yet. Themes you make with Create theme are saved
+          and show up in the Themes grid.
         </Text>
         <div
           style={{
@@ -63,7 +48,7 @@ export function CustomThemeDialog({ request, onClose }: { request: CustomThemeDi
             Meanwhile
           </Text>
           <Text size="xs" color={theme.mutedForeground} style={{ lineHeight: 18 }}>
-            Pick any built-in theme for light, dark, or both from the Themes grid. Each circle sets one appearance.
+            Use Create theme to start from the active theme, or the copy button on any card to start from that one.
           </Text>
         </div>
       </div>

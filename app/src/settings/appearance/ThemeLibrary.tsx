@@ -1,7 +1,9 @@
 // Port of apps/web/src/components/settings/ThemeSettings.tsx (ThemeLibrary,
-// ThemeLibraryCard). Custom, collection and environment-published themes are
-// not resolvable in t3-term yet (see CustomThemeDialog.tsx), so the grid holds
-// the standard card and the five maintainer themes.
+// ThemeLibraryCard). The grid holds the standard card, the five maintainer
+// themes and the themes saved by the theme editor. Not ported: environment-
+// published themes, collection cards (only theme import makes collections),
+// and "Export theme file" (there is no browser download; the library is
+// $T3TERM_HOME/themes.json).
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 
@@ -10,9 +12,12 @@ import {
   resolveThemeAppearance,
   setAppearanceMode,
   systemDarkAtom,
+  useCustomThemes,
   useThemeState,
 } from "../../state/clientSettings.ts";
-import { Tooltip } from "../../ui/overlay.tsx";
+import { openThemeEditor } from "../../state/themeEditor.ts";
+import { toast } from "../../ui/toast.tsx";
+import { Dialog, Tooltip } from "../../ui/overlay.tsx";
 import { Button, IconButton, Text } from "../../ui/primitives.tsx";
 import {
   BUILT_IN_THEME_DEFINITIONS,
@@ -23,14 +28,17 @@ import {
   getThemeDefinition,
   useTheme,
   type ThemeAppearance,
+  type ThemeDefinition,
 } from "../../ui/theme.ts";
+import { removeCustomThemes } from "../../web/themePalette.ts";
 import { searchableSetting } from "../../web/components/settings/settingsSearch.ts";
-import { CustomThemeDialog, type CustomThemeDialogRequest } from "./CustomThemeDialog.tsx";
-import { applyStandardTheme, assignHalf, ownerOf, setTheme } from "./themeActions.ts";
+import { CustomThemeDialog } from "./CustomThemeDialog.tsx";
+import { applyStandardTheme, assignHalf, ownerOf, setTheme, setThemeHalf } from "./themeActions.ts";
 import {
   STANDARD_THEME_CARDS,
   ThemePreviewCircles,
   getThemeCardDefinition,
+  getThemeModes,
   previewColorsOf,
   type ThemeCardDefinition,
   type ThemeMode,
@@ -71,6 +79,8 @@ function ThemeLibraryCard({
   onUse,
   onUseMode,
   onDuplicate,
+  onEdit,
+  onRemove,
   ringColor,
 }: {
   theme: ThemeCardDefinition;
@@ -78,6 +88,8 @@ function ThemeLibraryCard({
   onUse: () => void;
   onUseMode: (mode: ThemeMode) => void;
   onDuplicate: () => void;
+  onEdit?: () => void;
+  onRemove?: () => void;
   ringColor: string;
 }) {
   const theme = useTheme();
@@ -128,9 +140,29 @@ function ThemeLibraryCard({
               {card.label}
             </Text>
           </div>
-          <Tooltip content="Duplicate theme" side="top">
-            <IconButton icon="copy" size={24} iconSize={14} onClick={onDuplicate} testId={`theme-duplicate-${card.id}`} />
-          </Tooltip>
+          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>
+            <Tooltip content="Duplicate theme" side="top">
+              <IconButton icon="copy" size={24} iconSize={14} onClick={onDuplicate} testId={`theme-duplicate-${card.id}`} />
+            </Tooltip>
+            {onEdit ? (
+              <Tooltip content="Edit theme" side="top">
+                <IconButton icon="pen-line" size={24} iconSize={14} onClick={onEdit} testId={`theme-edit-${card.id}`} />
+              </Tooltip>
+            ) : null}
+            {onRemove ? (
+              <Tooltip content="Remove theme" side="top">
+                <IconButton
+                  icon="trash-2"
+                  size={24}
+                  iconSize={14}
+                  color={theme.errorForeground}
+                  hoverBg={alpha(theme.error, 0.1)}
+                  onClick={onRemove}
+                  testId={`theme-remove-${card.id}`}
+                />
+              </Tooltip>
+            ) : null}
+          </div>
         </div>
       </div>
     </Tooltip>
@@ -204,7 +236,9 @@ export function ThemeLibrary() {
   const state = useThemeState();
   const ringColor = useRingColor();
   const initialAppearance = useResolvedAppearance();
-  const [dialog, setDialog] = useState<CustomThemeDialogRequest | null>(null);
+  const customThemes = useCustomThemes();
+  const [isImportOpen, setIsImportOpen] = useState(false);
+  const [themeRemovalTarget, setThemeRemovalTarget] = useState<ThemeDefinition | null>(null);
 
   const lightOwner = ownerOf(state, "light");
   const darkOwner = ownerOf(state, "dark");
@@ -233,11 +267,34 @@ export function ThemeLibrary() {
     assignHalf(state, mode, cardId);
   };
 
+  const handleConfirmRemoveTheme = () => {
+    if (!themeRemovalTarget) return;
+    const removedId = themeRemovalTarget.id;
+    const removesBase = getThemeDefinition(state.theme)?.id === removedId;
+    // Captured before setTheme clears the mix.
+    const storedHalves = state.halves ?? {};
+    if (removesBase) setTheme(state.appearanceMode === "system" ? "system" : state.appearanceMode);
+    for (const appearance of ["light", "dark"] as const) {
+      const half = storedHalves[appearance];
+      if (half === undefined) continue;
+      const next = half === removedId ? null : removesBase ? half : undefined;
+      if (next !== undefined) setThemeHalf(appearance, next);
+    }
+    try {
+      removeCustomThemes([removedId]);
+    } catch {
+      toast({ type: "error", title: "Couldn’t remove theme", description: "Try again." });
+      return;
+    }
+    setThemeRemovalTarget(null);
+  };
+
   const cards: Array<{
     card: ThemeCardDefinition;
     ownerId: string | null;
     onUse: () => void;
     seedThemeId: string | null;
+    custom?: ThemeDefinition;
   }> = [
     ...STANDARD_THEME_CARDS.map((card) => ({
       card,
@@ -250,6 +307,17 @@ export function ThemeLibrary() {
       ownerId: definition.id,
       onUse: () => setTheme(definition.id),
       seedThemeId: definition.id,
+    })),
+    ...customThemes.map((definition) => ({
+      card: getThemeCardDefinition(definition),
+      ownerId: definition.id,
+      onUse: () => {
+        const modes = getThemeModes(definition);
+        if (modes.length === 1) assignHalf(state, modes[0]!, definition.id);
+        else setTheme(definition.id);
+      },
+      seedThemeId: definition.id,
+      custom: definition,
     })),
   ];
   // grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)) at the
@@ -297,12 +365,17 @@ export function ThemeLibrary() {
             icon="paintbrush"
             testId="theme-create"
             onClick={() =>
-              setDialog({ kind: "create", seedThemeId: activeThemeForAppearance?.id ?? null, seedName: null })
+              openThemeEditor({
+                editingThemeId: null,
+                seedThemeId: activeThemeForAppearance?.id ?? null,
+                seedName: null,
+                initialAppearance,
+              })
             }
           >
             Create theme
           </Button>
-          <Button size="xs" variant="outline" icon="plus" testId="theme-add" onClick={() => setDialog({ kind: "add" })}>
+          <Button size="xs" variant="outline" icon="plus" testId="theme-add" onClick={() => setIsImportOpen(true)}>
             Add theme
           </Button>
         </div>
@@ -310,21 +383,53 @@ export function ThemeLibrary() {
       <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
         {rows.map((row, rowIndex) => (
           <div key={rowIndex} style={{ display: "flex", flexDirection: "row", gap: 8, width: "100%" }}>
-            {row.map(({ card, ownerId, onUse, seedThemeId }) => (
+            {row.map(({ card, ownerId, onUse, seedThemeId, custom }) => (
               <ThemeLibraryCard
                 key={card.id}
                 theme={card}
                 activeModes={pickedModesFor(ownerId)}
                 onUse={onUse}
                 onUseMode={handlePairPick(ownerId)}
-                onDuplicate={() => setDialog({ kind: "create", seedThemeId, seedName: `${card.label} copy` })}
+                onDuplicate={() =>
+                  openThemeEditor({ editingThemeId: null, seedThemeId, seedName: `${card.label} copy`, initialAppearance })
+                }
+                {...(custom
+                  ? {
+                      onEdit: () =>
+                        openThemeEditor({ editingThemeId: custom.id, seedThemeId: null, seedName: null, initialAppearance }),
+                      onRemove: () => setThemeRemovalTarget(custom),
+                    }
+                  : {})}
                 ringColor={ringColor}
               />
+            ))}
+            {/* A short last row keeps its cards a third of the width, like the web grid. */}
+            {Array.from({ length: 3 - row.length }, (_, index) => (
+              <div key={`spacer-${index}`} style={{ flexGrow: 1, flexBasis: 0, minWidth: 0 }} />
             ))}
           </div>
         ))}
       </div>
-      <CustomThemeDialog request={dialog} onClose={() => setDialog(null)} />
+      <CustomThemeDialog open={isImportOpen} onClose={() => setIsImportOpen(false)} />
+      <Dialog
+        open={themeRemovalTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setThemeRemovalTarget(null);
+        }}
+        title={`Remove “${themeRemovalTarget?.label ?? ""}”?`}
+        description="It is deleted from this device. t3-term cannot import theme files yet, so it can’t be brought back."
+        testId="theme-remove-dialog"
+        footer={
+          <>
+            <Button variant="outline" size="sm" onClick={() => setThemeRemovalTarget(null)} testId="theme-remove-cancel">
+              Cancel
+            </Button>
+            <Button variant="destructive" size="sm" onClick={handleConfirmRemoveTheme} testId="theme-remove-confirm">
+              Remove theme
+            </Button>
+          </>
+        }
+      />
     </div>
   );
 }
