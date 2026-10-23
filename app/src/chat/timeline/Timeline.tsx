@@ -59,7 +59,14 @@ import { useIncrementalTimelineEntries } from "../../web/hooks/useIncrementalTim
 import { deriveActiveWorkStartedAt, derivePhase, findRevertCheckpoint, isLatestRunSettled } from "../../web/session-logic.ts";
 import type { ChatMessage } from "../../web/types.ts";
 import { Icon } from "../../ui/Icon.tsx";
+import {
+  resolveTimelineMinimapCurrentIndex,
+  resolveTimelineMinimapHitStripWidth,
+} from "../../web/components/chat/MessagesTimeline.logic.ts";
+import { deriveTimelineMinimapItems, type TimelineMinimapItem } from "../../web/components/chat/timelineMinimapItems.ts";
+import { ChatLane, useDetailsCardInline } from "../chatLane.tsx";
 import "./devOpenThread.ts";
+import { TimelineMinimap } from "./TimelineMinimap.tsx";
 import { ThreadErrorBanner } from "./ThreadErrorBanner.tsx";
 import { findHighlightColors, ThreadFindBar, type ThreadFindState } from "./ThreadFindBar.tsx";
 import { ThreadStatusFooter } from "./ThreadStatusLine.tsx";
@@ -122,13 +129,6 @@ export function Timeline({ environmentId, threadId }: { environmentId: Environme
   // Keyed by thread: switching threads starts a fresh list, like web's list identity.
   return <ThreadTimeline key={scopedThreadKey(threadRef)} threadRef={threadRef} />;
 }
-
-/**
- * The chat lane, after resolveChatCanvasLayout (chat/chatCanvasLayout.ts): a
- * 736px column centered in the canvas with 48px gutters, kept 32px clear of
- * the floating details card.
- */
-import { ChatLane, useDetailsCardInline } from "../chatLane.tsx";
 
 function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
   const theme = useTheme();
@@ -664,15 +664,116 @@ const TimelineList = memo(function TimelineList({
   const [atEnd, setAtEnd] = useState(true);
   const leadingRows = (history ? 1 : 0) + (parentThreadLink ? 1 : 0) + 1;
   const rowCount = leadingRows + rows.length + 2;
+  const [viewport, setViewport] = useState({ width: 0, height: 0 });
+  const footerHeight = composerInset + 16;
 
+  // Row heights by key, reported by each row frame's onLayout. They place the
+  // minimap's lit strips and tell whether the whole thread fits on screen.
+  const rowHeights = useRef(new Map<string, number>());
+  const listKeys = [
+    "timeline-header",
+    ...(history ? ["timeline-history"] : []),
+    ...(parentThreadLink ? ["timeline-parent"] : []),
+    ...rows.map((row) => row.id),
+    "timeline-status",
+  ];
+  const listKeysRef = useRef(listKeys);
+  listKeysRef.current = listKeys;
+
+  // A bottom-aligned list rests a short thread against the composer, while
+  // web's list starts at the top. Once every row has been measured and they
+  // fit, the footer takes up the slack so the first row sits under the header.
+  const [topFill, setTopFill] = useState(0);
+  const refreshTopFill = () => {
+    if (viewport.height <= 0) return;
+    let total = 0;
+    for (const key of listKeysRef.current) {
+      const height = rowHeights.current.get(key);
+      if (height === undefined) return;
+      total += height;
+    }
+    const next = Math.max(0, Math.floor(viewport.height - total - footerHeight));
+    setTopFill((current) => (Math.abs(current - next) < 1 ? current : next));
+  };
+
+  // web resolveTimelineMinimapVisibleRange: the rows that intersect the viewport,
+  // here from gpui's scroll anchor plus the measured row heights.
+  const [visibleRange, setVisibleRange] = useState<{ start: number; end: number } | null>(null);
   const checkAtEnd = () => {
     const id = listRef.current?.id;
     if (id == null) return;
     const top = renderer.getListScrollTop?.(id);
     if (!top) return;
+    const [anchor = 0, offset = 0, viewportHeight = 0] = top;
     // gpui reports item index === count when a bottom-aligned list rests at its end.
-    const next = (top[0] ?? 0) >= rowCount - 1;
-    setAtEnd((current) => (current === next ? current : next));
+    const nextAtEnd = anchor >= rowCount - 1;
+    setAtEnd((current) => (current === nextAtEnd ? current : nextAtEnd));
+    const keys = [...listKeysRef.current, "timeline-footer"];
+    const heightAt = (index: number) =>
+      keys[index] === "timeline-footer" ? footerHeight + topFill : (rowHeights.current.get(keys[index]!) ?? 90);
+    let start = -1;
+    let end = -1;
+    if (anchor >= keys.length) {
+      let bottom = viewportHeight;
+      for (let index = keys.length - 1; index >= 0 && bottom > 0; index -= 1) {
+        end = end < 0 ? index : end;
+        start = index;
+        bottom -= heightAt(index);
+      }
+    } else {
+      let y = -offset;
+      for (let index = anchor; index < keys.length && y < viewportHeight; index += 1) {
+        const height = heightAt(index);
+        if (y + Math.max(1, height) > 0) {
+          start = start < 0 ? index : start;
+          end = index;
+        }
+        y += height;
+      }
+    }
+    const next = start < 0 ? null : { start: start - leadingRows, end: end - leadingRows };
+    setVisibleRange((current) => (current?.start === next?.start && current?.end === next?.end ? current : next));
+  };
+
+  const measureScheduled = useRef(false);
+  const onRowLayout = (key: string, height: number) => {
+    if (rowHeights.current.get(key) === height) return;
+    rowHeights.current.set(key, height);
+    if (measureScheduled.current) return;
+    measureScheduled.current = true;
+    queueMicrotask(() => {
+      measureScheduled.current = false;
+      refreshTopFill();
+      checkAtEnd();
+    });
+  };
+  useEffect(() => {
+    refreshTopFill();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewport.height, footerHeight, rows.length]);
+
+  const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
+  const minimapInView = useMemo(() => {
+    const ids = new Set<string>();
+    if (visibleRange) {
+      for (const item of minimapItems) {
+        if (item.rowIndex >= visibleRange.start && item.rowIndex <= visibleRange.end) ids.add(item.id);
+      }
+    }
+    return ids;
+  }, [minimapItems, visibleRange]);
+  const minimapCurrentIndex = resolveTimelineMinimapCurrentIndex({
+    visibleStart: visibleRange?.start,
+    visibleEnd: visibleRange?.end,
+    rowIndices: minimapItems.map((item) => item.rowIndex),
+  });
+  const laneWidth = Math.max(0, Math.min(LAYOUT.chatMaxWidth, viewport.width - LAYOUT.chatLanePadding * 2));
+  const minimapHitStripWidth = resolveTimelineMinimapHitStripWidth(viewport.width, laneWidth);
+  const selectMinimapItem = (item: TimelineMinimapItem) => {
+    const id = listRef.current?.id;
+    // web scrollToIndex viewOffset 24: the message lands 24px below the top edge.
+    if (id != null) renderer.scrollToItem?.(id, leadingRows + item.rowIndex, -24);
+    setTimeout(checkAtEnd, 50);
   };
 
   // Rows added or removed (a rewind, a load) move the end without a scroll event.
@@ -710,6 +811,7 @@ const TimelineList = memo(function TimelineList({
   const frame = (key: string, children: ReactNode, rowIndex = -1) => (
     <div
       key={key}
+      onLayout={(event) => onRowLayout(key, Math.round(event.height ?? 0))}
       {...(findQuery
         ? {
             highlight: {
@@ -730,6 +832,10 @@ const TimelineList = memo(function TimelineList({
       style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, position: "relative" }}
       // The list itself takes no onScroll; wheel deltas reach this wrapper.
       onScroll={() => queueMicrotask(checkAtEnd)}
+      onLayout={(event) => {
+        const next = { width: Math.round(event.width ?? 0), height: Math.round(event.height ?? 0) };
+        setViewport((current) => (current.width === next.width && current.height === next.height ? current : next));
+      }}
     >
       <virtual-list
         ref={listRef}
@@ -743,7 +849,12 @@ const TimelineList = memo(function TimelineList({
         }}
         style={{ flexGrow: 1, minHeight: 0, scrollbarColor: theme.scrollbar }}
       >
-        <div key="timeline-header" style={{ height: 16 }} />
+        {/* web: the titlebar scroll-fade height, 1.5rem */}
+        <div
+          key="timeline-header"
+          style={{ height: 24 }}
+          onLayout={(event) => onRowLayout("timeline-header", Math.round(event.height ?? 0))}
+        />
         {history ? frame("timeline-history", <TimelineHistoryControl {...history} onLoadEarlier={onLoadEarlier} />) : null}
         {parentThreadLink
           ? frame(
@@ -761,8 +872,15 @@ const TimelineList = memo(function TimelineList({
           : null}
         {rows.map((row, index) => frame(row.id, <TimelineRowContent row={row} />, index))}
         {frame("timeline-status", <ThreadStatusFooter threadRef={threadRef} />)}
-        <div key="timeline-footer" style={{ height: composerInset + 16 }} />
+        <div key="timeline-footer" style={{ height: footerHeight + topFill }} />
       </virtual-list>
+      <TimelineMinimap
+        items={minimapItems}
+        hitStripWidth={minimapHitStripWidth}
+        currentIndex={minimapCurrentIndex}
+        inView={minimapInView}
+        onSelect={selectMinimapItem}
+      />
       {atEnd ? null : <ScrollToEndButton bottom={composerInset + 4} cardInline={cardInline} onScrollToEnd={scrollToEnd} />}
     </div>
   );
