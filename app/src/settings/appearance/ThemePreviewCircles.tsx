@@ -3,6 +3,7 @@
 // The disc's blurred radial gradients are rasterized by discImage.ts.
 import { STANDARD_THEME_PREVIEW_COLORS as SHARED_STANDARD_THEME_PREVIEW_COLORS } from "@t3tools/shared/themePreview";
 
+import { claimClick } from "../../sidebar/clickGuard.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
 import { themePreviewDiscSource } from "./discImage.ts";
@@ -153,6 +154,9 @@ export function ThemePreviewButton({
     <Tooltip content={mode === "light" ? "Use for light mode only" : "Use for dark mode only"} side="top">
       <div
         testId={testId}
+        // web stops propagation here; in gpuix the card under the circle also
+        // gets the click and would apply the whole theme over this half.
+        onMouseDown={claimClick}
         onClick={onClick}
         style={{
           position: "relative",
