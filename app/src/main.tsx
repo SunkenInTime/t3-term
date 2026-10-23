@@ -13,6 +13,7 @@ import { App } from "./app/App.tsx";
 import { bootstrapConnections, parseArgs } from "./connect/bootstrap.ts";
 import { installPerfProbe, perfOnEvent, perfProbeEnabled } from "./dev/perfProbe.ts";
 import { handleGlobalKeyDown, handleGlobalKeyUp } from "./keybindings/useGlobalKeybindings.ts";
+import { noteUserInput } from "./notifications/platform.ts";
 
 const args = parseArgs(process.argv.slice(2));
 if (args.help) {
@@ -36,8 +37,12 @@ render(<App boot={boot} />, {
   keyboardFocusDim: false,
   // T3TERM_DEBUG_FRAMES=minimal|full paints GPUI draw times into the window.
   ...(process.env.T3TERM_DEBUG_FRAMES ? { debugFrameOverlay: process.env.T3TERM_DEBUG_FRAMES as "minimal" | "full" } : {}),
-  ...(perfProbeEnabled ? { onEvent: perfOnEvent } : {}),
   onKeyDown: (event) => handleGlobalKeyDown(event),
+  onEvent: (event) => {
+    if (perfProbeEnabled) perfOnEvent(event);
+    // Every pointer, wheel and key event marks the user present; gpuix has no window-focus state.
+    if (!/layout|scrollchange|visiblerange|motion/i.test(String(event.eventType ?? ""))) noteUserInput();
+  },
   onKeyUp: (event) => handleGlobalKeyUp(event),
   titlebarTransparent: process.platform === "darwin",
   // GPUI on Windows draws text with ClearType-style subpixel AA (coloured fringes)
