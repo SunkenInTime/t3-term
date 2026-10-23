@@ -9,6 +9,8 @@ import { detailsPanelOpenAtom, rightPanelOpenAtom, terminalOpenAtom } from "../s
 import { RightPanel } from "../panels/RightPanel.tsx";
 import { TerminalDrawer } from "../terminal/TerminalDrawer.tsx";
 import { Composer } from "./composer/Composer.tsx";
+import { reportTimelineWheel } from "./composer/composerResting.ts";
+import { composerTargetKey } from "../state/composer.ts";
 import { ThreadDetailsCard } from "./details/ThreadDetailsCard.tsx";
 import { ChatHeader } from "./header/ChatHeader.tsx";
 import { Timeline } from "./timeline/Timeline.tsx";
@@ -21,7 +23,10 @@ export function ChatView({ environmentId, threadId }: { environmentId: Environme
     <div style={{ display: "flex", flexDirection: "row", flexGrow: 1, minHeight: 0, minWidth: 0 }}>
       <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
         <ChatHeader environmentId={environmentId} threadId={threadId} />
-        <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, position: "relative" }}>
+        <div
+          style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, position: "relative" }}
+          onScroll={(event) => reportTimelineWheel(composerTargetKey({ kind: "thread", environmentId, threadId }), event.deltaY ?? 0)}
+        >
           <Timeline environmentId={environmentId} threadId={threadId} />
           <Composer target={{ kind: "thread", environmentId, threadId }} />
           {detailsOpen ? <ThreadDetailsCard environmentId={environmentId} threadId={threadId} /> : null}
