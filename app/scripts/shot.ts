@@ -1,6 +1,8 @@
 // Launch t3-term under gpuix automation and write PNG screenshots.
 // bun scripts/shot.ts <out-dir> [steps.json]
-// steps: [{click: testId}|{clickText: text}|{press: "ctrl-k"}|{fill:[testId,text]}|{wait: ms}|{shot: name}|{mouse:[x,y]}]
+// steps: [{click: testId}|{clickText: text}|{press: "ctrl-k"}|{fill:[testId,text]}|{wait: ms}|{shot: name}|{mouse:[x,y]}
+//         |{hover:[x,y]}|{hoverTestId: testId}|{hoverText: text}|{rightClick:[x,y]}|{rightClickText: text}
+//         |{wheel:[x,y,dy]}|{mouseMods:[x,y,"shift"]}]
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { launch } from "@gpuix/react/automation";
@@ -19,7 +21,14 @@ try {
     if (step.wait) await Bun.sleep(step.wait);
     if (step.click) await app.getByTestId(step.click).click();
     if (step.clickText) await app.getByText(step.clickText).click();
-    if (step.mouse) await app.mouse.click(step.mouse[0], step.mouse[1]);
+    if (step.mouse) await app.mouse.click({ x: step.mouse[0], y: step.mouse[1] });
+    if (step.mouseMods) await app.mouse.click({ x: step.mouseMods[0], y: step.mouseMods[1] }, { modifiers: step.mouseMods[2] });
+    if (step.hover) await app.mouse.move({ x: step.hover[0], y: step.hover[1] });
+    if (step.hoverTestId) await app.getByTestId(step.hoverTestId).hover();
+    if (step.hoverText) await app.getByText(step.hoverText).hover();
+    if (step.rightClickText) await app.mouse.click(app.getByText(step.rightClickText), { button: 2 });
+    if (step.rightClick) await app.mouse.click({ x: step.rightClick[0], y: step.rightClick[1] }, { button: 2 });
+    if (step.wheel) await app.mouse.wheel({ x: step.wheel[0], y: step.wheel[1] }, 0, step.wheel[2]);
     if (step.fill) await app.getByTestId(step.fill[0]).fill(step.fill[1]);
     if (step.press) await app.getByTestId(step.target ?? "composer").press(step.press);
     if (step.shot) {
