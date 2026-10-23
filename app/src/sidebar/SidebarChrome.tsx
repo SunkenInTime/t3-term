@@ -77,17 +77,19 @@ export function SidebarChromeHeader() {
           onClick={() => setSidebarVisible(false)}
         />
       </div>
-      <div style={{ display: inSheet ? "none" : "flex", flexDirection: "row", alignItems: "center", gap: 8, marginLeft: 12, minWidth: 0, flexGrow: 1 }}>
-        <div
-          testId="sidebar-brand"
-          onClick={() => setRoute({ kind: "home" })}
-          style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, height: 28, cursor: "pointer", flexShrink: 0 }}
-        >
-          <svg source={T3_WORDMARK_SVG} style={{ width: 17, height: 10, color: onBackdrop ? "#ffffff" : theme.foreground }} />
-          <Text size="sm" weight={500} color={onBackdrop ? alpha("#ffffff", 0.7) : theme.mutedForeground}>
-            Code
-          </Text>
-        </div>
+      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, marginLeft: 12, minWidth: 0, flexGrow: 1 }}>
+        {inSheet ? null : (
+          <div
+            testId="sidebar-brand"
+            onClick={() => setRoute({ kind: "home" })}
+            style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, height: 28, cursor: "pointer", flexShrink: 0 }}
+          >
+            <svg source={T3_WORDMARK_SVG} style={{ width: 17, height: 10, color: onBackdrop ? "#ffffff" : theme.foreground }} />
+            <Text size="sm" weight={500} color={onBackdrop ? alpha("#ffffff", 0.7) : theme.mutedForeground}>
+              Code
+            </Text>
+          </div>
+        )}
         {pillLabel ? (
           <div style={{ display: "flex", alignItems: "center", height: 18, paddingLeft: 6, paddingRight: 6, borderRadius: RADIUS.sm, backgroundColor: theme.secondary, borderWidth: 1, borderColor: theme.border, marginLeft: 4 }}>
             <Text size="xs" weight={500} color={theme.foreground}>

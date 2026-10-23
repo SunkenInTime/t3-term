@@ -2,6 +2,7 @@
 // Everything that paints above content goes through gpuix's deferred <anchored>
 // layer (FloatingLayer / Dialog.Portal); an absolutely positioned div would paint
 // under any later <virtual-list>.
+import { useAtomValue } from "@effect/atom-react";
 import { DismissableLayer } from "@gpuix/react";
 import { FloatingLayer, type FloatingAlign, type FloatingSide } from "@gpuix/react/floating";
 import * as DialogPrimitive from "@gpuix/react/dialog";
@@ -19,6 +20,7 @@ import {
 import { Icon, type IconName } from "./Icon.tsx";
 import { Kbd, Text, type Style } from "./primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme, type Palette } from "./theme.ts";
+import { useSmallViewport, viewportWidthAtom } from "./viewport.tsx";
 
 /** dropdown-glass: popover at ~84% over a blurred backdrop. GPUI has no backdrop blur, so it is opaque. */
 export function surfaceStyle(theme: Palette): Style {
@@ -184,6 +186,8 @@ export function MenuItem({
   const theme = useTheme();
   const { close } = useContext(MenuContext);
   const color = destructive ? theme.errorForeground : theme.foreground;
+  // menu.tsx below `sm`: `min-h-8 text-base`, icons size-4.5 (sm: min-h-7 text-sm size-4).
+  const small = useSmallViewport();
   return (
     <div
       testId={testId}
@@ -200,7 +204,7 @@ export function MenuItem({
         flexDirection: "row",
         alignItems: description ? "flex-start" : "center",
         gap: 8,
-        minHeight: 28,
+        minHeight: small ? 32 : 28,
         paddingTop: description ? 6 : 0,
         paddingBottom: description ? 6 : 0,
         paddingLeft: 8,
@@ -213,10 +217,10 @@ export function MenuItem({
       }}
     >
       {icon ? (
-        <Icon name={icon} size={16} color={destructive ? theme.errorForeground : theme.mutedForeground} />
+        <Icon name={icon} size={small ? 18 : 16} color={destructive ? theme.errorForeground : theme.mutedForeground} />
       ) : null}
       <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
-        <Text color={color} truncate>
+        <Text size={small ? "base" : "sm"} color={color} truncate>
           {children}
         </Text>
         {description ? (
@@ -279,6 +283,8 @@ export function Select<V extends string>({
 }) {
   const theme = useTheme();
   const selected = options.find((option) => option.value === value);
+  // select.tsx trigger below `sm`: `min-h-9 text-base`.
+  const small = useSmallViewport();
   return (
     <Menu
       align={align}
@@ -293,7 +299,7 @@ export function Select<V extends string>({
             flexDirection: "row",
             alignItems: "center",
             gap: 8,
-            minHeight: 32,
+            minHeight: small ? 36 : 32,
             minWidth,
             paddingLeft: 11,
             paddingRight: 8,
@@ -305,7 +311,7 @@ export function Select<V extends string>({
           }}
         >
           {selected?.icon ? <Icon name={selected.icon} size={16} color={theme.mutedForeground} /> : null}
-          <Text truncate style={{ flexGrow: 1 }}>
+          <Text size={small ? "base" : "sm"} truncate style={{ flexGrow: 1 }}>
             {selected?.label ?? value}
           </Text>
           <Icon name="chevron-down" size={16} color={theme.mutedForeground} />
@@ -402,19 +408,29 @@ export function Dialog({
   testId?: string;
 }) {
   const theme = useTheme();
+  // dialog.tsx: the viewport pads 16 (`p-4`), so a dialog is at most the window less 32.
+  // Below `sm` it sticks to the bottom as a full-width sheet (bottomStickOnMobile:
+  // `max-sm:grid-rows-[1fr_auto] max-sm:p-0 max-sm:pt-12`, DIALOG_MOBILE_SHEET_CLASS).
+  const small = useSmallViewport();
+  const viewportWidth = useAtomValue(viewportWidthAtom);
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
-      <DialogPrimitive.Portal>
+      <DialogPrimitive.Portal
+        style={
+          small
+            ? { flexDirection: "column", justifyContent: "flex-end", alignItems: "stretch", paddingTop: 48 }
+            : { flexDirection: "column", justifyContent: "center", alignItems: "center", padding: 16 }
+        }
+      >
         <DialogPrimitive.Backdrop style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: theme.overlay, pointerEvents: "auto" }} />
         <DialogPrimitive.Popup
           testId={testId}
           style={{
             display: "flex",
             flexDirection: "column",
-            width,
-            maxWidth: "92%",
-            borderRadius: RADIUS["2xl"],
-            borderWidth: 1,
+            ...(small
+              ? { width: "100%", borderRadius: 0, borderTopWidth: 1 }
+              : { width: Math.min(width, Math.max(0, viewportWidth - 32)), borderRadius: RADIUS["2xl"], borderWidth: 1 }),
             borderColor: theme.appearance === "dark" ? alpha("#ffffff", 0.08) : alpha(theme.foreground, 0.1),
             backgroundColor: theme.appearance === "dark" ? "#0f0f0f" : "#ffffff",
             boxShadow: dialogGlassShadow(theme),
@@ -423,7 +439,7 @@ export function Dialog({
           }}
         >
           {title ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 24, paddingBottom: children ? 16 : 24, paddingRight: showCloseButton ? 48 : 24 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 24, paddingBottom: children || small ? 16 : 24, paddingRight: showCloseButton ? 48 : 24 }}>
               <Text size="xl" weight={600}>
                 {title}
               </Text>
@@ -435,9 +451,10 @@ export function Dialog({
             <div
               style={{
                 display: "flex",
-                flexDirection: "row",
+                // DialogFooter: `flex-col-reverse gap-2 sm:flex-row sm:justify-end`.
+                flexDirection: small ? "column-reverse" : "row",
                 justifyContent: "flex-end",
-                alignItems: "center",
+                alignItems: small ? "stretch" : "center",
                 gap: 8,
                 paddingTop: 16,
                 paddingBottom: 16,

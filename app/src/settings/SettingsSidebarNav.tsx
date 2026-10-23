@@ -10,7 +10,7 @@ import { routeAtom, type SettingsPage } from "../state/ui.ts";
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { IconButton, Kbd, Text } from "../ui/primitives.tsx";
 import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../ui/theme.ts";
-import { useSidebarWidth } from "../ui/viewport.tsx";
+import { useInSidebarSheet, useSidebarWidth } from "../ui/viewport.tsx";
 import {
   SETTINGS_SECTION_LABELS,
   isSettingsOverviewVisible,
@@ -298,6 +298,7 @@ export function SettingsSidebar() {
   const page = route.kind === "settings" ? route.page : "general";
   const { backdropVariant } = useStageIdentification();
   const sidebarWidth = useSidebarWidth();
+  const inSheet = useInSidebarSheet();
   return (
     <div
       testId="settings-sidebar"
@@ -308,7 +309,8 @@ export function SettingsSidebar() {
         width: sidebarWidth,
         height: "100%",
         flexShrink: 0,
-        backgroundColor: theme.sidebar.background,
+        // The mobile sheet paints SheetPopup's bg-popover behind the sidebar.
+        backgroundColor: inSheet ? theme.popover : theme.sidebar.background,
         borderRightWidth: 1,
         borderColor: theme.sidebar.border,
       }}

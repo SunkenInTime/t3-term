@@ -91,6 +91,7 @@ import {
 import { modelPickerOpenAtom, routeAtom } from "../../state/ui.ts";
 import { toast } from "../../ui/toast.tsx";
 import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
+import { Icon } from "../../ui/Icon.tsx";
 import { chatLanePadding, useSmallViewport } from "../../ui/viewport.tsx";
 import { Text } from "../../ui/primitives.tsx";
 import {
@@ -572,6 +573,11 @@ function ComposerBody({
   const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null);
   const [highlightedSearchKey, setHighlightedSearchKey] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
+  // Below `sm` an unfocused thread composer collapses to one prompt row (web
+  // isComposerCollapsedMobile); a press on it expands it until the editor blurs.
+  const small = useSmallViewport();
+  const [mobileExpanded, setMobileExpanded] = useState(false);
+  const [mobileFocusPending, setMobileFocusPending] = useState(false);
   const [surfaceWidth, setSurfaceWidth] = useState<number | null>(null);
   const { width: windowWidth } = useWindowSize();
   const [dragOver, setDragOver] = useState(false);
@@ -1082,11 +1088,37 @@ function ComposerBody({
     modelPickerOpen;
   const isResting =
     threadId !== null &&
+    // shouldUseRestingComposerLayout: never on a mobile viewport.
+    !small &&
     settings.composerCollapseOnScroll &&
     restingRequested &&
     !focused &&
     !prompt.includes("\n") &&
     !hasExpandedChrome;
+  // web isComposerCollapsedMobile. Drafts keep the full composer (forceExpandedOnMobile).
+  // An open menu keeps it expanded: web keeps focus inside the composer while one is up.
+  const isCollapsedMobile =
+    small &&
+    threadId !== null &&
+    !focused &&
+    !mobileExpanded &&
+    !prompt.includes("\n") &&
+    requests.pendingUserInputs.length === 0 &&
+    menuOpen === null &&
+    !modelPickerOpen &&
+    !stash.menuOpen &&
+    !menuIsOpen;
+  // web composerControlsCollapsed: the resting strip's xs controls.
+  const controlsCollapsed = isResting || isCollapsedMobile;
+  const expandMobileComposer = () => {
+    setMobileExpanded(true);
+    setMobileFocusPending(true);
+  };
+  useEffect(() => {
+    if (!mobileFocusPending || isCollapsedMobile) return;
+    setMobileFocusPending(false);
+    focusEditor();
+  });
 
   // ── Keyboard ──────────────────────────────────────────────────────────
   const onEditorKeyDown = (event: KeyEvent) => {
@@ -1328,7 +1360,7 @@ function ComposerBody({
             : DEFAULT_PLACEHOLDER;
 
   // ── Render ────────────────────────────────────────────────────────────
-  const controlsSize = isResting ? "xs" : "sm";
+  const controlsSize = controlsCollapsed ? "xs" : "sm";
   const pendingAction = activePendingProgress
     ? {
         questionIndex: activePendingProgress.questionIndex,
@@ -1344,7 +1376,7 @@ function ComposerBody({
   );
   const compactCommandAvailable = providerSupportsManualCompaction(selectedProviderEntry);
 
-  const activeControls = isResting ? restingControls : expandedControls;
+  const activeControls = controlsCollapsed ? restingControls : expandedControls;
   const hiddenBlockIds = hiddenComposerControlBlockIds(controlBlockIds, activeControls.layout);
   const traitsInOverflow = hiddenBlockIds.includes("traits");
   const modeInOverflow = hiddenBlockIds.includes("mode");
@@ -1438,7 +1470,7 @@ function ComposerBody({
           onOpenProviderSetup={() => appAtomRegistry.set(routeAtom, { kind: "settings", page: "providers" })}
           onInstanceModelChange={onProviderModelSelect}
           measure={activeControls.measure.picker}
-          collapseLabel={isResting && restingPickerLabelCollapsed}
+          collapseLabel={controlsCollapsed && restingPickerLabelCollapsed}
         />
       }
       overflowMenu={
@@ -1511,6 +1543,7 @@ function ComposerBody({
   );
 
   const surfaceBase = surfaceStyle(theme);
+  const collapsedResume = canResume && prompt.trim().length === 0 && draft.attachments.length === 0;
   const editorTextStyle = {
     fontSize: 14,
     lineHeight: PROMPT_LINE_HEIGHT,
@@ -1565,11 +1598,11 @@ function ComposerBody({
               draftKey={draftKey}
               onComposerFocusRequest={focusEditor}
             />
-          ) : isResting ? (
+          ) : controlsCollapsed ? (
             <RestingModelStrip measure={restingControls.measure}>{controls}</RestingModelStrip>
           ) : null
         }
-        stripHidden={isResting && !restingControlsVisible}
+        stripHidden={controlsCollapsed && !restingControlsVisible}
       >
       <div
         testId="composer-surface"
@@ -1583,6 +1616,8 @@ function ComposerBody({
           if (paths.length > 0 && fileStagingAllowed) addPaths(paths);
         }}
         onMouseDown={() => {
+          // The collapsed row expands from its prompt text; its send button must not.
+          if (isCollapsedMobile) return;
           if (isResting) {
             appAtomRegistry.set(composerRestingAtom(draftKey), false);
             focusEditor();
@@ -1624,17 +1659,45 @@ function ComposerBody({
             />
           </ComposerCommandMenuLayer>
         ) : null}
+        {isCollapsedMobile ? (
+          <CollapsedMobilePromptRow
+            prompt={prompt}
+            placeholder={showProviderUnavailable ? "Enable a provider in Settings" : "Ask anything..."}
+            resume={collapsedResume}
+            disabled={
+              sending ||
+              environmentUnavailable ||
+              noProviderAvailable ||
+              (!collapsedResume && !(composerSendState.hasSendableContent || draft.attachments.length > 0))
+            }
+            onExpand={expandMobileComposer}
+            onPrimary={() => {
+              if (collapsedResume) onResume();
+              else
+                submit(
+                  resolveComposerDispatchMode({
+                    running: isRunning,
+                    alternateModifier: false,
+                    activeTurnDefault: followUpBehavior,
+                    canSteer: !isCompacting,
+                  }),
+                );
+            }}
+          />
+        ) : null}
+        {isCollapsedMobile ? null : (
         <div
           style={{
             display: "flex",
             flexDirection: isResting ? "row" : "column",
             alignItems: isResting ? "center" : "stretch",
-            // web: Main p-px + body pt-4 / pb-2 around a 70px editor. GPUI sets the 14px glyphs
-            // 2px lower in a 23px line than Chrome does in 22.75, so 15/10 lands the same rows.
-            paddingTop: isResting ? 8 : 15,
+            // web: Main p-px + body pt-4 / pb-2 around a 70px editor (`px-3 pt-3.5` below
+            // sm). GPUI sets the 14px glyphs 2px lower in a 23px line than Chrome does in
+            // 22.75, so 15/10 lands the same rows.
+            paddingTop: isResting ? 8 : small ? 13 : 15,
             paddingBottom: isResting ? 8 : 10,
-            paddingLeft: 16,
-            paddingRight: isResting ? 16 : 16,
+            paddingLeft: small ? 12 : 16,
+            paddingRight: small ? 12 : 16,
             gap: isResting ? 4 : 0,
           }}
         >
@@ -1679,6 +1742,7 @@ function ComposerBody({
               }}
               onBlur={() => {
                 setFocused(false);
+                setMobileExpanded(false);
                 appAtomRegistry.set(composerFocusAtom, false);
               }}
             />
@@ -1690,6 +1754,7 @@ function ComposerBody({
             </div>
           ) : null}
         </div>
+        )}
         {submissionError ?? sendError ? (
           <div style={{ paddingLeft: 16, paddingRight: 16, paddingBottom: 8 }}>
             <Text size="xs" color={theme.errorForeground}>
@@ -1697,7 +1762,7 @@ function ComposerBody({
             </Text>
           </div>
         ) : null}
-        {!isResting ? (
+        {!isResting && !isCollapsedMobile ? (
           <div
             style={{
               display: "flex",
@@ -1705,9 +1770,10 @@ function ComposerBody({
               alignItems: "center",
               justifyContent: "space-between",
               gap: footerGap,
-              paddingLeft: 16,
-              paddingRight: 16,
-              paddingBottom: 16,
+              // px-3 pb-3 sm:px-4 sm:pb-4
+              paddingLeft: small ? 12 : 16,
+              paddingRight: small ? 12 : 16,
+              paddingBottom: small ? 12 : 16,
               paddingTop: requests.pendingUserInputs.length > 0 ? 8 : 0,
             }}
           >
@@ -1745,6 +1811,89 @@ function ComposerBody({
 }
 
 /**
+ * web ChatComposer showCollapsedMobilePromptRow: the prompt (or "Ask anything...") as one
+ * truncated line and a 32px send button, `px-3 py-2`. A press anywhere else expands it.
+ */
+function CollapsedMobilePromptRow({
+  prompt,
+  placeholder,
+  resume,
+  disabled,
+  onExpand,
+  onPrimary,
+}: {
+  prompt: string;
+  placeholder: string;
+  resume: boolean;
+  disabled: boolean;
+  onExpand: () => void;
+  onPrimary: () => void;
+}) {
+  const theme = useTheme();
+  const text = prompt.trim();
+  return (
+    <div
+      testId="composer-collapsed-mobile"
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+        paddingLeft: 12,
+        paddingRight: 12,
+        paddingTop: 8,
+        paddingBottom: 8,
+      }}
+    >
+      <div testId="composer-expand" onClick={onExpand} style={{ display: "flex", flexGrow: 1, minWidth: 0, cursor: "text" }}>
+        <text
+          style={{
+            color: text ? theme.foreground : alpha(theme.mutedForeground, 0.75),
+            fontSize: 14,
+            lineHeight: 20,
+            fontFamily: FONTS.sans,
+            whiteSpace: "nowrap",
+            textOverflow: "ellipsis",
+            overflow: "hidden",
+            minWidth: 0,
+            pointerEvents: "none",
+          }}
+        >
+          {text || placeholder}
+        </text>
+      </div>
+      <div
+        testId="composer-collapsed-send"
+        onClick={disabled ? undefined : onPrimary}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 32,
+          height: 32,
+          borderRadius: 16,
+          flexShrink: 0,
+          backgroundColor: theme.messageAction,
+          opacity: disabled ? 0.64 : 1,
+          cursor: disabled ? "default" : "pointer",
+          ...(disabled ? {} : { hover: { backgroundColor: alpha(theme.messageAction, 0.9) } }),
+        }}
+      >
+        {resume ? (
+          <Icon name="play" size={16} color={theme.primaryForeground} />
+        ) : (
+          <svg source={COLLAPSED_SEND_SVG} style={{ width: 16, height: 16, color: theme.primaryForeground, pointerEvents: "none" }} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+const COLLAPSED_SEND_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3L8 13M8 3L4 7M8 3L12 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+/**
  * web ComposerSurface.ContextStrip: a strip under the composer, inset 22px a side, whose top
  * 16px tuck under the surface (`-mt-4`, composer `z-10`). gpuix paints in tree order and has
  * no z-index, so the strip renders first, absolutely at the bottom, and a spacer reserves the
@@ -1772,7 +1921,9 @@ function StripBehindSurface({
           bottom: 0,
           display: "flex",
           flexDirection: "column",
-          ...(stripHidden ? { visibility: "hidden", pointerEvents: "none" } : {}),
+          // Opacity, not visibility: gpuix skips hidden elements in prepaint, so a hidden strip
+          // would stop reporting its width and could never measure its way back to visible.
+          ...(stripHidden ? { opacity: 0, pointerEvents: "none" } : {}),
         }}
         onLayout={(event) => {
           const height = (event as { height?: number }).height;

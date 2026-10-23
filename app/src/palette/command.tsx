@@ -14,6 +14,7 @@ import { Icon, type IconName } from "../ui/Icon.tsx";
 import { dialogGlassShadow } from "../ui/overlay.tsx";
 import { Text } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme, type Palette } from "../ui/theme.ts";
+import { useSmallViewport } from "../ui/viewport.tsx";
 import type {
   CommandPaletteActionItem,
   CommandPaletteRow,
@@ -49,9 +50,14 @@ export function PaletteFrame({
   testId?: string;
 }) {
   const theme = useTheme();
-  const { height: windowHeight } = useWindowSize();
+  const { width: windowWidth, height: windowHeight } = useWindowSize();
+  const small = useSmallViewport();
   const surface = paletteSurface(theme);
-  const top = Math.max(16, Math.round((windowHeight || 900) * 0.1));
+  // CommandDialogViewport: `px-4 py-[max(--spacing(4),4vh)] sm:py-[10vh]`, and the popup
+  // shrinks to fit between those paddings.
+  const viewportHeight = windowHeight || 900;
+  const top = small ? Math.max(16, Math.round(viewportHeight * 0.04)) : Math.max(16, Math.round(viewportHeight * 0.1));
+  const fitHeight = Math.max(0, viewportHeight - top * 2);
   return (
     <DialogPrimitive.Root
       open
@@ -68,9 +74,8 @@ export function PaletteFrame({
           style={{
             display: "flex",
             flexDirection: "column",
-            width: POPUP_WIDTH,
-            maxWidth: "92%",
-            ...(height === undefined ? { maxHeight: POPUP_MAX_HEIGHT } : { height }),
+            width: Math.min(POPUP_WIDTH, Math.max(0, (windowWidth || 1440) - 32)),
+            ...(height === undefined ? { maxHeight: Math.min(POPUP_MAX_HEIGHT, fitHeight) } : { height: Math.min(height, fitHeight) }),
             borderRadius: RADIUS["2xl"],
             borderWidth: 1,
             borderColor: surface.border,
@@ -232,12 +237,14 @@ export function PaletteFooter({
   trailing?: ReactNode;
 }) {
   const theme = useTheme();
+  // CommandPaletteContent: `max-sm:flex-col max-sm:items-start`.
+  const small = useSmallViewport();
   return (
     <div
       style={{
         display: "flex",
-        flexDirection: "row",
-        alignItems: "center",
+        flexDirection: small ? "column" : "row",
+        alignItems: small ? "flex-start" : "center",
         justifyContent: "space-between",
         gap: 8,
         paddingTop: 10,
