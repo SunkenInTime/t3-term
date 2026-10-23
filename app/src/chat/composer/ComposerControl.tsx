@@ -3,7 +3,7 @@
 //   sm: h 28, px 10, gap 6, 14px medium muted label, 16px icons, chevron 14 @2.25
 //   xs: h 24, px 7, gap 4, 12px normal muted/70 label, 14px icons (resting strip)
 import type { Props } from "@gpuix/react";
-import type { ReactNode } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useId } from "react";
 
 import { Icon, type IconName } from "../../ui/Icon.tsx";
 import type { Style } from "../../ui/primitives.tsx";
@@ -46,6 +46,10 @@ export function ComposerControl({
         gap: size === "xs" ? 4 : 6,
         paddingLeft: size === "xs" ? 7 : 10,
         paddingRight: size === "xs" ? 7 : 10,
+        // web `border border-transparent`: 2px of every control's width, which the footer's
+        // collapse breakpoints count.
+        borderWidth: 1,
+        borderColor: "#00000000",
         borderRadius: RADIUS.md,
         backgroundColor: pressed ? theme.accent : "#00000000",
         opacity: disabled ? 0.64 : 1,
@@ -59,34 +63,82 @@ export function ComposerControl({
   );
 }
 
+/**
+ * A collapsible control block of the footer (web `data-resting-block`). Labels inside report
+ * their width so the footer can tell how wide the block is with and without them, and drop
+ * out of flow while the block is icon-only.
+ */
+export interface ComposerControlBlockState {
+  readonly iconOnly: boolean;
+  /** `width: null` when the label unmounts. */
+  readonly reportLabel: (key: string, width: number | null, gap: number) => void;
+}
+export const ComposerControlBlockContext = createContext<ComposerControlBlockState | null>(null);
+
+/**
+ * Out of flow and unseen, still measured (web `invisible absolute pointer-events-none`). Opacity,
+ * not `visibility: hidden`: gpuix skips hidden elements in prepaint, so they never report `onLayout`.
+ */
+export const COMPOSER_CONTROL_HIDDEN_STYLE: Style = {
+  position: "absolute",
+  opacity: 0,
+  pointerEvents: "none",
+};
+
+export function composerControlLabelStyle(
+  theme: ReturnType<typeof useTheme>,
+  size: ComposerControlSize,
+  pressed?: boolean,
+  color?: string,
+): Style {
+  return {
+    color:
+      color ??
+      (pressed ? theme.accentForeground : size === "xs" ? alpha(theme.mutedForeground, 0.7) : theme.mutedForeground),
+    fontSize: size === "xs" ? 12 : 14,
+    lineHeight: size === "xs" ? 16 : 20,
+    fontWeight: size === "xs" ? 400 : 500,
+    fontFamily: FONTS.sans,
+    whiteSpace: "nowrap",
+    pointerEvents: "none",
+  };
+}
+
+/** web `data-composer-control-label`. */
 export function ComposerControlLabel({
   children,
   size = "sm",
   pressed,
   color,
+  truncate,
 }: {
   children: ReactNode;
   size?: ComposerControlSize;
   pressed?: boolean;
   color?: string;
+  /** web `min-w-0 truncate` (the codex-style traits trigger). */
+  truncate?: boolean;
 }) {
   const theme = useTheme();
+  const block = useContext(ComposerControlBlockContext);
+  const key = useId();
+  const reportLabel = block?.reportLabel;
+  useEffect(() => (reportLabel ? () => reportLabel(key, null, 0) : undefined), [reportLabel, key]);
+  const iconOnly = block?.iconOnly ?? false;
   return (
     <text
+      onLayout={
+        reportLabel
+          ? (event) => {
+              const width = (event as { width?: number }).width;
+              if (typeof width === "number") reportLabel(key, width, size === "xs" ? 4 : 6);
+            }
+          : undefined
+      }
       style={{
-        color:
-          color ??
-          (pressed
-            ? theme.accentForeground
-            : size === "xs"
-              ? alpha(theme.mutedForeground, 0.7)
-              : theme.mutedForeground),
-        fontSize: size === "xs" ? 12 : 14,
-        lineHeight: size === "xs" ? 16 : 20,
-        fontWeight: size === "xs" ? 400 : 500,
-        fontFamily: FONTS.sans,
-        whiteSpace: "nowrap",
-        pointerEvents: "none",
+        ...composerControlLabelStyle(theme, size, pressed, color),
+        ...(truncate && !iconOnly ? { textOverflow: "ellipsis", overflow: "hidden", minWidth: 0, flexShrink: 1 } : {}),
+        ...(iconOnly ? COMPOSER_CONTROL_HIDDEN_STYLE : {}),
       }}
     >
       {children}
@@ -117,15 +169,17 @@ export function ComposerControlIcon({
 }
 
 /**
- * web gives control svgs `-mx-0.5`; measured against Chrome the chevron sits 2px closer to its label. gpuix
- * mislays flex items with negative margins, so the glyph overhangs a narrower box instead.
+ * web gives control svgs `-mx-0.5`, so the 14px sm chevron takes a 10px slot and overhangs it by
+ * 2px a side; xs overrides that with `ms-0 -me-1`: a 12px glyph in an 8px slot, overhanging on
+ * the right. gpuix mislays flex items with negative margins, so the glyph overhangs a narrower
+ * box instead.
  */
 export function ComposerControlChevron({ size = "sm", color }: { size?: ComposerControlSize; color?: string }) {
   const theme = useTheme();
   const glyph = size === "xs" ? 12 : 14;
   return (
-    <div style={{ position: "relative", width: glyph - 2, height: glyph, flexShrink: 0 }}>
-      <div style={{ position: "absolute", top: 0, left: -2, width: glyph, height: glyph }}>
+    <div style={{ position: "relative", width: glyph - 4, height: glyph, flexShrink: 0 }}>
+      <div style={{ position: "absolute", top: 0, left: size === "xs" ? 0 : -2, width: glyph, height: glyph }}>
         <Icon
           name="chevron-down"
           size={glyph}

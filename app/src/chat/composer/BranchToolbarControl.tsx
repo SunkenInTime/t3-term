@@ -48,7 +48,8 @@ export function BranchToolbarControl({
         pressed={pressed}
         disabled={disabled}
         onClick={onClick}
-        style={{ ...(pressed ? {} : { backgroundColor: "#00000000" }), ...style }}
+        // Measured against web without ComposerControl's 1px transparent border; keep that geometry.
+        style={{ borderWidth: 0, ...(pressed ? {} : { backgroundColor: "#00000000" }), ...style }}
       >
         {icons.length === 1 ? (
           <BranchToolbarIcon name={icons[0]!.name} color={color} opacity={icons[0]!.opacity} />
