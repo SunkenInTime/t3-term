@@ -16,6 +16,8 @@ import { useTheme } from "../ui/theme.ts";
 import { AppThemeProvider } from "../state/clientSettings.ts";
 import { TooltipProvider } from "../ui/overlay.tsx";
 import { ToastHost } from "../ui/toast.tsx";
+import { ThreadNotificationCoordinator } from "../notifications/ThreadNotificationCoordinator.tsx";
+import { noteUserInput } from "../notifications/platform.ts";
 import { PerfRegion } from "../dev/PerfRegion.tsx";
 
 export function App({ boot }: { boot: Boot }) {
@@ -25,7 +27,12 @@ export function App({ boot }: { boot: Boot }) {
         <TooltipProvider>
           {/* One host root: gpuix paints a single root element, so sibling
               overlays at the top level would replace the shell when they mount. */}
-          <div style={{ position: "relative", display: "flex", flexDirection: "column", width: "100%", height: "100%" }}>
+          <div
+            // Pointer movement marks the user as present (gpuix has no window-focus state).
+            // onMouseMove alone doesn't arm pointer capture, so children keep their clicks.
+            onMouseMove={noteUserInput}
+            style={{ position: "relative", display: "flex", flexDirection: "column", width: "100%", height: "100%" }}
+          >
             <ConnectGate bootError={boot.error}>
               <Shell boot={boot} />
               {/* Before the palette and dialogs: same layer priority, so they paint over the editor. */}
@@ -33,6 +40,7 @@ export function App({ boot }: { boot: Boot }) {
               <CommandPalette />
               <DialogHost />
             </ConnectGate>
+            <ThreadNotificationCoordinator />
             <ToastHost />
           </div>
         </TooltipProvider>
