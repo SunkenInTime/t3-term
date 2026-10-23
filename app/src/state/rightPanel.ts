@@ -152,6 +152,12 @@ export const rightPanelActions = {
   openPullRequest(threadKey: string, target: Parameters<typeof Panel.pullRequestSurface>[0]) {
     reveal(updateRightPanel(threadKey, (current) => Panel.openPullRequest(current, target)));
   },
+  openBrowser(threadKey: string, tabId: string | null) {
+    reveal(updateRightPanel(threadKey, (current) => Panel.openBrowser(current, tabId)));
+  },
+  reconcileBrowserSurfaces(threadKey: string, tabIds: ReadonlyArray<string>, hiddenTabIds?: ReadonlySet<string>) {
+    updateRightPanel(threadKey, (current) => Panel.reconcileBrowserSurfaces(current, tabIds, hiddenTabIds));
+  },
   openTerminal(threadKey: string, terminalId: string) {
     reveal(updateRightPanel(threadKey, (current) => Panel.openTerminal(current, terminalId)));
   },
