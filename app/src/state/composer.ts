@@ -16,12 +16,13 @@ import {
   type RuntimeMode,
   type ThreadId,
 } from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
+import { type UnifiedSettings } from "@t3tools/contracts/settings";
 import { createAttachmentEnvironmentAtoms } from "@t3tools/client-runtime/state/attachments";
 import { resolveModelPreferences } from "@t3tools/shared/serverSettings";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
+import { clientSettingsAtom } from "./clientSettings.ts";
 import { termHome } from "../runtime/paths.ts";
 import { serverEnvironment } from "./environment.ts";
 import { modelPickerOpenAtom } from "./ui.ts";
@@ -343,17 +344,18 @@ export function setDraftWorkspace(
 // ── Settings the composer reads ─────────────────────────────────────────
 
 /**
- * Server settings merged over client defaults, the way apps/web/src/hooks/useSettings.ts
- * merges them. t3-term has no client-settings store yet, so client fields are defaults.
+ * Server settings merged over the client settings store (state/clientSettings.ts),
+ * the way apps/web/src/hooks/useSettings.ts merges them.
  */
 export const composerSettingsAtom = Atom.family((environmentId: EnvironmentId | null) =>
   Atom.make((get): UnifiedSettings => {
     const config = environmentId ? get(serverEnvironment.configValueAtom(environmentId)) : null;
     const serverSettings = config?.settings ?? DEFAULT_SERVER_SETTINGS;
+    const clientSettings = get(clientSettingsAtom);
     return {
-      ...DEFAULT_CLIENT_SETTINGS,
+      ...clientSettings,
       ...serverSettings,
-      ...resolveModelPreferences(serverSettings, DEFAULT_CLIENT_SETTINGS),
+      ...resolveModelPreferences(serverSettings, clientSettings),
     } as UnifiedSettings;
   }),
 );

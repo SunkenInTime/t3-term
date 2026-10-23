@@ -34,6 +34,7 @@ import {
 } from "../../web/components/threadActionMenu.logic.ts";
 import { readEnvironmentScope } from "../../web/state/session.ts";
 import { copyTextToClipboard } from "./osActions.ts";
+import { openProjectSettings } from "../../settings/navigation.ts";
 
 function capabilities(environmentId: EnvironmentId) {
   return appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities;
@@ -145,7 +146,7 @@ export async function runThreadAction(action: ThreadActionMenuId, context: Threa
       startNewThread(scopeProjectRef(ref.environmentId, thread.projectId));
       return;
     case "project-settings":
-      appAtomRegistry.set(routeAtom, { kind: "settings", page: "general" });
+      openProjectSettings({ environmentId: ref.environmentId, projectId: thread.projectId });
       return;
     case "settle":
       await reportFailure("Failed to settle thread", () => command(threadEnvironment.settle, ref, { threadId: ref.threadId }));

@@ -92,6 +92,7 @@ import {
 } from "./threadActions.ts";
 import { ThreadVisitWatermark } from "./ThreadVisitWatermark.tsx";
 import { shortcutLabelForCommand } from "./shortcutLabel.ts";
+import { openProjectSettings as openProjectSettingsPage } from "../settings/navigation.ts";
 
 const THREAD_SEARCH_DEBOUNCE_MS = 200;
 const EMPTY_PROVIDER_ENTRIES: ReadonlyMap<string, SidebarProviderEntry> = new Map();
@@ -122,7 +123,11 @@ export function openProjectSettings(group: SidebarProjectGroup, projectRef?: { e
     projectId: target.id,
     nonce: ++projectSettingsNonce,
   });
-  appAtomRegistry.set(routeAtom, { kind: "settings", page: "general" });
+  openProjectSettingsPage({
+    ...(group.isScratch ? {} : { projectKey: group.projectKey }),
+    environmentId: target.environmentId,
+    projectId: target.id,
+  });
 }
 
 /** Snooze wakes are second-precise; repartition at the next one, and every minute. */

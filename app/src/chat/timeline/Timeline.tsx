@@ -3,6 +3,8 @@
 // (latest run, working state, checkpoints, history paging, rewind and fork).
 import { openDiffSurface } from "../../state/git.ts";
 import { useAtomValue } from "@effect/atom-react";
+
+import { clientSettingAtom } from "../../state/clientSettings.ts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { HandoffTimelineRun } from "@t3tools/client-runtime/handoff";
 import {
@@ -81,8 +83,6 @@ import {
 } from "./rowContext.ts";
 
 const EMPTY_MESSAGES: ReadonlyArray<ChatMessage> = [];
-// Web reads this from client settings (default "locale"); t3-term has no client settings store yet.
-const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
 const EMPTY_RUN_IDS: ReadonlySet<RunId> = new Set();
 
 /** Disclosure state per thread, so returning to a thread reopens what the reader opened. */
@@ -417,9 +417,10 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
     setChangedFilesExpanded((current) => toggleIn(current, runId)),
   );
 
+  const timestampFormat: TimestampFormat = useAtomValue(clientSettingAtom("timestampFormat"));
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
-      timestampFormat: DEFAULT_TIMESTAMP_FORMAT,
+      timestampFormat,
       routeThreadKey: threadKey,
       threadRef,
       markdownCwd,
@@ -444,7 +445,7 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
     }),
     // The callbacks are stable; only data the rows read invalidates the context.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [threadKey, threadRef, markdownCwd, workspaceRoot, runs, environmentId, retryableRunIds, changedFilesExpanded],
+    [timestampFormat, threadKey, threadRef, markdownCwd, workspaceRoot, runs, environmentId, retryableRunIds, changedFilesExpanded],
   );
 
   const backgroundWorktreeSetup =

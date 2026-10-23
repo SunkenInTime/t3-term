@@ -15,6 +15,9 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { useEffect, useRef, useState } from "react";
+import { faviconUrlForOrigin } from "@t3tools/shared/favicon";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import type { PreviewSessionSnapshot } from "@t3tools/contracts";
 
 import { environmentThreadShells } from "../state/environment.ts";
 import {
@@ -45,6 +48,16 @@ import { FileEntryIcon } from "./files/FileEntryIcon.tsx";
 import { FilesSurface } from "./files/FilesSurface.tsx";
 import { PullRequestSurface } from "./pr/PullRequestSurface.tsx";
 import { addTerminalSurface, TerminalSurface } from "./terminal/TerminalSurface.tsx";
+import { FaviconImage } from "./browser/FaviconImage.tsx";
+import { PreviewView } from "./browser/PreviewView.tsx";
+import {
+  addBrowserSurface,
+  releasePreviewSurface,
+  threadRefOf,
+  useEnvironmentSupportsServerBrowser,
+} from "../state/preview.ts";
+import { setActivePreviewTab, useThreadPreviewState } from "../web/previewStateStore.ts";
+import { toast } from "../ui/toast.tsx";
 
 const SURFACE_DISABLED_REASONS = {
   browser: "Browser previews are only available in the T3 Code desktop app.",
@@ -53,8 +66,9 @@ const SURFACE_DISABLED_REASONS = {
   diff: "Diff is only available for server threads in Git repositories.",
   pullRequest: "This thread's branch has no pull request yet.",
   pullRequests: "No linked pull requests are available for this thread.",
-  // The web client streams simulators through its device hub; t3-term has no video surface.
-  device: "Device mirroring is not available in t3-term.",
+  // Web streams simulators as H.264 through WebCodecs (packages/client-runtime/src/device/stream.ts);
+  // Bun has no video decoder, so t3-term cannot show a device yet.
+  device: "Device mirroring streams H.264 video, which t3-term cannot decode yet.",
 } as const;
 
 const SURFACE_UNAVAILABLE_HINTS = {
@@ -90,7 +104,11 @@ function rightPanelMaxWidth(viewportWidth: number, rowWidth: number): number {
   return Math.max(RIGHT_PANEL_MIN_WIDTH, Math.min(fractionCap, rowCap));
 }
 
-function surfaceTitle(surface: RightPanelSurface, terminalLabels: ReadonlyMap<string, string>): string {
+function surfaceTitle(
+  surface: RightPanelSurface,
+  terminalLabels: ReadonlyMap<string, string>,
+  sessions: Readonly<Record<string, PreviewSessionSnapshot>>,
+): string {
   switch (surface.kind) {
     case "diff":
       return "Diff";
@@ -106,9 +124,25 @@ function surfaceTitle(surface: RightPanelSurface, terminalLabels: ReadonlyMap<st
       return "Pull requests";
     case "device":
       return surface.title ?? "Device";
-    case "preview":
-      return "Browser";
+    case "preview": {
+      // RightPanelTabs.surfaceTitle: the page title, else its host.
+      const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
+      if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
+      if (snapshot.navStatus.title.trim().length > 0) return snapshot.navStatus.title;
+      try {
+        return new URL(snapshot.navStatus.url).host || "Browser";
+      } catch {
+        return "Browser";
+      }
+    }
   }
+}
+
+/** RightPanelTabs.previewFaviconOf: server tabs have no captured favicon, so the public provider's. */
+function previewFaviconUrl(surface: RightPanelSurface, sessions: Readonly<Record<string, PreviewSessionSnapshot>>): string | null {
+  const snapshot = surface.kind === "preview" && surface.resourceId ? sessions[surface.resourceId] : null;
+  const url = !snapshot || snapshot.navStatus._tag === "Idle" ? null : snapshot.navStatus.url;
+  return faviconUrlForOrigin(url, 32);
 }
 
 function surfaceIcon(surface: RightPanelSurface): IconName {
@@ -147,6 +181,8 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
   const canOperateTerminal = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
   const canReadTerminal = useEnvironmentScope(environmentId, AuthTerminalReadScope);
   const metadata = useTerminalMetadata(environmentId, canReadTerminal);
+  const serverBrowser = useEnvironmentSupportsServerBrowser(environmentId);
+  const previewSessions = useThreadPreviewState(threadRefOf(environmentId, threadId)).sessions;
   const window = useWindowSize();
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -228,7 +264,22 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
   const visiblePullRequests = shell ? visibleThreadPullRequests(shell.pullRequests) : [];
   const hasProject = terminalContext !== null;
   const actions: SurfaceAction[] = [
-    { key: "browser", label: "Browser", icon: "globe", shortcut: "B", available: false, onClick: () => undefined },
+    {
+      key: "browser",
+      label: "Browser",
+      icon: "globe",
+      shortcut: "B",
+      // ChatView: isPreviewSupportedInRuntime() || useEnvironmentSupportsServerBrowser; t3-term has no desktop bridge.
+      available: serverBrowser,
+      onClick: () => {
+        void addBrowserSurface(threadRefOf(environmentId, threadId)).then((result) => {
+          if (result._tag === "Failure") {
+            const error = squashAtomCommandFailure(result);
+            toast({ type: "error", title: "Unable to open browser", description: error instanceof Error ? error.message : undefined });
+          }
+        });
+      },
+    },
     {
       key: "terminal",
       label: "Terminal",
@@ -261,6 +312,12 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
   ];
 
   const active = state.surfaces.find((surface) => surface.id === state.activeSurfaceId) ?? null;
+
+  /** useRightPanelSurfaceClose: a closed browser tab closes its server session too. */
+  function closeSurfaces(surfaces: readonly RightPanelSurface[], close: () => void) {
+    for (const surface of surfaces) releasePreviewSurface(environmentId, threadId, surface);
+    close();
+  }
 
   return (
     <div
@@ -310,7 +367,8 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
             <RightPanelTab
               key={surface.id}
               surface={surface}
-              title={surfaceTitle(surface, terminalLabels)}
+              title={surfaceTitle(surface, terminalLabels, previewSessions)}
+              faviconUrl={previewFaviconUrl(surface, previewSessions)}
               active={surface.id === state.activeSurfaceId}
               isLast={index === state.surfaces.length - 1}
               isOnly={state.surfaces.length === 1}
@@ -323,12 +381,22 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
                     number: surface.number,
                   } as PullRequestRef);
                 }
+                if (surface.kind === "preview" && surface.resourceId) {
+                  setActivePreviewTab(threadRefOf(environmentId, threadId), surface.resourceId);
+                }
                 rightPanelActions.activate(threadKey, surface.id);
               }}
-              onClose={() => rightPanelActions.close(threadKey, surface.id)}
-              onCloseOthers={() => rightPanelActions.closeOthers(threadKey, surface.id)}
-              onCloseToRight={() => rightPanelActions.closeToRight(threadKey, surface.id)}
-              onCloseAll={() => rightPanelActions.closeAll(threadKey)}
+              onClose={() => closeSurfaces([surface], () => rightPanelActions.close(threadKey, surface.id))}
+              onCloseOthers={() =>
+                closeSurfaces(
+                  state.surfaces.filter((entry) => entry.id !== surface.id),
+                  () => rightPanelActions.closeOthers(threadKey, surface.id),
+                )
+              }
+              onCloseToRight={() =>
+                closeSurfaces(state.surfaces.slice(index + 1), () => rightPanelActions.closeToRight(threadKey, surface.id))
+              }
+              onCloseAll={() => closeSurfaces(state.surfaces, () => rightPanelActions.closeAll(threadKey))}
               onElement={(elementId) => {
                 if (elementId === null) tabElements.current.delete(surface.id);
                 else tabElements.current.set(surface.id, elementId);
@@ -411,7 +479,7 @@ function SurfaceContent({
     case "pull-requests":
       return <PullRequestSurface environmentId={environmentId} threadId={threadId} />;
     case "preview":
-      return <UnavailableSurface icon="globe" title="Browser" description={SURFACE_DISABLED_REASONS.browser} />;
+      return <PreviewView key={surface.id} environmentId={environmentId} threadId={threadId} tabId={surface.resourceId} visible />;
     case "device":
       return <UnavailableSurface icon="smartphone" title="Device" description={SURFACE_DISABLED_REASONS.device} />;
   }
@@ -570,6 +638,7 @@ function AddSurfaceMenuItems({ actions }: { actions: readonly SurfaceAction[] })
 function RightPanelTab(props: {
   surface: RightPanelSurface;
   title: string;
+  faviconUrl: string | null;
   active: boolean;
   isLast: boolean;
   isOnly: boolean;
@@ -633,6 +702,8 @@ function RightPanelTab(props: {
         icon={
           props.surface.kind === "file" ? (
             <FileEntryIcon pathValue={props.surface.relativePath} kind="file" size={12} />
+          ) : props.surface.kind === "preview" ? (
+            <FaviconImage url={props.faviconUrl} size={12} color={color} />
           ) : (
             <Icon name={surfaceIcon(props.surface)} size={12} color={color} />
           )
