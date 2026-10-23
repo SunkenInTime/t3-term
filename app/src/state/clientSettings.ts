@@ -17,6 +17,7 @@ import { Atom } from "effect/reactivity";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import { createElement, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { termHome } from "../runtime/paths.ts";
@@ -27,6 +28,7 @@ import {
   getThemeColorsForMode,
   getThemeDefinition,
   paletteFromThemeColors,
+  ThemeContext,
   type Palette,
   type ThemeAppearance,
 } from "../ui/theme.ts";
@@ -306,4 +308,46 @@ export function resetThemeState(): void {
 
 export function useThemeState(): ThemeState {
   return useAtomValue(themeStateAtom);
+}
+
+// ── Public theme API (App, command palette "Change theme") ──────────────
+
+/** Color scheme tiles / palette command: follow the OS or pin light or dark. */
+export function setColorScheme(mode: ThemePreferenceMode): void {
+  setAppearanceMode(mode);
+}
+
+/**
+ * Picks a theme the way the Themes grid does: "system" | "light" | "dark"
+ * pin the color scheme; "t3-code" restores the standard palette; any other id
+ * applies that theme to every appearance it has (a single-appearance theme
+ * also pins the color scheme to that appearance).
+ */
+export function setThemePreference(id: string): void {
+  if (id === "system" || id === "light" || id === "dark") {
+    setAppearanceMode(id);
+    return;
+  }
+  if (id === "t3-code") {
+    setThemeState((current) => ({ ...current, theme: "system", halves: null }));
+    return;
+  }
+  const definition = getThemeDefinition(id);
+  if (!definition) return;
+  const modes = (["light", "dark"] as const).filter((mode) => getThemeColorsForMode(definition, mode) !== null);
+  setThemeState((current) => {
+    const halves: { light?: string; dark?: string } = { ...current.halves };
+    for (const mode of modes) halves[mode] = definition.id;
+    return {
+      theme: "system",
+      appearanceMode: modes.length === 1 ? modes[0]! : current.appearanceMode,
+      halves,
+    };
+  });
+}
+
+/** Provides the active palette to everything below; App wraps its single root with it. */
+export function AppThemeProvider({ children }: { children: ReactNode }) {
+  const palette = useAtomValue(activePaletteAtom);
+  return createElement(ThemeContext.Provider, { value: palette }, children);
 }

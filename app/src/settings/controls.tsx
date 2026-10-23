@@ -450,10 +450,13 @@ export function Badge({
   children,
   tone = "outline",
   icon,
+  size = "default",
 }: {
   children: ReactNode;
   tone?: "outline" | "secondary" | "success" | "warning" | "error" | "info";
   icon?: IconName;
+  /** sm: 16 tall, 10px text, radius 4 (badge.tsx size="sm"). */
+  size?: "default" | "sm";
 }) {
   const theme = useTheme();
   const colors: Record<string, { bg: string; fg: string; border: string }> = {
@@ -472,10 +475,10 @@ export function Badge({
         flexDirection: "row",
         alignItems: "center",
         gap: 4,
-        height: 18,
-        paddingLeft: 6,
-        paddingRight: 6,
-        borderRadius: RADIUS.sm,
+        height: size === "sm" ? 16 : 18,
+        paddingLeft: size === "sm" ? 3 : 6,
+        paddingRight: size === "sm" ? 3 : 6,
+        borderRadius: size === "sm" ? 4 : RADIUS.sm,
         borderWidth: tone === "outline" ? 1 : 0,
         borderColor: color.border,
         backgroundColor: color.bg,
@@ -483,7 +486,7 @@ export function Badge({
       }}
     >
       {icon ? <Icon name={icon} size={12} color={color.fg} /> : null}
-      <Text size="xs" weight={500} color={color.fg}>
+      <Text size="xs" weight={500} color={color.fg} style={size === "sm" ? { fontSize: 10, lineHeight: 14 } : undefined}>
         {children}
       </Text>
     </div>

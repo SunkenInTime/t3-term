@@ -146,6 +146,92 @@ export function SettingsPageContainer({
   );
 }
 
+export interface SettingsVirtualItem {
+  readonly key: string;
+  readonly node: ReactNode;
+  /** Space above this item (the page's 32px section gap, 10px under a section title). */
+  readonly gapBefore?: number;
+}
+
+/**
+ * A settings page laid out as a <virtual-list>. gpuix builds and lays out every
+ * child of a plain scroll container on every frame, so a page with many rows
+ * (Keybindings, Diagnostics) must virtualize: only visible items are built.
+ * Items are centered in the same 896px column as SettingsPageContainer.
+ */
+export function SettingsVirtualPage({
+  items,
+  showScope = true,
+  maxWidth = 896,
+}: {
+  items: ReadonlyArray<SettingsVirtualItem>;
+  showScope?: boolean;
+  maxWidth?: number;
+}) {
+  const column = (key: string, node: ReactNode, paddingTop: number, paddingBottom = 0) => (
+    <div key={key} style={{ display: "flex", flexDirection: "row", justifyContent: "center", width: "100%" }}>
+      <div style={{ display: "flex", flexDirection: "column", width: "100%", maxWidth, paddingLeft: 24, paddingRight: 24, paddingTop, paddingBottom }}>
+        {node}
+      </div>
+    </div>
+  );
+  return (
+    <PageScopeSentenceContext.Provider value={showScope}>
+      <div testId="settings-page-scroll" style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
+        <virtual-list overdraw={900} style={{ flexGrow: 1, minHeight: 0 }}>
+          {[
+            ...(showScope ? [column("scope", <SettingsScopeSentence />, 24)] : []),
+            ...items.map((item, index) =>
+              column(
+                item.key,
+                item.node,
+                index === 0 && !showScope ? 24 : (item.gapBefore ?? 32),
+                index === items.length - 1 ? 48 : 0,
+              ),
+            ),
+          ]}
+        </virtual-list>
+      </div>
+    </PageScopeSentenceContext.Provider>
+  );
+}
+
+/** One row of a grouped card drawn as its own list item (SettingsGroup split per row). */
+export function GroupedItem({ position, children }: { position: "single" | "first" | "middle" | "last"; children: ReactNode }) {
+  const theme = useTheme();
+  const top = position === "single" || position === "first";
+  const bottom = position === "single" || position === "last";
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        borderLeftWidth: 1,
+        borderRightWidth: 1,
+        borderTopWidth: 1,
+        borderBottomWidth: bottom ? 1 : 0,
+        borderColor: top ? alpha(theme.border, 0.6) : alpha(theme.border, 0.5),
+        backgroundColor: alpha(theme.card, 0.4),
+        ...(top ? { borderTopLeftRadius: RADIUS.xl, borderTopRightRadius: RADIUS.xl } : {}),
+        ...(bottom ? { borderBottomLeftRadius: RADIUS.xl, borderBottomRightRadius: RADIUS.xl } : {}),
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** A section title row on its own (SettingsSection's header without the group). */
+export function SettingsSectionTitle({ title, headerAction }: { title: string; headerAction?: ReactNode }) {
+  const theme = useTheme();
+  return (
+    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 16, minHeight: 28, paddingLeft: 16, paddingRight: 16 }}>
+      <Text color={alpha(theme.foreground, 0.7)}>{title}</Text>
+      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>{headerAction}</div>
+    </div>
+  );
+}
+
 /** A plain message where a page has nothing to show (web: `<p className="text-sm text-muted-foreground">`). */
 export function SettingsMessage({ children }: { children: ReactNode }) {
   const theme = useTheme();
@@ -258,7 +344,7 @@ function dividedChildren(children: ReactNode, divided: boolean, color: string): 
     (child) => child !== null && child !== undefined && child !== false && child !== "",
   );
   return items.map((child, index) => (
-    <div key={(child as { key?: string | null })?.key ?? index} style={{ display: "flex", flexDirection: "column", ...(index > 0 ? { borderTopWidth: 1, borderColor: color } : {}) }}>
+    <div key={(child as { key?: string | null })?.key ?? index} style={{ display: "flex", flexDirection: "column", ...(index > 0 ? { borderTopWidth: 1, paddingTop: 1, borderColor: color } : {}) }}>
       {child as ReactNode}
     </div>
   ));
@@ -857,11 +943,9 @@ function ScopeMenu({
             </Text>
             <div
               style={{
-                height: 0,
+                height: 1,
                 marginTop: -2,
-                borderTopWidth: 1,
-                borderStyle: hover || open ? "solid" : "dashed",
-                borderColor: hover || open ? theme.foreground : alpha(theme.foreground, 0.3),
+                backgroundColor: hover || open ? theme.foreground : alpha(theme.foreground, 0.3),
               }}
             />
           </div>

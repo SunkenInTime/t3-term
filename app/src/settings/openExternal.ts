@@ -15,3 +15,26 @@ export function openExternal(url: string): void {
     console.error("[SETTINGS] could not open", url, error);
   }
 }
+
+/**
+ * gpuix has no clipboard API for JS, so "Copy" buttons hand the text to the
+ * OS clipboard tool (clip, pbcopy, wl-copy/xclip).
+ */
+export function copyText(text: string): boolean {
+  const candidates: ReadonlyArray<readonly [string, ReadonlyArray<string>]> =
+    process.platform === "win32"
+      ? [["clip", []]]
+      : process.platform === "darwin"
+        ? [["pbcopy", []]]
+        : [
+            ["wl-copy", []],
+            ["xclip", ["-selection", "clipboard"]],
+          ];
+  for (const [command, args] of candidates) {
+    try {
+      const result = NodeChildProcess.spawnSync(command, args, { input: text, windowsHide: true });
+      if (result.status === 0) return true;
+    } catch {}
+  }
+  return false;
+}

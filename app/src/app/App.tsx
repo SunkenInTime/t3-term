@@ -1,5 +1,5 @@
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
-import { useEffect, type ReactNode } from "react";
+import { useEffect } from "react";
 
 import type { Boot } from "../connect/bootstrap.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
@@ -10,30 +10,24 @@ import { SettingsSidebar } from "../settings/SettingsView.tsx";
 import { CommandPalette } from "../palette/CommandPalette.tsx";
 import { DialogHost } from "../dialogs/DialogHost.tsx";
 import { MainView } from "./MainView.tsx";
-import { ThemeContext, useTheme } from "../ui/theme.ts";
-import { activePaletteAtom } from "../state/clientSettings.ts";
+import { useTheme } from "../ui/theme.ts";
+import { AppThemeProvider } from "../state/clientSettings.ts";
 import { TooltipProvider } from "../ui/overlay.tsx";
 import { ToastHost } from "../ui/toast.tsx";
 
 export function App({ boot }: { boot: Boot }) {
   return (
     <RegistryContext.Provider value={appAtomRegistry}>
-      <ThemedApp>
+      <AppThemeProvider>
         <TooltipProvider>
           <Shell boot={boot} />
           <CommandPalette />
           <DialogHost />
           <ToastHost />
         </TooltipProvider>
-      </ThemedApp>
+      </AppThemeProvider>
     </RegistryContext.Provider>
   );
-}
-
-/** Provides the palette chosen in Settings → Appearance; switching repaints everything below. */
-function ThemedApp({ children }: { children: ReactNode }) {
-  const palette = useAtomValue(activePaletteAtom);
-  return <ThemeContext.Provider value={palette}>{children}</ThemeContext.Provider>;
 }
 
 function Shell({ boot }: { boot: Boot }) {
