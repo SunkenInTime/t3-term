@@ -41,6 +41,7 @@ import {
   type ServerProvider,
   type ThreadId,
 } from "@t3tools/contracts";
+import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { createModelSelection } from "@t3tools/shared/model";
 import { proposedPlanTitle } from "@t3tools/shared/proposedPlanText";
 import * as Option from "effect/Option";
@@ -597,7 +598,9 @@ function ComposerBody({
     const active = trigger ?? detectComposerTrigger(current, caretRef.current);
     if (!active) return;
     if (item.type === "path") {
-      const replacement = `@${item.path} `;
+      // web serializes mentions as markdown file links; tiptap shows them as chips, the
+      // plain textarea shows the link text.
+      const replacement = `${serializeComposerFileLink(item.path)} `;
       const end = extendReplacementRangeForTrailingSpace(current, active.rangeEnd, replacement);
       applyPromptReplacement(active.rangeStart, end, replacement);
       return;
@@ -895,7 +898,7 @@ function ComposerBody({
     const { attachments, folders } = attachmentsFromPaths(paths);
     if (attachments.length > 0) addComposerAttachments(draftKey, attachments);
     if (folders.length > 0) {
-      const mentions = folders.map((folder) => `@${folder}`).join(" ");
+      const mentions = folders.map((folder) => serializeComposerFileLink(folder)).join(" ");
       const current = valueRef.current;
       const spacer = current.length > 0 && !/\s$/.test(current) ? " " : "";
       applyPromptReplacement(current.length, current.length, `${spacer}${mentions} `);
