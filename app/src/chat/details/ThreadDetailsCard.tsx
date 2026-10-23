@@ -17,7 +17,7 @@ import {
   detailsPresentationAtom,
   vcsEnvironment,
 } from "../../state/git.ts";
-import { detailsPanelOpenAtom } from "../../state/ui.ts";
+import { detailsPanelOpenAtom, findBarOpenAtom } from "../../state/ui.ts";
 import { LAYOUT, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { useEnvironmentQuery } from "../../web/state/query.ts";
 import { BranchRow } from "./BranchRow.tsx";
@@ -36,12 +36,18 @@ const DETAILS_CARD_CLEARANCE = 32;
 const MIN_CHAT_WIDTH = 640;
 
 /** threadDetailsCardLayout.ts resolveThreadDetailsCardLayout without the preview mini player. */
-function resolvePlacement(container: { width: number; height: number }) {
+// web ThreadFindBar THREAD_FIND_BAR_RESERVED_HEIGHT: the find bar (36px) and a gap sit
+// above the card while find is open.
+const FIND_BAR_RESERVED_HEIGHT = 36 + CARD_GAP;
+
+/** web resolveThreadDetailsCardLayout (no mini-player frame). */
+function resolvePlacement(container: { width: number; height: number }, topInset: number) {
   const x = container.width - CARD_WIDTH - CARD_GAP;
   if (x - DETAILS_CARD_CLEARANCE - LAYOUT.chatLanePadding < MIN_CHAT_WIDTH) return null;
-  const height = container.height - CARD_GAP * 2;
+  const y = CARD_GAP + topInset;
+  const height = container.height - y - CARD_GAP;
   if (height < 160) return null;
-  return { x, y: CARD_GAP, width: CARD_WIDTH, height };
+  return { x, y, width: CARD_WIDTH, height };
 }
 
 function resolveDensity(height: number, content: { full: number; compact: number }): DetailsDensity {
@@ -61,8 +67,10 @@ export function cardSurfaceStyle(theme: ReturnType<typeof useTheme>) {
 }
 
 export function ThreadDetailsCard({ environmentId, threadId }: { environmentId: EnvironmentId; threadId: ThreadId }) {
+  // web ChatView detailsCardTopInset: find opens above the card, which moves down to make room.
+  const findOpen = useAtomValue(findBarOpenAtom);
   return (
-    <DetailsCardFrame contentKey={`${environmentId}:${threadId}`}>
+    <DetailsCardFrame contentKey={`${environmentId}:${threadId}`} topInset={findOpen ? FIND_BAR_RESERVED_HEIGHT : 0}>
       {(density) => <ThreadDetailsContent environmentId={environmentId} threadId={threadId} density={density} />}
     </DetailsCardFrame>
   );
@@ -94,16 +102,18 @@ export function DraftDetailsCard({
  */
 function DetailsCardFrame({
   contentKey,
+  topInset = 0,
   children,
 }: {
   contentKey: string;
+  topInset?: number;
   children: (density: DetailsDensity) => ReactNode;
 }) {
   const theme = useTheme();
   const open = useAtomValue(detailsPanelOpenAtom);
   const [container, setContainer] = useState({ width: 0, height: 0 });
   const [heights, setHeights] = useState({ key: "", full: 0, compact: 0 });
-  const placement = container.width > 0 ? resolvePlacement(container) : null;
+  const placement = container.width > 0 ? resolvePlacement(container, topInset) : null;
   const key = contentKey;
   const measured = heights.key === key ? heights : { full: 0, compact: 0 };
   const density = placement ? resolveDensity(placement.height, measured) : "full";
