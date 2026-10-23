@@ -158,7 +158,16 @@ function SmallButton({
     );
   }
   return (
-    <OutlineButton testId={testId} height={28} disabled={disabled} onClick={onClick}>
+    // Button size="sm": h-7, px 9, gap 6, with the icon pulled in 2px on each side.
+    <OutlineButton
+      testId={testId}
+      height={28}
+      disabled={disabled}
+      onClick={onClick}
+      gap={icon ? 4 : 6}
+      paddingLeft={icon ? 7 : 9}
+      paddingRight={9}
+    >
       {icon ? <Icon name={icon} size={14} color={theme.mutedForeground} /> : null}
       <Text weight={500}>{children}</Text>
     </OutlineButton>
