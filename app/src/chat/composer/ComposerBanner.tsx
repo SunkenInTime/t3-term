@@ -59,6 +59,8 @@ export interface ComposerTopBannersProps {
   readonly syncPhase?: ThreadSyncPhase | null;
   /** The composer surface width, for the tasks segment bar (`@min-[560px]`). */
   readonly surfaceWidth?: number | null;
+  /** web isComposerCollapsedMobile: tasks ride inline instead of as a tab. */
+  readonly collapsedMobile?: boolean;
 }
 
 const NO_BANNER_ITEMS: ReadonlyArray<ComposerBannerStackEntry> = [];
@@ -74,6 +76,7 @@ export function ComposerTopBanners({
   tasks = null,
   syncPhase = null,
   surfaceWidth = null,
+  collapsedMobile = false,
 }: ComposerTopBannersProps) {
   const {
     activePendingApproval,
@@ -102,7 +105,7 @@ export function ComposerTopBanners({
   const hasBannerItems = bannerItems.length > 0;
   const hasBlockingTopDrawer = activePendingApproval !== null || pendingUserInputs.length > 0;
   const showInlineTasksBadge =
-    tasks !== null && !isTasksDrawerOpen && !hasBlockingTopDrawer && (hasBannerItems || showTopDrawer);
+    tasks !== null && !isTasksDrawerOpen && !hasBlockingTopDrawer && (hasBannerItems || showTopDrawer || collapsedMobile);
   const inlineTasksBadge =
     showInlineTasksBadge && tasks ? (
       <ComposerTasksBadge
@@ -115,7 +118,12 @@ export function ComposerTopBanners({
       />
     ) : null;
   const showTasksTab =
-    !hasBannerItems && !showTopDrawer && !isTasksDrawerOpen && tasks !== null && tasks.progress.totalSteps > 0;
+    !hasBannerItems &&
+    !showTopDrawer &&
+    !isTasksDrawerOpen &&
+    !collapsedMobile &&
+    tasks !== null &&
+    tasks.progress.totalSteps > 0;
   // With notices on screen, the activity joins the stack instead of docking on its own.
   const activityStackContent = hasBannerItems ? (
     syncPhase ? (
@@ -170,6 +178,8 @@ export function ComposerTopBanners({
       >
         <ComposerBannerStack
           items={stackItems}
+          // The banners are the composer's width minus the 22px insets.
+          hideDescriptions={surfaceWidth !== null && surfaceWidth - 2 * COMPOSER_DRAWER_INSET <= 400}
           attachedAbove={attachedAbove}
           frontJoinedAbove={externalAttachments > 0}
         />

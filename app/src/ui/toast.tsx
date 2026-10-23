@@ -9,6 +9,7 @@ import { Atom } from "effect/reactivity";
 import { useState, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
+import { BREAKPOINTS, viewportWidthAtom } from "./viewport.tsx";
 import { Icon, type IconName } from "./Icon.tsx";
 import { surfaceStyle } from "./overlay.tsx";
 import { Button, Text, type ButtonVariant } from "./primitives.tsx";
@@ -115,11 +116,15 @@ const ICONS: Record<ToastType, IconName> = {
 
 export function ToastHost() {
   const toasts = useAtomValue(toastsAtom);
+  const viewportWidth = useAtomValue(viewportWidthAtom);
   if (toasts.length === 0) return null;
+  // web --toast-inset: 1rem below `sm`, 2rem from it; w-[calc(100%-inset*2)] max-w-90.
+  const inset = viewportWidth < BREAKPOINTS.sm ? 16 : 32;
+  const width = Math.min(360, viewportWidth - inset * 2);
   return (
     <anchored fill="window" deferred priority={5} occlude={false} style={{ backgroundColor: "transparent", pointerEvents: "none" }}>
-      {/* web: --toast-inset (32) below --workspace-topbar-height (52), so toasts clear the header. */}
-      <div style={{ position: "absolute", top: 84, right: 32, display: "flex", flexDirection: "column", gap: 12, width: 360 }}>
+      {/* web: --toast-inset below --workspace-topbar-height (52), so toasts clear the header. */}
+      <div style={{ position: "absolute", top: inset + 52, right: inset, display: "flex", flexDirection: "column", gap: 12, width }}>
         {toasts.map((entry) => (
           <ToastCard key={entry.id} entry={entry} />
         ))}

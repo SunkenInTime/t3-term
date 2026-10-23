@@ -1726,7 +1726,8 @@ function ComposerBody({
         syncPhase={shownSyncPhase}
         surfaceWidth={surfaceWidth}
         canOperateThread={true}
-        showPlanFollowUp={showPlanFollowUpPrompt && latestProposedPlan !== null}
+        showPlanFollowUp={!isCollapsedMobile && showPlanFollowUpPrompt && latestProposedPlan !== null}
+        collapsedMobile={isCollapsedMobile}
         planFollowUpTitle={
           showPlanFollowUpPrompt && latestProposedPlan ? (proposedPlanTitle(latestProposedPlan.planMarkdown) ?? null) : null
         }

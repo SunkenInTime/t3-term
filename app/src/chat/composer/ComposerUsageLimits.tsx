@@ -13,7 +13,7 @@ import { Button, Text } from "../../ui/primitives.tsx";
 import { useTheme } from "../../ui/theme.ts";
 import { openExternalUrl } from "../../usage/openExternal.ts";
 import { barColor, PaceIcon, ResetCreditDialog, resetCreditsSummary, useResetCredit } from "../../usage/UsageLimits.tsx";
-import { BANNER_ICON_COLUMN } from "./ComposerBannerParts.tsx";
+import { useBannerIconColumn } from "./ComposerBannerParts.tsx";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack.tsx";
 import { BannerGlyph } from "./useSystemComposerBanners.tsx";
 
@@ -73,6 +73,7 @@ export function usageLimitsBannerItem(
 /** ComposerBanner.Scroll (max 24rem) around ComposerBanner.Body (ps-7: aligned with the title). */
 function UsageLimitsBannerBody({ report, environmentId }: { readonly report: UsageLimitsReport; readonly environmentId: EnvironmentId }) {
   const theme = useTheme();
+  const iconColumn = useBannerIconColumn();
   const now = Date.parse(report.createdAt);
   return (
     <div style={{ display: "flex", flexDirection: "column", maxHeight: 384, overflowY: "scroll", minWidth: 0 }}>
@@ -82,7 +83,8 @@ function UsageLimitsBannerBody({ report, environmentId }: { readonly report: Usa
           display: "flex",
           flexDirection: "column",
           gap: 8,
-          paddingLeft: BANNER_ICON_COLUMN + 4,
+          // ComposerBanner.Body ps-8 sm:ps-7: aligned with the title.
+          paddingLeft: iconColumn + 4,
           paddingTop: 4,
           paddingBottom: 6,
           paddingRight: 8,

@@ -58,7 +58,7 @@ import {
   supportsDesktopAppUpdate,
   supportsServerUpdateThreadContinuation,
 } from "../../web/versionSkew.ts";
-import { BannerText, InlineButton } from "./ComposerBannerParts.tsx";
+import { BannerText, InlineButton, useBannerIconColumn } from "./ComposerBannerParts.tsx";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack.tsx";
 
 /** The parts of web's `EnvironmentPresentation` these banners read. */
@@ -86,6 +86,7 @@ const NO_SERVER_CONFIG_ATOM = Atom.make<ServerConfig | null>(null);
  */
 export function useSystemComposerBanners(input: SystemComposerBannersInput): ComposerBannerStackItem[] {
   const { environmentId, hasMultipleRegisteredEnvironments, automaticEnvironment, autoUpdateEnvironments } = input;
+  const titleLineHeight = useBannerIconColumn();
   const activeEnvironment = useAtomValue(
     environmentId === null ? NO_ENVIRONMENT_VIEW_ATOM : environmentConnectionViewAtom(environmentId),
   );
@@ -231,7 +232,7 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput): Com
             side="top"
           >
             <div testId="server-update-title" style={{ display: "flex", minWidth: 0, flexShrink: 1 }}>
-              <BannerText weight={500} truncate style={{ lineHeight: 24 }}>
+              <BannerText weight={500} truncate style={{ lineHeight: titleLineHeight }}>
                 Server update available
               </BannerText>
             </div>

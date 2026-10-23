@@ -12,7 +12,7 @@ import { childThreadInputsTitle } from "@t3tools/client-runtime/state/threads";
 import { Tooltip } from "../../ui/overlay.tsx";
 import { Button } from "../../ui/primitives.tsx";
 import { useTheme } from "../../ui/theme.ts";
-import { BannerText, InlineButton } from "./ComposerBannerParts.tsx";
+import { BannerText, InlineButton, useBannerIconColumn } from "./ComposerBannerParts.tsx";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack.tsx";
 import { BannerGlyph } from "./useSystemComposerBanners.tsx";
 
@@ -182,9 +182,10 @@ export function backgroundWorkBannerItem(input: {
 
 function BranchChangedTitle({ mismatch }: { readonly mismatch: { readonly threadBranch: string; readonly currentBranch: string } }) {
   const theme = useTheme();
+  const lineHeight = useBannerIconColumn();
   return (
     <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, flexShrink: 1 }}>
-      <BannerText color={theme.mutedForeground} style={{ lineHeight: 24 }}>
+      <BannerText color={theme.mutedForeground} style={{ lineHeight }}>
         Branch changed from
       </BannerText>
       <Tooltip
@@ -192,7 +193,7 @@ function BranchChangedTitle({ mismatch }: { readonly mismatch: { readonly thread
         side="top"
       >
         <div testId="branch-mismatch-branch" style={{ display: "flex", minWidth: 0, flexShrink: 1 }}>
-          <BannerText mono weight={500} truncate style={{ lineHeight: 24 }}>
+          <BannerText mono weight={500} truncate style={{ lineHeight }}>
             {mismatch.threadBranch}
           </BannerText>
         </div>
