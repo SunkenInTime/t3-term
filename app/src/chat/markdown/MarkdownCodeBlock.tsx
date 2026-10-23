@@ -11,6 +11,7 @@ import { useSyntaxTokens } from "../../panels/code/highlighter.ts";
 import { getClientSettings } from "../../state/clientSettings.ts";
 import { Icon, type IconName } from "../../ui/Icon.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
+import { useSmallViewport } from "../../ui/viewport.tsx";
 import { FONTS, RADIUS, useTheme } from "../../ui/theme.ts";
 import { hasSpecificPierreIconForFileName, syntheticFileNameForLanguageId } from "../../web/pierre-icons.ts";
 import { copyTextToClipboard } from "../timeline/system.ts";
@@ -47,6 +48,8 @@ export function CodeBlockIconButton({
 }) {
   const theme = useTheme();
   const [hovered, setHovered] = useState(false);
+  // icon-xs: size-7 below the sm breakpoint, size-6 from it.
+  const buttonSize = useSmallViewport() ? 28 : 24;
   return (
     <Tooltip content={label} side="top">
       <div
@@ -58,8 +61,8 @@ export function CodeBlockIconButton({
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          width: 24,
-          height: 24,
+          width: buttonSize,
+          height: buttonSize,
           flexShrink: 0,
           borderRadius: RADIUS.md,
           cursor: "pointer",
