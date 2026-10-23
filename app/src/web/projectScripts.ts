@@ -1,3 +1,4 @@
+// Ported from apps/web/src/projectScripts.ts (pure logic, kept close to the original).
 import {
   MAX_SCRIPT_ID_LENGTH,
   SCRIPT_RUN_COMMAND_PATTERN,

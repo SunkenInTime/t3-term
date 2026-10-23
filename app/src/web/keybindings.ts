@@ -1,3 +1,4 @@
+// Ported from apps/web/src/keybindings.ts (pure logic, kept close to the original).
 import {
   type KeybindingCommand,
   type KeybindingShortcut,
@@ -18,7 +19,10 @@ import {
   type ShortcutEventLike,
   type ShortcutModifierStateLike,
 } from "@t3tools/shared/keybindings";
-import { isElectron } from "./env";
+// t3-term is a desktop client: desktop-only bindings apply.
+const isElectron = true;
+// Bun has no browser navigatorPlatform; web compares against these strings.
+const navigatorPlatform = process.platform === "darwin" ? "MacIntel" : process.platform === "win32" ? "Win32" : "Linux x86_64";
 import { projectScriptIdFromCommand } from "./projectScripts";
 
 export type { ShortcutEventLike, ShortcutModifierStateLike } from "@t3tools/shared/keybindings";
@@ -50,7 +54,7 @@ const TERMINAL_LINE_START = "\u0001";
 const TERMINAL_LINE_END = "\u0005";
 const TERMINAL_DELETE_TO_LINE_START = "\u0015";
 function resolvePlatform(options: ShortcutMatchOptions | undefined): string {
-  return options?.platform ?? navigator.platform;
+  return options?.platform ?? navigatorPlatform;
 }
 
 function resolveContext(options: ShortcutMatchOptions | undefined): ShortcutMatchContext {
@@ -91,7 +95,7 @@ function matchesWhenClause(
 
 export function shortcutConflictKey(
   shortcut: KeybindingShortcut,
-  platform: string = navigator.platform,
+  platform = navigatorPlatform,
 ): string {
   const useMetaForMod = isMacPlatform(platform);
   const metaKey = shortcut.metaKey || (shortcut.modKey && useMetaForMod);
@@ -219,7 +223,7 @@ export function formatShortcutKeyLabel(key: string): string {
 
 export function formatShortcutLabel(
   shortcut: KeybindingShortcut,
-  platform: string = navigator.platform,
+  platform = navigatorPlatform,
 ): string {
   const keyLabel = formatShortcutKeyLabel(shortcut.key);
   const useMetaForMod = isMacPlatform(platform);
@@ -389,7 +393,7 @@ export function isRichTextBoldShortcut(event: ShortcutEventLike): boolean {
 
 export function isTerminalClearShortcut(
   event: ShortcutEventLike,
-  platform: string = navigator.platform,
+  platform = navigatorPlatform,
 ): boolean {
   if (event.type !== undefined && event.type !== "keydown") {
     return false;
@@ -413,7 +417,7 @@ export function isTerminalClearShortcut(
 
 export function terminalDeleteShortcutData(
   event: ShortcutEventLike,
-  platform: string = navigator.platform,
+  platform = navigatorPlatform,
 ): string | null {
   if (event.type !== undefined && event.type !== "keydown") {
     return null;
@@ -435,7 +439,7 @@ export function terminalDeleteShortcutData(
 
 export function terminalNavigationShortcutData(
   event: ShortcutEventLike,
-  platform: string = navigator.platform,
+  platform = navigatorPlatform,
 ): string | null {
   if (event.type !== undefined && event.type !== "keydown") {
     return null;

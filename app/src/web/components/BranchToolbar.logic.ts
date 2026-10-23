@@ -1,5 +1,4 @@
-// Ported from apps/web/src/components/BranchToolbar.logic.ts (toSortableTimestamp now
-// comes from client-runtime, which is where apps/web/src/lib/threadSort re-exports it).
+// Ported from apps/web/src/components/BranchToolbar.logic.ts (pure logic, kept close to the original).
 import type {
   EnvironmentId,
   EnvironmentMachineKind,

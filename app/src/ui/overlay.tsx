@@ -375,9 +375,12 @@ export function Dialog({
   footer,
   width = 512,
   testId,
+  showCloseButton = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The top-right X of web's DialogPopup. */
+  showCloseButton?: boolean;
   title?: string;
   description?: string;
   children?: ReactNode;
@@ -403,10 +406,11 @@ export function Dialog({
             backgroundColor: theme.appearance === "dark" ? "#0f0f0f" : "#ffffff",
             boxShadow: { offsetX: 0, offsetY: 24, blurRadius: 72, spreadRadius: -20, color: "#000000e6" },
             overflow: "hidden",
+            position: "relative",
           }}
         >
           {title ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 24, paddingBottom: children ? 16 : 24 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 24, paddingBottom: children ? 16 : 24, paddingRight: showCloseButton ? 48 : 24 }}>
               <Text size="xl" weight={600}>
                 {title}
               </Text>
@@ -434,6 +438,26 @@ export function Dialog({
               {footer}
             </div>
           ) : null}
+          {showCloseButton ? (
+            <div style={{ position: "absolute", top: 12, right: 12, display: "flex" }}>
+              <div
+                testId={testId ? `${testId}-close` : undefined}
+                onClick={() => onOpenChange(false)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 28,
+                  height: 28,
+                  borderRadius: RADIUS.md,
+                  cursor: "pointer",
+                  hover: { backgroundColor: theme.accent },
+                }}
+              >
+                <Icon name="x" size={16} color={theme.mutedForeground} />
+              </div>
+            </div>
+          ) : null}
         </DialogPrimitive.Popup>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
@@ -452,15 +476,18 @@ export function Tooltip({
   shortcut,
   side = "bottom",
   children,
+  rootStyle,
 }: {
   content: string;
   shortcut?: string;
   side?: FloatingSide;
   children: ReactElement;
+  /** Style of the wrapper the primitive renders around the trigger (e.g. to stretch a row). */
+  rootStyle?: Style;
 }) {
   const theme = useTheme();
   return (
-    <TooltipPrimitive.Root>
+    <TooltipPrimitive.Root style={rootStyle}>
       <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
       <TooltipPrimitive.Content
         side={side}
