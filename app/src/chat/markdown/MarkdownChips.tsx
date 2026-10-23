@@ -30,7 +30,19 @@ import { textWidth } from "./measure.ts";
 import { baselineOffset } from "./styles.ts";
 import { middleAlignedTop, normalizeModifiers, useLinkHover, type LinkEntry, type RenderEnv } from "./MarkdownView.tsx";
 
-export type ChipKind = "mention" | "thread" | "skill" | "citation" | "file" | "image" | "terminal" | "neutral";
+export type ChipKind =
+  | "mention"
+  | "thread"
+  | "skill"
+  | "citation"
+  | "file"
+  | "image"
+  | "video"
+  | "terminal"
+  | "element"
+  | "review-comment"
+  | "pull-request"
+  | "neutral";
 
 const CHIP_ACCENTS: Record<Exclude<ChipKind, "neutral">, string> = {
   mention: "oklch(0.62 0.11 215)",
@@ -40,6 +52,10 @@ const CHIP_ACCENTS: Record<Exclude<ChipKind, "neutral">, string> = {
   file: "oklch(0.62 0.136 237)",
   image: "oklch(0.62 0.16 16)",
   terminal: "oklch(0.62 0.134 163)",
+  video: "oklch(0.62 0.16 48)",
+  element: "oklch(0.62 0.134 70)",
+  "review-comment": "oklch(0.62 0.16 292)",
+  "pull-request": "oklch(0.62 0.16 277)",
 };
 
 export interface ChipColors {
@@ -100,8 +116,12 @@ export interface ChipPayload {
   readonly type: "chip";
   readonly kind: ChipKind;
   readonly label: string;
+  /** web's text-3xs size after a file or image name. */
+  readonly suffix?: string | undefined;
   readonly icon: ChipIcon;
   readonly tooltip?: string | undefined;
+  /** What a copy of the chip yields instead of its label (web data-markdown-copy). */
+  readonly copyText?: string | undefined;
   readonly dashed?: boolean | undefined;
   readonly onActivate?: ((modifiers: ReturnType<typeof normalizeModifiers>) => void) | undefined;
   readonly onContextMenu?: ((position: { x: number; y: number }) => void) | undefined;
@@ -117,7 +137,9 @@ export type ChipIcon =
 /** Builds a chip box atom, measuring its label so the line breaker knows its width. */
 export function chipAtom(id: string, payload: ChipPayload, base: RunStyle, maxWidth: number, link?: number): BoxAtom {
   const metrics = chipMetrics(base.size);
-  const labelWidth = textWidth({ family: "sans", weight: 500 }, metrics.fontSize, payload.label);
+  const labelWidth =
+    textWidth({ family: "sans", weight: 500 }, metrics.fontSize, payload.label) +
+    (payload.suffix ? metrics.gap + textWidth({ family: "sans", weight: 500 }, 10, payload.suffix) : 0);
   const natural = 2 + 2 * metrics.padX + metrics.icon + metrics.gap + labelWidth;
   const width = Math.min(natural, Math.max(40, maxWidth));
   return { kind: "box", id, width, height: metrics.height, link, payload: { ...payload, base, width } };
@@ -231,8 +253,13 @@ export const ChipBox = memo(function ChipBox({ atom, env, join }: { atom: BoxAto
           minWidth: 0,
         }}
       >
-        {join ? label + JOIN : label}
+        {join && !payload.suffix ? label + JOIN : label}
       </text>
+      {payload.suffix ? (
+        <text style={{ fontFamily: FONTS.sans, fontSize: 10, fontWeight: 500, lineHeight: 14, color: colors.foreground, whiteSpace: "nowrap", flexShrink: 0 }}>
+          {join ? payload.suffix + JOIN : payload.suffix}
+        </text>
+      ) : null}
     </div>
   );
   return payload.tooltip ? (

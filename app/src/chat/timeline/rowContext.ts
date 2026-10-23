@@ -11,6 +11,7 @@ import type {
 } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import type { HandoffTimelineRun } from "@t3tools/client-runtime/handoff";
+import type { InlineSkill } from "@t3tools/shared/inlineSkills";
 import { createContext } from "react";
 
 import type { MessagesTimelineRow } from "../../web/components/chat/MessagesTimeline.logic.ts";
@@ -28,6 +29,8 @@ export interface TimelineRowSharedState {
   routeThreadKey: string;
   threadRef: ScopedThreadRef;
   markdownCwd: string | undefined;
+  /** The thread provider's skills, shown as chips where messages name them (`$skill`). */
+  skills: ReadonlyArray<InlineSkill>;
   workspaceRoot: string | undefined;
   runs: ReadonlyArray<HandoffTimelineRun>;
   activeThreadEnvironmentId: EnvironmentId;

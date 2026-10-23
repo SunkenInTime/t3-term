@@ -10,7 +10,7 @@ import { collectComposerContextReferences, replaceComposerContextReferences } fr
 import { buildNewThreadLink, PROMPT_LINK_MAX_PROMPT_LENGTH } from "@t3tools/shared/promptLinks";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
-import { createContext, memo, use, useState, type ReactNode } from "react";
+import { createContext, memo, use, useMemo, useState, type ReactNode } from "react";
 
 import { environmentSession, environmentThreadShells } from "../../state/environment.ts";
 import { timelineAssets } from "../../state/timeline.ts";
@@ -24,9 +24,11 @@ import { selectMessageImageResources } from "../../web/session-logic.ts";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../web/timestampFormat.ts";
 import { isFileAttachment, isImageAttachment, isVideoAttachment, type ChatAttachment, type ChatFileAttachment } from "../../web/types.ts";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
+import type { ChipPayload } from "../markdown/MarkdownChips.tsx";
+import { userMessageContextChip } from "./userMessageContextChips.ts";
+import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
 import { MessageCopyButton, MicroIconButton, useHover } from "./parts.tsx";
 import { TimelineRowActivityCtx, TimelineRowCtx, type TimelineRow } from "./rowContext.ts";
-import { openExternalUrl } from "./system.ts";
 
 type MessageRow = Extract<TimelineRow, { kind: "message" }>;
 
@@ -72,6 +74,26 @@ function useAttachmentUrls(environmentId: EnvironmentId, resources: ReadonlyArra
     if (!result || result._tag !== "Success" || httpBaseUrl === null) return null;
     return resolveAssetUrl(httpBaseUrl, result.value.relativeUrl);
   });
+}
+
+/** Image attachment URLs by attachment id (chips and the grid open them in the image viewer). */
+function useAttachmentUrlMap(environmentId: EnvironmentId, _messageId: MessageId, images: ReadonlyArray<ChatAttachment>): ReadonlyMap<string, string> {
+  const resources = selectMessageImageResources(images as never);
+  const urls = useAttachmentUrls(environmentId, resources);
+  const key = urls.join("\u0000");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => {
+    const map = new Map<string, string>();
+    resources.forEach((resource, index) => {
+      const url = urls[index];
+      if (resource._tag === "attachment" && url) map.set(resource.attachmentId, url);
+    });
+    for (const image of images) {
+      const preview = "previewUrl" in image ? image.previewUrl : undefined;
+      if (!map.has(image.id) && preview) map.set(image.id, preview);
+    }
+    return map;
+  }, [key, images]);
 }
 
 export function UserMessageRow({ row }: { row: MessageRow }) {
@@ -221,9 +243,21 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
   const resolvedContext = resolveUserMessageContext(row.message);
   // Context chips render as their labels; gpuix markdown has no inline components.
   const plainText = replaceComposerContextReferences(resolvedContext.text, (reference) => reference.label);
-  // Web renders context references as inline chips; gpuix markdown has no inline
-  // components, so a chip becomes inline code, the closest native pill.
-  const chippedText = replaceComposerContextReferences(resolvedContext.text, (reference) => `\`${reference.label.replaceAll("`", "")}\``);
+  // UserMessageContextChips: each `t3-context:` reference renders as its chip.
+  const imageUrls = useAttachmentUrlMap(ctx.activeThreadEnvironmentId, row.message.id, images);
+  const contextChip = useMemo(
+    () => (reference: { kind: string; contextId: string; label: string }) =>
+      userMessageContextChip(reference, {
+        environmentId: ctx.threadRef.environmentId,
+        threadId: ctx.threadRef.threadId,
+        workspaceRoot: ctx.workspaceRoot,
+        recordsById: resolvedContext.recordsById,
+        imageUrls,
+      }),
+    // recordsById is rebuilt per render from the message; its identity follows the message.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [row.message, ctx.threadRef, ctx.workspaceRoot, imageUrls],
+  );
   // Files a chip already shows are not listed again (web's chippedAttachmentIds).
   const chippedAttachmentIds = new Set(
     collectComposerContextReferences(resolvedContext.text).flatMap((occurrence) => {
@@ -275,7 +309,7 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
           <div style={{ display: "flex", flexDirection: "column", minWidth: 0, ...(folded ? { paddingLeft: 12, paddingRight: 12, paddingBottom: 12 } : {}) }}>
             {regularImages.length > 0 || videos.length > 0 ? <UserImageGrid images={regularImages} videos={videos} /> : null}
             {unchippedFiles.length > 0 || unknownAttachments.length > 0 ? <UserFileList files={[...unchippedFiles, ...unknownAttachments]} /> : null}
-            {resolvedContext.text.trim().length > 0 ? <CollapsibleUserMessageBody text={chippedText} collapsible={!folded} /> : null}
+            {resolvedContext.text.trim().length > 0 ? <CollapsibleUserMessageBody text={resolvedContext.text} collapsible={!folded} contextChip={contextChip} /> : null}
           </div>
         ) : null}
       </div>
@@ -317,7 +351,18 @@ function UserImageGrid({ images, videos }: { images: ReadonlyArray<ChatAttachmen
         return (
           <div
             key={image.id}
-            onClick={url ? () => openExternalUrl(url) : undefined}
+            onClick={
+              url
+                ? () => {
+                    // ExpandedImageDialog over the message's images, starting at this one.
+                    const gallery = images.flatMap((entry) => {
+                      const src = urlById.get(entry.id) ?? ("previewUrl" in entry ? (entry.previewUrl ?? null) : null);
+                      return src ? [{ src, name: entry.name }] : [];
+                    });
+                    openExpandedImage({ images: gallery, index: Math.max(0, gallery.findIndex((entry) => entry.src === url)) });
+                  }
+                : undefined
+            }
             style={{
               display: "flex",
               alignItems: "center",
@@ -385,7 +430,15 @@ const COLLAPSED_HEIGHT = 176;
 const FADE_HEIGHT = 28;
 
 /** Long messages collapse to 176px with a fade and a "Show full message" toggle. */
-const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody({ text, collapsible = true }: { text: string; collapsible?: boolean }) {
+const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody({
+  text,
+  collapsible = true,
+  contextChip,
+}: {
+  text: string;
+  collapsible?: boolean;
+  contextChip?: (reference: { kind: string; contextId: string; label: string }) => ChipPayload | null;
+}) {
   const theme = useTheme();
   const [expanded, setExpanded] = useState(false);
   const canCollapse = collapsible && text.trim().length > 0 && shouldCollapseUserMessage(text);
@@ -398,7 +451,7 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody({ te
   return (
     <div style={{ display: "flex", flexDirection: "column", minWidth: 0, ...width }}>
       <div style={{ position: "relative", minWidth: 0, ...width, ...(isCollapsed ? { height: COLLAPSED_HEIGHT, overflow: "hidden" } : {}) }}>
-        <ChatMarkdown text={text} tone="user" lineBreaks parseRawHtml={false} onFitWidth={setFitWidth} {...(maxWidth !== undefined ? { maxWidth } : {})} />
+        <ChatMarkdown text={text} tone="user" lineBreaks parseRawHtml={false} onFitWidth={setFitWidth} contextChip={contextChip} {...(maxWidth !== undefined ? { maxWidth } : {})} />
         {isCollapsed ? (
           <div
             style={{

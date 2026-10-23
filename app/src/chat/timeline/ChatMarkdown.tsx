@@ -7,6 +7,8 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import { isHostPath } from "@t3tools/shared/path";
+import { formatProviderSkillDisplayName, type InlineSkill } from "@t3tools/shared/inlineSkills";
+import { SKILL_CHIP_ICON_SVG } from "../markdown/chipIcons.ts";
 import { mediaMimeTypeFromExtension } from "@t3tools/shared/filePreview";
 import { memo, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 
@@ -45,11 +47,14 @@ import { copyTextToClipboard, openExternalUrl } from "./system.ts";
 
 export type { ChatMarkdownTone };
 
+const NO_SKILLS: ReadonlyArray<InlineSkill> = [];
+
 /** Last measured width per placement, so a remounted row lays out at the right width in its first frame. */
 const lastWidths = new Map<string, number>();
 
 interface LinkContext {
   readonly row: TimelineRowSharedState | null;
+  readonly contextChip: ((reference: { kind: string; contextId: string; label: string }) => ChipPayload | null) | undefined;
 }
 
 function panelPathFor(target: FileChipTarget): string | null {
@@ -185,9 +190,10 @@ function createBoxes(context: LinkContext): InlineBoxRenderers {
       };
       return chipAtom(id("thread"), payload, env.styles.body, lineWidth(env));
     },
-    contextChip(_kind, _contextId, label, env) {
-      const payload: ChipPayload = { type: "chip", kind: "mention", label, icon: { kind: "lucide", name: "paperclip" } };
-      return chipAtom(id("ctx"), payload, env.styles.body, lineWidth(env));
+    contextChip(kind, contextId, label, env) {
+      // web renders the reference's label as plain text when the caller has no chip for it.
+      const payload = context.contextChip?.({ kind, contextId, label });
+      return payload ? chipAtom(id("ctx"), payload, env.styles.body, lineWidth(env)) : null;
     },
     citationChip(entry: LinkEntry, env) {
       const label = entry.kind.kind === "citation" ? "Quote" : "Citation";
@@ -196,6 +202,16 @@ function createBoxes(context: LinkContext): InlineBoxRenderers {
     },
     favicon(host, link, env) {
       return faviconAtom(id("fav"), host, env.styles.body, link);
+    },
+    skillChip(skill, rawText, env) {
+      const payload: ChipPayload = {
+        type: "chip",
+        kind: "skill",
+        label: formatProviderSkillDisplayName(skill),
+        icon: { kind: "svg", source: SKILL_CHIP_ICON_SVG },
+        copyText: rawText,
+      };
+      return chipAtom(id("skill"), payload, env.styles.body, lineWidth(env));
     },
     checkbox(checked, env) {
       return checkboxAtom(id("chk"), checked, env.styles.body, env.styles.listIndent);
@@ -249,6 +265,7 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   maxWidth,
   onFitWidth,
   isStreaming = false,
+  contextChip,
 }: {
   text: string;
   tone?: ChatMarkdownTone;
@@ -262,6 +279,8 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   onFitWidth?: (width: number) => void;
   /** The message is still streaming: Mermaid shows its code until the fence closes. */
   isStreaming?: boolean;
+  /** Chips for `t3-context:` references (user messages: UserMessageContextChips). */
+  contextChip?: LinkContext["contextChip"];
 }) {
   const palette = useTheme();
   const styles = markdownStyles(palette, tone, textSize);
@@ -276,7 +295,7 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   const [hover] = useState(() => new HoverStore());
   const tree = parseChatMarkdown(text, { lineBreaks, math: mathEnabled, rawHtml: parseRawHtml });
   const cwd = row?.markdownCwd;
-  const context = useMemo<LinkContext>(() => ({ row }), [row]);
+  const context = useMemo<LinkContext>(() => ({ row, contextChip }), [row, contextChip]);
   const handlers = useMemo(() => ({ actions: createActions(context), boxes: createBoxes(context), blocks: createBlocks() }), [context]);
   const rendered = useMemo(() => {
     if (width <= 0) return null;
@@ -289,6 +308,7 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
       boxes: handlers.boxes,
       blocks: handlers.blocks,
       mathEnabled,
+      skills: row?.skills ?? NO_SKILLS,
       extent: { width: 0, root: width },
       media: { environmentId: row?.threadRef.environmentId ?? null, threadId: row?.threadRef.threadId ?? null, cwd, gallery: [] },
       isStreaming,

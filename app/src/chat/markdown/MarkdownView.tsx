@@ -25,6 +25,7 @@ import {
   type LinkKind,
   type MessageLinkIndex,
 } from "./links.ts";
+import { matchInlineSkills, type InlineSkill } from "@t3tools/shared/inlineSkills";
 import { JOIN } from "./copy.ts";
 import { textWidth } from "./measure.ts";
 import { baselineOffset, deriveRun, fontAscent, fontLineHeight, xHeight, type MarkdownStyles } from "./styles.ts";
@@ -71,6 +72,7 @@ export interface InlineBoxRenderers {
   citationChip(entry: LinkEntry, env: RenderEnv): BoxAtom;
   favicon(host: string, link: number, env: RenderEnv): BoxAtom;
   checkbox(checked: boolean, env: RenderEnv): BoxAtom;
+  skillChip(skill: InlineSkill, rawText: string, env: RenderEnv): BoxAtom;
   inlineMath(tex: string, display: boolean, env: RenderEnv, style: RunStyle): BoxAtom | null;
   inlineImage(node: Element, env: RenderEnv, style: RunStyle): BoxAtom | null;
 }
@@ -93,6 +95,7 @@ export interface RenderEnv {
   readonly boxes: InlineBoxRenderers;
   readonly blocks: BlockRenderers;
   readonly mathEnabled: boolean;
+  readonly skills: ReadonlyArray<InlineSkill>;
   /** Widest laid-out content, for shrink-to-fit placements (user bubbles). */
   readonly extent: { width: number; readonly root: number };
   /** Where media resolves from, and the message's images in order for the viewer. */
@@ -217,7 +220,7 @@ export function renderFlow(children: ReadonlyArray<ElementContent>, width: numbe
     const nodes = inline;
     inline = [];
     if (nodes.every(isWhitespaceText)) return;
-    blocks.push({ node: renderParagraph(nodes, width, env, ctx.body, `${keyPrefix}i${blocks.length}`), mt: 0, mb: 0 });
+    blocks.push({ node: renderParagraph(nodes, width, env, ctx.body, `${keyPrefix}i${blocks.length}`, true), mt: 0, mb: 0 });
   };
   children.forEach((child, index) => {
     if (isInlineNode(child)) {
@@ -259,7 +262,7 @@ function renderBlock(node: Element, width: number, env: RenderEnv, ctx: FlowCtx,
         }
         return { node: env.blocks.image({ node: image, width, env, key }), mt: styles.blockMargin, mb: styles.blockMargin };
       }
-      return { node: renderParagraph(node.children, width, env, ctx.body, key), mt: styles.blockMargin, mb: styles.blockMargin };
+      return { node: renderParagraph(node.children, width, env, ctx.body, key, true), mt: styles.blockMargin, mb: styles.blockMargin };
     }
     case "h1":
     case "h2":
@@ -526,16 +529,30 @@ interface InlineCollect {
   readonly env: RenderEnv;
   /** Link index of the enclosing <a>, so images inside links do not open the lightbox. */
   readonly link: number | undefined;
+  /** SkillInlineText: `$skill` tokens in paragraph and list text become chips (not inside code or links). */
+  readonly skills: boolean;
 }
 
 function pushText(out: InlineCollect, text: string, style: RunStyle) {
   if (text.length > 0) out.atoms.push({ kind: "text", text, style });
 }
 
+function pushSkillText(out: InlineCollect, text: string, style: RunStyle) {
+  let cursor = 0;
+  for (const { start, end, skill, rawText } of matchInlineSkills(text, out.env.skills)) {
+    if (start > cursor) pushText(out, text.slice(cursor, start), style);
+    out.atoms.push(out.env.boxes.skillChip(skill, rawText, out.env));
+    cursor = end;
+  }
+  if (cursor < text.length) pushText(out, text.slice(cursor), style);
+}
+
 function collectInline(nodes: ReadonlyArray<ElementContent>, style: RunStyle, out: InlineCollect) {
   for (const node of nodes) {
     if (node.type === "text") {
-      pushText(out, collapseWhitespace(node.value), style);
+      const value = collapseWhitespace(node.value);
+      if (out.skills && out.link === undefined && out.env.skills.length > 0) pushSkillText(out, value, style);
+      else pushText(out, value, style);
       continue;
     }
     if (node.type !== "element") continue;
@@ -736,8 +753,8 @@ function collectLink(node: Element, style: RunStyle, out: InlineCollect) {
 }
 
 /** Inline content → laid-out lines → rows of runs. */
-export function renderParagraph(children: ReadonlyArray<ElementContent>, width: number, env: RenderEnv, style: RunStyle, key: string): ReactNode {
-  const out: InlineCollect = { atoms: [], env, link: undefined };
+export function renderParagraph(children: ReadonlyArray<ElementContent>, width: number, env: RenderEnv, style: RunStyle, key: string, skills = false): ReactNode {
+  const out: InlineCollect = { atoms: [], env, link: undefined, skills };
   collectInline(children, style, out);
   // Trim the paragraph's leading whitespace (CSS collapses it at line starts).
   const first = out.atoms[0];

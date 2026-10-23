@@ -78,6 +78,10 @@ import { PendingHandoffRow } from "./PendingHandoffRow.tsx";
 import { TimelineRowContent } from "./TimelineRows.tsx";
 import { TimelineSystemDivider } from "./parts.tsx";
 import { MarkdownOverlayHost } from "../markdown/overlays.tsx";
+import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
+import type { InlineSkill } from "@t3tools/shared/inlineSkills";
+
+const NO_TIMELINE_SKILLS: ReadonlyArray<InlineSkill> = [];
 import { TextMeasureHost } from "../markdown/TextMeasureHost.tsx";
 import {
   TimelineRowActivityCtx,
@@ -195,6 +199,11 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
     !history.hasMoreHistory && findRevertCheckpoint(projection?.checkpoints ?? [], 0) !== undefined;
   const workspaceRoot = shell?.worktreePath ?? project?.workspaceRoot ?? undefined;
   const markdownCwd = workspaceRoot;
+  // web ChatView timelineSkills: the active provider's skills for this workspace.
+  const skills = useMemo(
+    () => (providerStatus ? resolveProviderSkillsForCwd(providerStatus, workspaceRoot) : NO_TIMELINE_SKILLS),
+    [providerStatus, workspaceRoot],
+  );
 
   // ── Worktree setup (useWorktreeSetup.ts) ──────────────────────────────────
   const runPreparing = activityRun?.status === "preparing";
@@ -429,6 +438,7 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
       routeThreadKey: threadKey,
       threadRef,
       markdownCwd,
+      skills,
       workspaceRoot,
       runs,
       activeThreadEnvironmentId: environmentId,
@@ -450,7 +460,7 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
     }),
     // The callbacks are stable; only data the rows read invalidates the context.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [timestampFormat, threadKey, threadRef, markdownCwd, workspaceRoot, runs, environmentId, retryableRunIds, changedFilesExpanded],
+    [timestampFormat, threadKey, threadRef, markdownCwd, skills, workspaceRoot, runs, environmentId, retryableRunIds, changedFilesExpanded],
   );
 
   const backgroundWorktreeSetup =
