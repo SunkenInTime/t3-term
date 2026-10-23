@@ -19,6 +19,7 @@ import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { getProviderVersionLabel } from "../../web/components/settings/providerStatus.ts";
 import { fieldBackground } from "../controls.tsx";
 import { copyText } from "../openExternal.ts";
+import { ANTIGRAVITY_ICON_DATA_URL } from "./antigravityIcon.ts";
 import { providerClients, type ProviderIcon } from "./providerDriverMeta.ts";
 
 // ── Layout ──────────────────────────────────────────────────────────────
@@ -79,8 +80,8 @@ export function StackedRow({
 export function PaneSectionTitle({ title, icon, right }: { title: string; icon?: ReactNode; right?: ReactNode }) {
   const theme = useTheme();
   return (
-    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 16, minHeight: 28, paddingLeft: 16, paddingRight: 16 }}>
-      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
+    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 16, width: "100%", minHeight: 28, paddingLeft: 16, paddingRight: 16 }}>
+      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0, flexGrow: 1 }}>
         {icon}
         <Text color={alpha(theme.foreground, 0.7)}>{title}</Text>
       </div>
@@ -154,6 +155,13 @@ export function DriverIcon({
 }) {
   const theme = useTheme();
   const icon = providerClients.get(driver as ProviderDriverKind)?.icon;
+  if (driver === "antigravity") {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: boxSize, height: boxSize, flexShrink: 0, pointerEvents: "none" }}>
+        <img src={ANTIGRAVITY_ICON_DATA_URL} style={{ width: size, height: size }} />
+      </div>
+    );
+  }
   if (!icon || driver === "codex" || driver === "claudeAgent") {
     return (
       <ProviderInstanceIcon
@@ -283,6 +291,7 @@ export function NumberStepper({
       }}
     >
       {stepButton("minus", -step, "decrement")}
+      <div style={{ display: "flex", flexDirection: "row", justifyContent: "center", flexGrow: 1, minWidth: 0 }}>
       <input
         testId={testId}
         value={draft}
@@ -291,9 +300,45 @@ export function NumberStepper({
         onChange={(event) => setDraft(event.value ?? "")}
         onSubmit={commitDraft}
         onBlur={commitDraft}
-        style={{ flexGrow: 1, minWidth: 0, height: 26, fontSize: 14, lineHeight: 26, textAlign: "center", color: theme.foreground, fontFamily: FONTS.sans }}
+        style={{ width: Math.max(12, draft.length * 8 + 4), height: 26, fontSize: 14, lineHeight: 26, color: theme.foreground, fontFamily: FONTS.sans }}
       />
+      </div>
       {stepButton("plus", step, "increment")}
+    </div>
+  );
+}
+
+/** switch.tsx size="sm": 26×16 track, 12px thumb. */
+export function SmallSwitch({ checked, disabled, onChange, testId }: { checked: boolean; disabled: boolean; onChange: (next: boolean) => void; testId?: string }) {
+  const theme = useTheme();
+  return (
+    <div
+      testId={testId}
+      onClick={disabled ? undefined : () => onChange(!checked)}
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: checked ? "flex-end" : "flex-start",
+        width: 26,
+        height: 16,
+        padding: 2,
+        borderRadius: 8,
+        backgroundColor: checked ? theme.primary : theme.input,
+        opacity: disabled ? 0.5 : 1,
+        cursor: disabled ? "default" : "pointer",
+        flexShrink: 0,
+      }}
+    >
+      <div
+        style={{
+          width: 12,
+          height: 12,
+          borderRadius: 6,
+          backgroundColor: checked || theme.appearance === "light" ? "#ffffff" : theme.mutedForeground,
+          pointerEvents: "none",
+        }}
+      />
     </div>
   );
 }

@@ -1,0 +1,339 @@
+// Port of apps/web/src/components/settings/ProviderAuthenticationSection.tsx: the "Account"
+// row of a provider's Setup section (sign in, change account, sign out, and the
+// browser / device code / credentials / callback steps of a sign-in flow).
+// The terminal interaction (ProviderAuthTerminal, an xterm on web) is shown as its
+// latest output only; typing into it is not ported.
+import { isAtomCommandInterrupted, squashAtomCommandFailure, type AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
+import type { EnvironmentId, ProviderAuthResponse, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
+import { useMemo, useRef, useState } from "react";
+
+import { serverEnvironment } from "../../state/environment.ts";
+import { useAtomCommand } from "../../state/settings.ts";
+import { Dialog, Tooltip } from "../../ui/overlay.tsx";
+import { Button, IconButton, Text } from "../../ui/primitives.tsx";
+import { RADIUS, alpha, useTheme } from "../../ui/theme.ts";
+import { SettingsSelect, TextField } from "../controls.tsx";
+import { copyText, openExternal } from "../openExternal.ts";
+import { useEnvironmentQuery } from "../query.ts";
+import { RedactedText } from "../RedactedText.tsx";
+import { StackedRow } from "./parts.tsx";
+
+const DEFAULT_METHOD = "__default__";
+
+export function ProviderAuthenticationSection({
+  environmentId,
+  environmentLabel,
+  instanceId,
+  provider,
+  readOnly,
+}: {
+  environmentId: EnvironmentId;
+  environmentLabel: string;
+  instanceId: ProviderInstanceId;
+  provider: ServerProvider;
+  readOnly: boolean;
+}) {
+  const theme = useTheme();
+  const target = useMemo(() => ({ environmentId, input: { instanceId } }), [environmentId, instanceId]);
+  const query = useEnvironmentQuery(serverEnvironment.providerAuthState(target));
+  const commands = { reportFailure: false, reportDefect: false };
+  const start = useAtomCommand(serverEnvironment.startProviderAuth, commands);
+  const respond = useAtomCommand(serverEnvironment.respondProviderAuth, commands);
+  const complete = useAtomCommand(serverEnvironment.completeProviderAuth, commands);
+  const cancel = useAtomCommand(serverEnvironment.cancelProviderAuth, commands);
+  const logout = useAtomCommand(serverEnvironment.logoutProviderAuth, commands);
+  const [methodId, setMethodId] = useState("");
+  const [draft, setDraft] = useState({ id: "", values: {} as Record<string, string> });
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [confirmingLogout, setConfirmingLogout] = useState(false);
+  const pendingRef = useRef(false);
+  const auth = query.data;
+  const interaction = auth?.interaction;
+  const active = auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying";
+  const signedIn = provider.auth.status === "authenticated" || (provider.auth.status === "unknown" && auth?.phase === "succeeded");
+  const isDiscovering = provider.driver === "acpRegistry" && !active && !signedIn && !query.error && auth?.methods === undefined;
+  const needsExternalSetup =
+    !active && !signedIn && (provider.setup?.canAuthenticate === false || (provider.driver === "acpRegistry" && auth?.methods?.length === 0));
+  const accountDescription = active
+    ? auth?.phase === "starting"
+      ? "Starting sign-in…"
+      : auth?.phase === "verifying"
+        ? "Checking your account…"
+        : interaction?.type === "terminal"
+          ? "Complete sign-in in the terminal below."
+          : interaction?.type === "credentials"
+            ? "Enter your credentials below."
+            : "Finish signing in in your browser."
+    : signedIn
+      ? "Signed in."
+      : isDiscovering
+        ? "Discovering sign-in methods…"
+        : needsExternalSetup
+          ? "No in-app sign-in advertised. Follow the provider's docs to finish setup."
+          : `Sign in on ${environmentLabel}.`;
+  const statusMessage = auth?.phase === "failed" ? auth.message : null;
+  const disabled = readOnly || pending || query.error !== null || isDiscovering;
+  const draftId = `${auth?.flowId ?? ""}:${interaction?.id ?? ""}`;
+  const values = draft.id === draftId ? draft.values : {};
+  const url = interaction?.type === "browser" || interaction?.type === "deviceCode" ? interaction.url : auth?.authorizationUrl;
+
+  async function run(command: () => Promise<AtomCommandResult<unknown, unknown>>) {
+    if (pendingRef.current) return false;
+    pendingRef.current = true;
+    setPending(true);
+    setError(null);
+    let succeeded = false;
+    try {
+      const result = await command();
+      if (result._tag === "Success") succeeded = true;
+      else if (!isAtomCommandInterrupted(result)) {
+        const failure = squashAtomCommandFailure(result);
+        setError(failure instanceof Error ? failure.message : "Provider sign-in failed. Try again.");
+      }
+    } catch {
+      setError("Provider sign-in failed. Try again.");
+    }
+    pendingRef.current = false;
+    setPending(false);
+    return succeeded;
+  }
+
+  async function send(response: ProviderAuthResponse) {
+    if (!auth?.flowId || !interaction) return false;
+    return run(() => respond({ environmentId, input: { instanceId, flowId: auth.flowId!, interactionId: interaction.id, response } }));
+  }
+
+  async function openBrowser() {
+    if (!url || readOnly) return;
+    const requiresConsent = interaction?.type === "browser" && interaction.requiresConsent;
+    if (requiresConsent && !(await send({ type: "browser", action: "accept" }))) return;
+    openExternal(url);
+    setError(null);
+  }
+
+  const updateDraft = (name: string, value: string) => setDraft({ id: draftId, values: { ...values, [name]: value } });
+  const methods = auth?.methods ?? [];
+  const email = provider.auth.email?.trim();
+
+  const control = (
+    <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+      {!active && methods.length > 1 ? (
+        <SettingsSelect
+          testId="provider-auth-method"
+          value={methods.some((method) => method.id === methodId) ? methodId : DEFAULT_METHOD}
+          width={176}
+          disabled={disabled}
+          options={[{ value: DEFAULT_METHOD, label: "Provider default" }, ...methods.map((method) => ({ value: method.id, label: method.name }))]}
+          onChange={(value) => setMethodId(value === DEFAULT_METHOD ? "" : value)}
+        />
+      ) : null}
+      {url ? (
+        <>
+          <Button size="sm" variant="outline" disabled={disabled} onClick={() => void openBrowser()} testId="provider-auth-open-browser">
+            Open browser
+          </Button>
+          <Tooltip content="Copy sign-in link" side="top">
+            <IconButton
+              icon="copy"
+              size={28}
+              iconSize={16}
+              disabled={disabled}
+              onClick={() => {
+                if (!copyText(url)) return setError("Could not copy the sign-in link.");
+                if (interaction?.type === "browser" && interaction.requiresConsent) void send({ type: "browser", action: "accept" });
+              }}
+            />
+          </Tooltip>
+        </>
+      ) : null}
+      {needsExternalSetup && provider.setup?.documentationUrl ? (
+        <Button size="sm" variant="outline" onClick={() => openExternal(provider.setup!.documentationUrl!)}>
+          Open docs
+        </Button>
+      ) : active && auth?.flowId ? (
+        <Button
+          size="sm"
+          variant="ghost-muted"
+          disabled={disabled}
+          testId="provider-auth-cancel"
+          onClick={() => void run(() => cancel({ environmentId, input: { instanceId, flowId: auth.flowId! } }))}
+        >
+          Cancel
+        </Button>
+      ) : !active && !needsExternalSetup && provider.setup?.canAuthenticate !== false ? (
+        <Button
+          size="sm"
+          variant="outline"
+          testId="provider-auth-start"
+          disabled={disabled || !provider.enabled || !provider.installed || !auth}
+          onClick={() =>
+            void run(() =>
+              start({
+                environmentId,
+                input: { instanceId, ...(methodId && methods.some((method) => method.id === methodId) ? { methodId } : {}) },
+              }),
+            )
+          }
+        >
+          {signedIn ? "Change account" : auth?.phase === "failed" || auth?.phase === "cancelled" ? "Retry sign-in" : "Sign in"}
+        </Button>
+      ) : null}
+      {!active && signedIn && (provider.auth.canLogout ?? provider.setup?.canAuthenticate) ? (
+        <Button size="sm" variant="ghost" disabled={disabled || !auth} onClick={() => setConfirmingLogout(true)} testId="provider-auth-logout">
+          Sign out
+        </Button>
+      ) : null}
+    </div>
+  );
+
+  const hasBody =
+    interaction?.type === "terminal" ||
+    interaction?.type === "credentials" ||
+    interaction?.type === "deviceCode" ||
+    (url && (interaction?.type === "browser" ? interaction.acceptsCallback : !interaction)) ||
+    error ||
+    query.error;
+
+  return (
+    <>
+      <StackedRow
+        testId="provider-auth-row"
+        title="Account"
+        description={
+          signedIn && !active && email ? (
+            <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Text size="xs" color={alpha(theme.mutedForeground, 0.8)}>
+                Signed in as
+              </Text>
+              <RedactedText value={email} revealTooltip="Click to reveal email" hideTooltip="Click to hide email" />
+            </div>
+          ) : (
+            <Text size="xs" color={alpha(theme.mutedForeground, 0.8)} style={{ lineHeight: 18 }}>
+              {accountDescription}
+            </Text>
+          )
+        }
+        status={
+          statusMessage ? (
+            <Text size="xs" color={theme.mutedForeground}>
+              {statusMessage}
+            </Text>
+          ) : undefined
+        }
+        control={control}
+      >
+        {hasBody ? (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {interaction?.type === "deviceCode" ? (
+              <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, paddingTop: 8, paddingBottom: 8 }}>
+                <Text color={theme.mutedForeground}>Enter code</Text>
+                <Text mono>{interaction.userCode}</Text>
+                <Text color={theme.mutedForeground}>in your browser.</Text>
+              </div>
+            ) : null}
+            {interaction?.type === "terminal" ? (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  marginTop: 8,
+                  marginBottom: 8,
+                  padding: 8,
+                  borderRadius: RADIUS.md,
+                  borderWidth: 1,
+                  borderColor: theme.border,
+                  backgroundColor: theme.codeBackground,
+                }}
+              >
+                {interaction.output
+                  .split(/\r?\n/)
+                  .slice(-12)
+                  .map((line, index) => (
+                    <Text key={index} size="2xs" mono color={theme.mutedForeground}>
+                      {line.replace(/\u001b\[[0-9;?]*[a-zA-Z]/g, "") || " "}
+                    </Text>
+                  ))}
+              </div>
+            ) : null}
+            {interaction?.type === "credentials" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 8, paddingBottom: 8 }}>
+                {interaction.fields.map((field) => (
+                  <div key={field.name} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <Text>{field.label}</Text>
+                    <TextField size="sm" value={values[field.name] ?? ""} disabled={disabled} onChange={(value) => updateDraft(field.name, value)} />
+                  </div>
+                ))}
+                <div style={{ display: "flex", flexDirection: "row" }}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={disabled}
+                    onClick={() =>
+                      void send({ type: "credentials", values }).then((sent) => {
+                        if (sent) setDraft({ id: "", values: {} });
+                      })
+                    }
+                  >
+                    Connect
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+            {url && (interaction?.type === "browser" ? interaction.acceptsCallback : !interaction) ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 8, paddingBottom: 8 }}>
+                <Text>If the final localhost page does not load, paste its full URL here.</Text>
+                <TextField size="sm" value={values.callback ?? ""} disabled={disabled} onChange={(value) => updateDraft("callback", value)} />
+                <div style={{ display: "flex", flexDirection: "row" }}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={disabled || !values.callback?.trim()}
+                    onClick={() => {
+                      if (!auth?.flowId || !values.callback?.trim()) return;
+                      void run(() => complete({ environmentId, input: { instanceId, flowId: auth.flowId!, callbackUrl: values.callback! } })).then(
+                        (sent) => {
+                          if (sent) setDraft({ id: "", values: {} });
+                        },
+                      );
+                    }}
+                  >
+                    Continue
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+            {error || query.error ? (
+              <Text size="xs" color={theme.errorForeground} style={{ paddingTop: 8, paddingBottom: 8 }}>
+                {error ?? query.error ?? ""}
+              </Text>
+            ) : null}
+          </div>
+        ) : null}
+      </StackedRow>
+      <Dialog
+        open={confirmingLogout}
+        onOpenChange={setConfirmingLogout}
+        title={`Sign out of ${provider.displayName ?? provider.driver}?`}
+        description={`This stops running threads on ${environmentLabel} that share this sign-in. Thread history is kept.`}
+        footer={
+          <>
+            <Button size="sm" variant="outline" onClick={() => setConfirmingLogout(false)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => {
+                setConfirmingLogout(false);
+                void run(() => logout(target));
+              }}
+            >
+              Sign out
+            </Button>
+          </>
+        }
+      />
+    </>
+  );
+}
