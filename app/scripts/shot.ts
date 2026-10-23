@@ -3,7 +3,7 @@
 // steps: [{click: testId}|{clickText: text}|{press: "ctrl-k"}|{fill:[testId,text]}|{wait: ms}|{shot: name}|{mouse:[x,y]}
 //         |{hover:[x,y]}|{hoverTestId: testId}|{hoverText: text}|{rightClick:[x,y]}|{rightClickText: text}
 //         |{wheel:[x,y,dy]}|{mouseMods:[x,y,"shift"]}|{dblclick:[x,y]}|{dblclickText: text}
-//         |{wheelTestId:[testId,dx,dy]}|{dragTestId:[testId,dx,dy]}|{rightClickTestId: testId}]
+//         |{wheelTestId:[testId,dx,dy]}|{dragTestId:[testId,dx,dy]}|{rightClickTestId: testId}|{tryClick: testId}]
 import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -36,6 +36,8 @@ try {
   for (const step of steps) {
     if (step.wait) await Bun.sleep(step.wait);
     if (step.click) await app.getByTestId(step.click).click();
+    // Clicks only if present: for prompts that may or may not appear (approvals).
+    if (step.tryClick) await app.getByTestId(step.tryClick).click().catch(() => console.log("tryClick: no", step.tryClick));
     if (step.clickText) await app.getByText(step.clickText).click();
     if (step.mouse) await app.mouse.click({ x: step.mouse[0], y: step.mouse[1] });
     if (step.mouseMods) await app.mouse.click({ x: step.mouseMods[0], y: step.mouseMods[1] }, { modifiers: step.mouseMods[2] });
