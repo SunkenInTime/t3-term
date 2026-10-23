@@ -12,6 +12,7 @@ import { useState } from "react";
 
 import { activeKeybindingsAtom } from "../../state/keybindings.ts";
 import { environmentProjects, environmentThreadShells } from "../../state/environment.ts";
+import { environmentPresentations } from "../../state/navigation.ts";
 import { openCommandPalette } from "../../state/palette.ts";
 import {
   openScratchProject,
@@ -219,6 +220,9 @@ export function DraftHeroHeadline({
   const projects = useAtomValue(environmentProjects.projectsAtom);
   const threads = useAtomValue(environmentThreadShells.navigationThreadShellsAtom);
   const keybindings = useAtomValue(activeKeybindingsAtom);
+  // The scratch helpers read connection state from the registry; subscribing
+  // here re-renders when an environment connects or its config arrives.
+  useAtomValue(environmentPresentations.presentationsAtom);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [noProjectHovered, setNoProjectHovered] = useState(false);
 

@@ -24,7 +24,7 @@ import { NoActiveThreadState, NoProjectsHero } from "./draft/EmptyStates.tsx";
  * Space the composer takes. The composer positions itself at the bottom of its
  * container (thread layout), so the draft gives it a box of its own height.
  */
-const COMPOSER_SLOT_HEIGHT = 176;
+const COMPOSER_SLOT_HEIGHT = 140;
 
 export function DraftView({ environmentId, projectId }: { environmentId: EnvironmentId | null; projectId: ProjectId | null }) {
   const theme = useTheme();
@@ -68,7 +68,7 @@ export function DraftView({ environmentId, projectId }: { environmentId: Environ
           paddingLeft: LAYOUT.chatLanePadding,
           paddingRight: LAYOUT.chatLanePadding,
           // Lift the group a little above center, like web's hero.
-          paddingBottom: 72,
+          paddingBottom: 140,
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%", paddingBottom: 16 }}>
