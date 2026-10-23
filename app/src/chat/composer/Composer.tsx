@@ -32,8 +32,10 @@ import {
 } from "@t3tools/client-runtime/state/composer-dispatch";
 import { resolveProviderSkillsForCwd, resolveProviderSlashCommandsForCwd } from "@t3tools/client-runtime/providerSkills";
 import {
+  deriveProviderSubagentStatus,
   deriveReportedModelSelection,
   deriveThreadActivityRun,
+  formatModelSelectionEffort,
   deriveThreadStructureRuntime,
   threadRuntimeHasInterruptibleRun,
 } from "@t3tools/client-runtime/state/thread-execution";
@@ -41,6 +43,7 @@ import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thr
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
   type EnvironmentId,
+  isProviderNativeSubagentThread,
   MessageId,
   type ModelSelection,
   type ProjectId,
@@ -190,6 +193,10 @@ import { usePendingThreadRequests } from "./usePendingThreadRequests.ts";
 import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
 import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
+import { ProviderSubagentBar } from "./ProviderSubagentBar.tsx";
+import { formatModelSlugName, resolveSelectableModel } from "@t3tools/shared/model";
+import { getTriggerDisplayModelName } from "../../web/components/chat/providerIconUtils.ts";
+import { shouldShowInstanceBadge } from "../../web/providerInstances.ts";
 import { useProjectCloneBanner } from "./useProjectCloneBanner.tsx";
 import { composerProviderStatusAtom } from "./composerProviderStatus.ts";
 import { devComposerTasks, withDevProviderStatus } from "./devComposerBanners.ts";
@@ -1700,6 +1707,48 @@ function ComposerBody({
     fontFamily: FONTS.sans,
     color: theme.foreground,
   };
+
+  // web ChatView showProviderSubagentBar: a provider-native subagent can't take messages,
+  // so the composer gives way to a bar with its model, live status and "Open parent".
+  if (shell && isProviderNativeSubagentThread(shell.source)) {
+    const subagentModels = selectedProviderEntry?.models ?? [];
+    const subagentModelSlug = selectedProviderEntry
+      ? resolveSelectableModel(selectedProviderEntry.driverKind, shell.modelSelection.model, subagentModels)
+      : null;
+    const subagentCatalogModel = subagentModels.find((model) => model.slug === subagentModelSlug);
+    const parentThreadId = shell.lineage.parentThreadId;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", width: "100%", maxWidth: LAYOUT.chatMaxWidth, pointerEvents: "auto" }}>
+        <div
+          style={surfaceBase}
+          onLayout={(event) => {
+            const width = (event as { width?: number }).width;
+            if (typeof width === "number" && width !== surfaceWidth) setSurfaceWidth(width);
+          }}
+        >
+          <ProviderSubagentBar
+            provider={selectedProviderEntry ?? null}
+            showInstanceBadge={
+              selectedProviderEntry !== undefined && shouldShowInstanceBadge(selectedProviderEntry, providerInstanceEntries)
+            }
+            modelLabel={
+              subagentCatalogModel
+                ? getTriggerDisplayModelName(subagentCatalogModel)
+                : formatModelSlugName(shell.modelSelection.model)
+            }
+            effortLabel={formatModelSelectionEffort(shell.modelSelection, subagentModels, reportedModelSelection)}
+            status={projection ? deriveProviderSubagentStatus(projection) : null}
+            onOpenParent={
+              parentThreadId
+                ? () => appAtomRegistry.set(routeAtom, { kind: "thread", environmentId, threadId: parentThreadId })
+                : null
+            }
+            width={surfaceWidth}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
