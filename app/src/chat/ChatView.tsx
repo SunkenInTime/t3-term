@@ -7,6 +7,7 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
 import { detailsPanelOpenAtom, rightPanelOpenAtom, terminalOpenAtom } from "../state/ui.ts";
 import { RightPanel } from "../panels/RightPanel.tsx";
+import { ThreadPreviewHost } from "../panels/browser/ThreadPreviewHost.tsx";
 import { TerminalDrawer } from "../terminal/TerminalDrawer.tsx";
 import { Composer } from "./composer/Composer.tsx";
 import { reportTimelineWheel } from "./composer/composerResting.ts";
@@ -30,6 +31,7 @@ export function ChatView({ environmentId, threadId }: { environmentId: Environme
           <Timeline environmentId={environmentId} threadId={threadId} />
           <Composer target={{ kind: "thread", environmentId, threadId }} />
           {detailsOpen ? <ThreadDetailsCard environmentId={environmentId} threadId={threadId} /> : null}
+          <ThreadPreviewHost environmentId={environmentId} threadId={threadId} />
         </div>
         {terminalOpen ? <TerminalDrawer environmentId={environmentId} threadId={threadId} /> : null}
       </div>
