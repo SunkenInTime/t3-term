@@ -476,15 +476,18 @@ export function Tooltip({
   shortcut,
   side = "bottom",
   children,
+  rootStyle,
 }: {
   content: string;
   shortcut?: string;
   side?: FloatingSide;
   children: ReactElement;
+  /** Style of the wrapper the primitive renders around the trigger (e.g. to stretch a row). */
+  rootStyle?: Style;
 }) {
   const theme = useTheme();
   return (
-    <TooltipPrimitive.Root>
+    <TooltipPrimitive.Root style={rootStyle}>
       <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
       <TooltipPrimitive.Content
         side={side}

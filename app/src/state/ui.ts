@@ -38,6 +38,11 @@ export const sidebarSearchAtom = Atom.make("").pipe(Atom.keepAlive);
 
 export type RightPanelSurface = "terminal" | "files" | "diff" | "pull-request";
 export const rightPanelSurfaceAtom = Atom.make<RightPanelSurface>("diff").pipe(Atom.keepAlive);
+/**
+ * Bumped with every "show this surface" request, so asking for the kind the
+ * atom above already holds (its default is "diff") still reaches the panel.
+ */
+export const rightPanelSurfaceRequestAtom = Atom.make(0).pipe(Atom.keepAlive);
 
 /** Open requests for pickers that keybindings and the palette can trigger. */
 export const modelPickerOpenAtom = Atom.make(false).pipe(Atom.keepAlive);

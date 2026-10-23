@@ -19,7 +19,7 @@ import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
 import { termHome } from "../runtime/paths.ts";
-import { rightPanelOpenAtom, rightPanelSurfaceAtom, type RightPanelSurface } from "./ui.ts";
+import { rightPanelOpenAtom, rightPanelSurfaceAtom, rightPanelSurfaceRequestAtom, type RightPanelSurface } from "./ui.ts";
 
 export const vcsEnvironment = createVcsEnvironmentAtoms(connectionAtomRuntime);
 export const vcsActionManager = createVcsActionManager(connectionAtomRuntime);
@@ -147,6 +147,7 @@ export const diffFocusedFileAtom = Atom.family((_scopeKey: string) =>
 
 export function openRightPanelSurface(surface: RightPanelSurface): void {
   appAtomRegistry.set(rightPanelSurfaceAtom, surface);
+  appAtomRegistry.update(rightPanelSurfaceRequestAtom, (count) => count + 1);
   appAtomRegistry.set(rightPanelOpenAtom, true);
 }
 

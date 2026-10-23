@@ -2,7 +2,8 @@
 // bun scripts/shot.ts <out-dir> [steps.json]
 // steps: [{click: testId}|{clickText: text}|{press: "ctrl-k"}|{fill:[testId,text]}|{wait: ms}|{shot: name}|{mouse:[x,y]}
 //         |{hover:[x,y]}|{hoverTestId: testId}|{hoverText: text}|{rightClick:[x,y]}|{rightClickText: text}
-//         |{wheel:[x,y,dy]}|{mouseMods:[x,y,"shift"]}|{dblclick:[x,y]}|{dblclickText: text}]
+//         |{wheel:[x,y,dy]}|{mouseMods:[x,y,"shift"]}|{dblclick:[x,y]}|{dblclickText: text}
+//         |{wheelTestId:[testId,dx,dy]}|{dragTestId:[testId,dx,dy]}|{rightClickTestId: testId}]
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { launch } from "@gpuix/react/automation";
@@ -41,6 +42,9 @@ try {
     if (step.wheel) await app.mouse.wheel({ x: step.wheel[0], y: step.wheel[1] }, 0, step.wheel[2]);
     if (step.fill) await app.getByTestId(step.fill[0]).fill(step.fill[1]);
     if (step.press) await app.getByTestId(step.target ?? "composer").press(step.press);
+    if (step.wheelTestId) await app.getByTestId(step.wheelTestId[0]).wheel(step.wheelTestId[1], step.wheelTestId[2]);
+    if (step.dragTestId) await app.getByTestId(step.dragTestId[0]).dragBy(step.dragTestId[1], step.dragTestId[2], { steps: 8 });
+    if (step.rightClickTestId) await app.getByTestId(step.rightClickTestId).click({ button: 2 });
     if (step.shot) {
       const path = join(outDir, `${step.shot}.png`);
       await app.screenshot({ path });
