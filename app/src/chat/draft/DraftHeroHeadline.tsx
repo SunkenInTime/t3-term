@@ -22,7 +22,9 @@ import {
   sortProjectsByActivity,
   startNewThread,
 } from "../../palette/actions.ts";
+import { ProjectEnvironmentBadge, projectGroupsSpanEnvironments } from "../../sidebar/ProjectEnvironmentBadge.tsx";
 import { ProjectGlyph } from "../../sidebar/ProjectGlyph.tsx";
+import { sidebarProjectGroupsAtom } from "../../state/sidebar.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import { Popover, Tooltip } from "../../ui/overlay.tsx";
 import { Text } from "../../ui/primitives.tsx";
@@ -127,6 +129,13 @@ function ProjectPicker({
   const theme = useTheme();
   const [query, setQuery] = useState("");
   const [highlighted, setHighlighted] = useState<string | null>(null);
+  // DraftHeroHeadline's ProjectEnvironmentBadge: each row's sidebar group, while groups span machines.
+  const groups = useAtomValue(sidebarProjectGroupsAtom);
+  const showProjectEnvironments = projectGroupsSpanEnvironments(groups);
+  const groupOf = (project: EnvironmentProject) =>
+    groups.find((group) =>
+      group.memberProjects.some((member) => member.environmentId === project.environmentId && member.id === project.id),
+    ) ?? null;
   const search = normalizeSearchText(query);
   const filtered =
     search.length === 0
@@ -224,6 +233,12 @@ function ProjectPicker({
               <Text truncate style={{ flexGrow: 1 }}>
                 {item.label}
               </Text>
+              {item.project && showProjectEnvironments
+                ? (() => {
+                    const group = groupOf(item.project);
+                    return group ? <ProjectEnvironmentBadge group={group} /> : null;
+                  })()
+                : null}
             </div>
           ))
         )}

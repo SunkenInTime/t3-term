@@ -18,6 +18,7 @@ import { Text } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../ui/theme.ts";
 import { filterSidebarProjectScopeItems } from "../web/components/Sidebar.logic.ts";
 import { claimClick } from "./clickGuard.ts";
+import { ProjectEnvironmentBadge, projectGroupsSpanEnvironments } from "./ProjectEnvironmentBadge.tsx";
 import { ProjectFavicon } from "./ProjectFavicon.tsx";
 
 export function SidebarHeaderIconButton({
@@ -82,8 +83,10 @@ function ProjectScopeItem({
   onHighlight,
   onSelect,
   onOpenSettings,
+  showEnvironments,
   testId,
 }: {
+  showEnvironments: boolean;
   label: string;
   project: SidebarProjectGroup | null;
   selected: boolean;
@@ -120,6 +123,7 @@ function ProjectScopeItem({
       <Text truncate style={{ flexGrow: 1, flexShrink: 1 }}>
         {label}
       </Text>
+      {project && showEnvironments ? <ProjectEnvironmentBadge group={project} /> : null}
       {onOpenSettings ? (
         <div
           onMouseDown={claimClick}
@@ -166,6 +170,7 @@ function ProjectScopePopup({
     matches: (item, value) => item.label.toLowerCase().includes(value.toLowerCase()),
   });
   const selectedValue = scope?.projectKey ?? "all";
+  const showProjectEnvironments = projectGroupsSpanEnvironments(groups);
   const [highlight, setHighlight] = useState(() =>
     Math.max(0, filtered.findIndex((item) => item.value === selectedValue)),
   );
@@ -243,6 +248,7 @@ function ProjectScopePopup({
               <ProjectScopeItem
                 key={item.value}
                 testId={`sidebar-project-filter-item-${index}`}
+                showEnvironments={showProjectEnvironments}
                 label={item.label}
                 project={item.project}
                 selected={item.value === selectedValue}
