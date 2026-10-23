@@ -1,12 +1,14 @@
 // Form controls the settings pages share, sized like apps/web/src/components/ui
 // {select,input,textarea,slider,badge}.tsx at the `sm` breakpoint.
 import type { FloatingAlign } from "@gpuix/react/floating";
-import { useRef, useState, type ReactNode } from "react";
+import { useContext, useRef, useState, type ReactNode } from "react";
 
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Menu, MenuItem, MenuSeparator } from "../ui/overlay.tsx";
 import { Text, type Style } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme, type Palette } from "../ui/theme.ts";
+import { useSmallViewport } from "../ui/viewport.tsx";
+import { SettingsRowStackedContext } from "./layout.tsx";
 
 /**
  * True while a text field has focus, so page-level shortcuts ("/" opens
@@ -70,12 +72,17 @@ export function SettingsSelect<V extends string>({
   const theme = useTheme();
   const selected = options.find((option) => option.value === value);
   const text = label ?? selected?.label ?? (value === null ? "Mixed" : String(value));
-  const height = size === "sm" ? 28 : 32;
+  // Below `sm` the trigger is 4px taller with `text-base` (select.tsx is mobile-first).
+  const small = useSmallViewport();
+  // In a stacked row the trigger spans it (measured in Chrome at 480 and 800 wide).
+  const fill = useContext(SettingsRowStackedContext) && width !== "auto";
+  const height = (size === "sm" ? 28 : 32) + (small ? 4 : 0);
   return (
     <Menu
       align={align}
       minWidth={menuWidth ?? (typeof width === "number" ? width : 160)}
       testId={testId ? `${testId}-menu` : undefined}
+      {...(fill ? { rootStyle: { flexGrow: 1, minWidth: 0 } } : {})}
       trigger={({ toggle }) => (
         <div
           testId={testId}
@@ -86,7 +93,7 @@ export function SettingsSelect<V extends string>({
             alignItems: "center",
             gap: 6,
             height,
-            ...(width === "auto" ? {} : { width }),
+            ...(fill ? { flexGrow: 1, minWidth: 0 } : width === "auto" ? {} : { width }),
             paddingLeft: 9,
             paddingRight: 8,
             borderRadius: RADIUS.lg,
@@ -101,7 +108,7 @@ export function SettingsSelect<V extends string>({
           {icon ?? selected?.icon ? (
             <Icon name={(icon ?? selected?.icon)!} size={16} color={alpha(theme.mutedForeground, 0.8)} />
           ) : null}
-          <Text truncate style={{ flexGrow: 1 }}>
+          <Text size={small ? "base" : "sm"} truncate style={{ flexGrow: 1 }}>
             {text}
           </Text>
           <Icon name="chevron-down" size={12} color={alpha(theme.foreground, 0.5)} />

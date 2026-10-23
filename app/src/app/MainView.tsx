@@ -12,10 +12,12 @@ import {
 } from "../state/ui.ts";
 import { Tooltip } from "../ui/overlay.tsx";
 import {
+  sidebarWidthAtom,
   titlebarContentLeft,
   titlebarControlSize,
   useMobileViewport,
   useSmallViewport,
+  viewportWidthAtom,
   workspaceGutter,
 } from "../ui/viewport.tsx";
 import { ProjectGlyph } from "../sidebar/ProjectGlyph.tsx";
@@ -82,6 +84,15 @@ export function useHeaderInset(): {
     crumbGap: small ? 8 : 12,
     toggle: docked ? null : <HeaderSidebarToggle size={titlebarControlSize(small)} />,
   };
+}
+
+/** The main column's width: the window less the docked sidebar. */
+export function useMainColumnWidth(): number {
+  const viewportWidth = useAtomValue(viewportWidthAtom);
+  const sidebarOpen = useAtomValue(sidebarOpenAtom);
+  const mobile = useMobileViewport();
+  const sidebarWidth = useAtomValue(sidebarWidthAtom);
+  return viewportWidth - (sidebarOpen && !mobile ? sidebarWidth : 0);
 }
 
 /** The floating SidebarTrigger. Its header must be `position: relative`. */
