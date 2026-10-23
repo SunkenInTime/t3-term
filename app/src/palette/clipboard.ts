@@ -14,14 +14,12 @@ async function pipeTo(command: string[], input: Uint8Array): Promise<boolean> {
   }
 }
 
-function utf16leWithBom(text: string): Uint8Array {
-  const bytes = new Uint8Array(2 + text.length * 2);
-  bytes[0] = 0xff;
-  bytes[1] = 0xfe;
+function utf16le(text: string): Uint8Array {
+  const bytes = new Uint8Array(text.length * 2);
   for (let index = 0; index < text.length; index += 1) {
     const code = text.charCodeAt(index);
-    bytes[2 + index * 2] = code & 0xff;
-    bytes[3 + index * 2] = code >> 8;
+    bytes[index * 2] = code & 0xff;
+    bytes[index * 2 + 1] = code >> 8;
   }
   return bytes;
 }
@@ -34,8 +32,8 @@ export async function writeTextToClipboard(text: string): Promise<boolean> {
   const utf8 = new TextEncoder().encode(text);
   switch (process.platform) {
     case "win32":
-      // clip.exe reads UTF-16 when the input starts with a byte order mark.
-      return pipeTo(["clip.exe"], utf16leWithBom(text));
+      // clip.exe takes UTF-16LE as is; a byte order mark would be copied too.
+      return pipeTo(["clip.exe"], utf16le(text));
     case "darwin":
       return pipeTo(["pbcopy"], utf8);
     default:

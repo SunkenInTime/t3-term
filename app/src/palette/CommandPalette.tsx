@@ -179,8 +179,6 @@ export function CommandPalette() {
   if (detail.mode === "content") return <ProjectContentSearch onClose={close} onBack={back} />;
   return (
     <CommandModePalette
-      // A new intent or a return from a child search starts the view over.
-      key={`${detail.openIntent?.kind ?? "none"}:${detail.restoredSearch?.query ?? ""}`}
       openIntent={detail.openIntent}
       initialContext={detail.restoredSearch}
       onClose={close}
@@ -344,7 +342,7 @@ function CommandModePalette({
   );
   const { query, views: viewStack } = searchState;
   const setQuery = (next: string) => dispatchSearch({ type: "query", query: next });
-  const [linkedThreadSearch] = useState(initialSearch.linkedThreadSearch);
+  const [linkedThreadSearch, setLinkedThreadSearch] = useState(initialSearch.linkedThreadSearch);
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const [highlightCleared, setHighlightCleared] = useState(false);
   const [scrollNonce, setScrollNonce] = useState(0);
@@ -1089,13 +1087,18 @@ function CommandModePalette({
     });
   }
 
-  // Apply an open intent once (web's applyOpenIntent effect).
-  const appliedIntentRef = useRef(false);
+  // Apply an open intent (web's applyOpenIntent effect). Clearing it keeps this
+  // component mounted, so the pushed view survives.
   useEffect(() => {
-    if (appliedIntentRef.current || openIntent === null) return;
+    if (openIntent === null) return;
     if (openIntent.kind === "new-thread-in" && projectThreadItems.length === 0) return;
-    appliedIntentRef.current = true;
     dispatchCommandPalette({ _tag: "ClearOpenIntent" });
+    setAddProjectEnvironmentId(null);
+    setAddProjectCloneFlow(null);
+    setNewProjectFlow(null);
+    setLinkedThreadSearch(openIntent.kind === "search" ? openIntent : null);
+    dispatchSearch({ type: "reset", query: openIntent.kind === "search" ? openIntent.query : "" });
+    resetHighlight();
     switch (openIntent.kind) {
       case "search":
         return;

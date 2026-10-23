@@ -492,7 +492,7 @@ export function ItemIcon({ name, color }: { name: IconName; color?: string }) {
   return <Icon name={name} size={16} color={color ?? theme.mutedForeground} />;
 }
 
-/** Submit button inside the input row (CommandPaletteSubmitButton). */
+/** CommandPaletteSubmitButton: an outline xs button with the shortcut in a Kbd. */
 export function PaletteSubmitButton({
   label,
   shortcutLabel,
@@ -505,6 +505,7 @@ export function PaletteSubmitButton({
   onSubmit: () => void;
 }) {
   const theme = useTheme();
+  const dark = theme.appearance === "dark";
   return (
     <div
       testId="command-palette-submit"
@@ -515,22 +516,24 @@ export function PaletteSubmitButton({
         alignItems: "center",
         gap: 6,
         height: 24,
-        paddingLeft: 8,
-        paddingRight: 6,
+        paddingLeft: 7,
+        paddingRight: 4,
         marginRight: 2,
-        borderRadius: RADIUS.sm,
-        backgroundColor: theme.primary,
+        borderRadius: RADIUS.md,
+        borderWidth: 1,
+        borderColor: theme.input,
+        backgroundColor: dark ? alpha("#ffffff", 0.026) : theme.popover,
         opacity: disabled ? 0.64 : 1,
         cursor: disabled ? "default" : "pointer",
         flexShrink: 0,
-        ...(disabled ? {} : { hover: { backgroundColor: alpha(theme.primary, 0.9) } }),
+        ...(disabled ? {} : { hover: { backgroundColor: dark ? alpha("#ffffff", 0.05) : theme.accent } }),
       }}
     >
-      <Text size="xs" weight={500} color={theme.primaryForeground}>
+      <Text size="xs" weight={500}>
         {label}
       </Text>
-      <div style={{ display: "flex", alignItems: "center", height: 16, paddingLeft: 4, paddingRight: 4, borderRadius: 4, backgroundColor: alpha("#ffffff", 0.16) }}>
-        <Text size="2xs" weight={500} color={theme.primaryForeground}>
+      <div style={{ display: "flex", alignItems: "center", height: 18, paddingLeft: 4, paddingRight: 4, borderRadius: 4, backgroundColor: theme.muted }}>
+        <Text size="xs" weight={500} color={theme.mutedForeground}>
           {shortcutLabel}
         </Text>
       </div>
