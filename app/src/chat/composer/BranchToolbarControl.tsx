@@ -6,6 +6,7 @@ import { useState, type ReactNode } from "react";
 import { Icon, type IconName } from "../../ui/Icon.tsx";
 import type { Style } from "../../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
+import { ComposerControl, ComposerControlLabel } from "./ComposerControl.tsx";
 
 /** h 24, px 7, gap 4, 12px muted/70; hover: accent bg, foreground/80 text; open: accent bg. */
 export interface BranchToolbarControlIcon {
@@ -37,39 +38,33 @@ export function BranchToolbarControl({
   const color = hovered && !disabled ? alpha(theme.foreground, 0.8) : alpha(theme.mutedForeground, 0.7);
   return (
     <div
-      testId={testId}
-      onClick={disabled ? undefined : onClick}
+      style={{ display: "flex", flexDirection: "row", flexShrink: 0 }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{
-        display: "flex",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 4,
-        height: 24,
-        flexShrink: 0,
-        paddingLeft: 7,
-        paddingRight: 7,
-        borderRadius: RADIUS.md,
-        backgroundColor: pressed ? theme.accent : "#00000000",
-        opacity: disabled ? 0.64 : 1,
-        cursor: disabled ? "default" : "pointer",
-        ...(disabled ? {} : { hover: { backgroundColor: theme.accent } }),
-        ...style,
-      }}
     >
-      {icons.length === 1 ? (
-        <BranchToolbarIcon name={icons[0]!.name} color={color} opacity={icons[0]!.opacity} />
-      ) : (
-        // The environment + workspace pair: mx-0! on both, gap-0.5 between.
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 2, flexShrink: 0 }}>
-          {icons.map((icon) => (
-            <BranchToolbarIcon key={icon.name} name={icon.name} color={color} opacity={icon.opacity} bleed={false} />
-          ))}
-        </div>
-      )}
-      <BranchToolbarLabel color={color}>{capLabel(label)}</BranchToolbarLabel>
-      {chevron ? <BranchToolbarIcon name="chevron-down" color={color} opacity={0.5} /> : null}
+      <ComposerControl
+        size="xs"
+        testId={testId}
+        pressed={pressed}
+        disabled={disabled}
+        onClick={onClick}
+        style={{ ...(pressed ? {} : { backgroundColor: "#00000000" }), ...style }}
+      >
+        {icons.length === 1 ? (
+          <BranchToolbarIcon name={icons[0]!.name} color={color} opacity={icons[0]!.opacity} />
+        ) : (
+          // The environment + workspace pair: mx-0! on both, gap-0.5 between.
+          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 2, flexShrink: 0 }}>
+            {icons.map((icon) => (
+              <BranchToolbarIcon key={icon.name} name={icon.name} color={color} opacity={icon.opacity} bleed={false} />
+            ))}
+          </div>
+        )}
+        <ComposerControlLabel size="xs" color={color}>
+          {capLabel(label)}
+        </ComposerControlLabel>
+        <BranchToolbarIcon name="chevron-down" color={color} opacity={0.5} />
+      </ComposerControl>
     </div>
   );
 }
@@ -97,8 +92,9 @@ export function BranchToolbarLabel({ children, color }: { children: string; colo
 }
 
 /**
- * A 12px icon. ComposerControl gives every svg -mx-0.5, so an icon takes 8px of the
- * row and the 4px gaps around it read as 2px.
+ * A 12px icon. ComposerControl gives every svg -mx-0.5, so an icon takes 8px of the row
+ * and the 4px gaps around it read as 2px. The 12px glyph sits centred in an 8px box:
+ * a negative margin around an <svg> collapses the whole row's layout in GPUI.
  */
 export function BranchToolbarIcon({
   name,
@@ -108,11 +104,20 @@ export function BranchToolbarIcon({
 }: {
   name: IconName;
   color: string;
-  opacity?: number;
+  opacity?: number | undefined;
   bleed?: boolean;
 }) {
   return (
-    <div style={{ display: "flex", flexShrink: 0, marginLeft: bleed ? -2 : 0, marginRight: bleed ? -2 : 0, pointerEvents: "none" }}>
+    <div
+      style={{
+        display: "flex",
+        flexShrink: 0,
+        width: bleed ? 8 : 12,
+        height: 12,
+        justifyContent: "center",
+        pointerEvents: "none",
+      }}
+    >
       <Icon name={name} size={12} color={color} {...(opacity === undefined ? {} : { opacity })} />
     </div>
   );

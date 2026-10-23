@@ -144,6 +144,7 @@ import { TraitsPicker } from "./TraitsPicker.tsx";
 import { resolveComposerProviderModel } from "./useComposerProviderModel.ts";
 import { useComposerMenuItems } from "./useComposerMenuItems.ts";
 import { usePendingThreadRequests } from "./usePendingThreadRequests.ts";
+import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
 
 export type { ComposerTarget } from "../../state/composer.ts";
@@ -312,6 +313,11 @@ function ComposerBody({
   const renderer = useGpuixRequired();
   const draftKey = composerTargetKey(target);
   const draft = useAtomValue(composerDraftAtom(draftKey));
+  // Editing a queued message repurposes the editor: its text lives in a per-run draft and
+  // submit saves it in place (web useQueuedRunEdit). Model and mode stay the thread's.
+  const queuedEdit = useQueuedRunEdit({ environmentId, threadId });
+  const promptKey = queuedEdit.isEditing ? queuedEdit.draftKey ?? draftKey : draftKey;
+  const promptDraft = useAtomValue(composerDraftAtom(promptKey));
   const sticky = useAtomValue(stickyModelAtom);
   const settings = useAtomValue(composerSettingsAtom(environmentId));
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
@@ -350,7 +356,7 @@ function ComposerBody({
   const cwd = shell?.worktreePath ?? project?.workspaceRoot ?? null;
 
   // ── Provider + model ──────────────────────────────────────────────────
-  const prompt = draft.prompt;
+  const prompt = promptDraft.prompt;
   const lockedProvider = deriveLockedProvider({
     thread: shell
       ? { latestRun: shell.latestRun, itemCount: shell.itemCount, runtime: shell.runtime }
@@ -552,7 +558,7 @@ function ComposerBody({
     if (activePendingProgress?.activeQuestion) {
       requests.onChangeActivePendingUserInputCustomAnswer(activePendingProgress.activeQuestion.id, next);
     } else {
-      setComposerPrompt(draftKey, next);
+      setComposerPrompt(promptKey, next);
     }
   };
 
@@ -648,7 +654,11 @@ function ComposerBody({
       return;
     }
     if (sending || noProviderAvailable || sendDisabledReason !== null || environmentUnavailable) return;
-    const promptAtSend = readComposerDraft(draftKey).prompt;
+    const promptAtSend = readComposerDraft(promptKey).prompt;
+    if (queuedEdit.isEditing) {
+      void queuedEdit.saveEdit(promptAtSend);
+      return;
+    }
     const attachments = readComposerDraft(draftKey).attachments;
     const trimmed = promptAtSend.trim();
     // Plan follow-up: blank implements the plan, text refines it (web submitPlanFollowUp).
@@ -669,7 +679,7 @@ function ComposerBody({
     const standalone = planModeUiEnabled && attachments.length === 0 ? parseStandaloneComposerSlashCommand(trimmed) : null;
     if (standalone) {
       handleInteractionModeChange(standalone);
-      setComposerPrompt(draftKey, "");
+      setComposerPrompt(promptKey, "");
       return;
     }
     if (!composerSendState.hasSendableContent && attachments.length === 0) return;
@@ -848,12 +858,12 @@ function ComposerBody({
   };
 
   const onPromptEdit = (edit: (current: string) => string) => {
-    const current = readComposerDraft(draftKey).prompt;
+    const current = readComposerDraft(promptKey).prompt;
     const next = edit(current);
     if (next === current) return;
     valueRef.current = next;
     caretRef.current = next.length;
-    setComposerPrompt(draftKey, next);
+    setComposerPrompt(promptKey, next);
   };
 
   // mod+shift+E steps the reasoning effort (web ChatComposerHandle.stepReasoningEffort).
@@ -1094,7 +1104,7 @@ function ComposerBody({
       canSteer={!isCompacting}
       showPlanFollowUpPrompt={requests.pendingUserInputs.length === 0 && showPlanFollowUpPrompt}
       promptHasText={prompt.trim().length > 0}
-      isSendBusy={sending}
+      isSendBusy={sending || queuedEdit.isSaving}
       sendDisabledReason={sendDisabledReason}
       isConnecting={phase === "connecting" && !isRunning && sending}
       isEnvironmentUnavailable={environmentUnavailable || noProviderAvailable}
@@ -1102,6 +1112,7 @@ function ComposerBody({
       hasSendableContent={composerSendState.hasSendableContent || draft.attachments.length > 0}
       canResume={canResume && prompt.trim().length === 0 && draft.attachments.length === 0}
       alternateModifier={false}
+      isEditingQueuedMessage={queuedEdit.isEditing}
       alternateShortcutLabel={
         keybindings
           ? shortcutLabelForCommand(keybindings, "composer.sendAlternate", {
@@ -1139,11 +1150,21 @@ function ComposerBody({
       <ComposerTopBanners
         requests={requests}
         canOperateThread={true}
+        showPlanFollowUp={showPlanFollowUpPrompt && latestProposedPlan !== null}
         planFollowUpTitle={
           showPlanFollowUpPrompt && latestProposedPlan ? (proposedPlanTitle(latestProposedPlan.planMarkdown) ?? null) : null
         }
         attachedAbove={
-          threadId ? <QueuedRunsControl environmentId={environmentId} threadId={threadId} canOperateThread={true} /> : null
+          threadId ? (
+            <QueuedRunsControl
+              environmentId={environmentId}
+              threadId={threadId}
+              canOperateThread={true}
+              editingRunId={queuedEdit.editingRunId}
+              onEditQueuedRun={queuedEdit.beginEdit}
+              onCancelEdit={queuedEdit.cancelEdit}
+            />
+          ) : null
         }
       />
       <StripBehindSurface

@@ -62,6 +62,8 @@ export function ComposerPrimaryActions(props: {
   canResume: boolean;
   /** Ctrl is held: the alternate dispatch (queue ↔ steer) applies. */
   alternateModifier: boolean;
+  /** The editor holds a queued message being edited; submit saves it in place. */
+  isEditingQueuedMessage?: boolean;
   /** Keybinding label for `composer.sendAlternate` (Ctrl+Enter by default). */
   alternateShortcutLabel?: string | null;
   onSubmit: (dispatchMode: ComposerDispatchMode) => void;
@@ -79,7 +81,8 @@ export function ComposerPrimaryActions(props: {
     canSteer: props.canSteer,
     alternateModifier: props.alternateModifier,
   });
-  const isQueuing = dispatchMode === "queue";
+  const isEditingQueuedMessage = props.isEditingQueuedMessage ?? false;
+  const isQueuing = !isEditingQueuedMessage && dispatchMode === "queue";
   const alternateAction = alternateComposerDispatchAction(props.followUpBehavior);
 
   const stopButton = (insidePendingAction: boolean) => (
@@ -160,12 +163,14 @@ export function ComposerPrimaryActions(props: {
     );
   }
 
-  if (props.canInterrupt && !props.hasSendableContent) return stopButton(false);
+  if (props.canInterrupt && !props.hasSendableContent && !isEditingQueuedMessage) return stopButton(false);
 
-  const showResume = props.canResume && !props.hasSendableContent;
+  const showResume = props.canResume && !props.hasSendableContent && !isEditingQueuedMessage;
   const submitLabel = showResume
     ? "Resume thread"
-    : isQueuing
+    : isEditingQueuedMessage
+      ? "Update queued message"
+      : isQueuing
       ? "Queue message"
       : props.isRunning
         ? "Steer message"
@@ -178,11 +183,13 @@ export function ComposerPrimaryActions(props: {
         : props.isPreparingWorktree
           ? "Preparing worktree"
           : props.isSendBusy
-            ? "Submitting message"
+            ? isEditingQueuedMessage
+              ? "Updating queued message"
+              : "Submitting message"
             : null));
   const submitTooltip =
     submitStatus ??
-    (props.isRunning && props.canSteer
+    (props.isRunning && !isEditingQueuedMessage && props.canSteer
       ? `Click to ${props.followUpBehavior}, Ctrl/⌘-click${props.alternateShortcutLabel ? ` or ${props.alternateShortcutLabel}` : ""} to ${alternateAction}`
       : submitLabel);
   const disabled =
@@ -216,6 +223,8 @@ export function ComposerPrimaryActions(props: {
           <Icon name="loader-circle" size={16} color="#ffffff" />
         ) : showResume ? (
           <svg source={PLAY_FILLED_SVG} style={{ width: 16, height: 16, color: "#ffffff", pointerEvents: "none" }} />
+        ) : isEditingQueuedMessage ? (
+          <Icon name="check" size={16} color="#ffffff" />
         ) : props.isRunning ? (
           <Icon name={runningIcon} size={16} color="#ffffff" />
         ) : (

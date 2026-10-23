@@ -52,18 +52,26 @@ export function ComposerFooterModeControls(props: {
         onOpenChange={props.onModeMenuOpenChange}
         side="top"
         align="start"
-        sideOffset={8}
+        sideOffset={4}
         minWidth={256}
         testId="composer-runtime-mode-menu"
-        trigger={({ toggle }) => (
-          <Tooltip content={option.description} side="top">
+        trigger={({ toggle }) => {
+          const control = (
             <ComposerControl size={size} pressed={props.modeMenuOpen} onClick={toggle} testId="composer-runtime-mode">
               <ComposerControlIcon name={option.icon} size={size} />
               <ComposerControlLabel size={size}>{option.label}</ComposerControlLabel>
               <ComposerControlChevron size={size} />
             </ComposerControl>
-          </Tooltip>
-        )}
+          );
+          // The open menu replaces the description tooltip (web closes it on press).
+          return props.modeMenuOpen ? (
+            control
+          ) : (
+            <Tooltip content={option.description} side="top">
+              {control}
+            </Tooltip>
+          );
+        }}
       >
         {props.runtimeModeOptions.map((candidate) => (
           <RuntimeModeItem
@@ -123,8 +131,8 @@ function RuntimeModeItem({
         flexDirection: "column",
         gap: 2,
         minWidth: 256,
-        paddingTop: 6,
-        paddingBottom: 6,
+        paddingTop: 4,
+        paddingBottom: 4,
         paddingLeft: 8,
         paddingRight: 8,
         borderRadius: RADIUS.sm,
