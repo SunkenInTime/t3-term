@@ -19,6 +19,7 @@ import {
 } from "../../state/git.ts";
 import { detailsPanelOpenAtom, findBarOpenAtom } from "../../state/ui.ts";
 import { LAYOUT, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
+import { chatLanePadding, useSmallViewport } from "../../ui/viewport.tsx";
 import { useEnvironmentQuery } from "../../web/state/query.ts";
 import { BranchRow } from "./BranchRow.tsx";
 import { DetailsSection } from "./detailsControls.tsx";
@@ -41,9 +42,9 @@ const MIN_CHAT_WIDTH = 640;
 const FIND_BAR_RESERVED_HEIGHT = 36 + CARD_GAP;
 
 /** web resolveThreadDetailsCardLayout (no mini-player frame). */
-function resolvePlacement(container: { width: number; height: number }, topInset: number) {
+function resolvePlacement(container: { width: number; height: number }, topInset: number, lanePadding: number) {
   const x = container.width - CARD_WIDTH - CARD_GAP;
-  if (x - DETAILS_CARD_CLEARANCE - LAYOUT.chatLanePadding < MIN_CHAT_WIDTH) return null;
+  if (x - DETAILS_CARD_CLEARANCE - lanePadding < MIN_CHAT_WIDTH) return null;
   const y = CARD_GAP + topInset;
   const height = container.height - y - CARD_GAP;
   if (height < 160) return null;
@@ -113,7 +114,8 @@ function DetailsCardFrame({
   const open = useAtomValue(detailsPanelOpenAtom);
   const [container, setContainer] = useState({ width: 0, height: 0 });
   const [heights, setHeights] = useState({ key: "", full: 0, compact: 0 });
-  const placement = container.width > 0 ? resolvePlacement(container, topInset) : null;
+  const lanePadding = chatLanePadding(useSmallViewport());
+  const placement = container.width > 0 ? resolvePlacement(container, topInset, lanePadding) : null;
   const key = contentKey;
   const measured = heights.key === key ? heights : { full: 0, compact: 0 };
   const density = placement ? resolveDensity(placement.height, measured) : "full";

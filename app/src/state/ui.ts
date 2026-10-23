@@ -2,6 +2,9 @@
 import type { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
+import { appAtomRegistry } from "../runtime/runtime.ts";
+import { mobileViewportAtom } from "../ui/viewport.tsx";
+
 export type SettingsPage =
   | "general"
   | "appearance"
@@ -45,12 +48,50 @@ function initialRoute(): Route {
       if (process.env.T3TERM_ROUTE?.startsWith("settings/")) {
         return { kind: "settings", page: process.env.T3TERM_ROUTE.slice("settings/".length) as SettingsPage };
       }
+      // thread/<environmentId>/<threadId>: narrow windows hide the sidebar, so
+      // screenshots cannot click their way to a thread.
+      if (process.env.T3TERM_ROUTE?.startsWith("thread/")) {
+        const [, environmentId, threadId] = process.env.T3TERM_ROUTE.split("/");
+        return { kind: "thread", environmentId: environmentId as EnvironmentId, threadId: threadId as ThreadId };
+      }
+      // draft/<environmentId>/<projectId>: that project's new-thread draft.
+      if (process.env.T3TERM_ROUTE?.startsWith("draft/")) {
+        const [, environmentId, projectId] = process.env.T3TERM_ROUTE.split("/");
+        return { kind: "draft", environmentId: environmentId as EnvironmentId, projectId: projectId as ProjectId };
+      }
       return { kind: "home" };
   }
 }
 
 export const routeAtom = Atom.make<Route>(initialRoute()).pipe(Atom.keepAlive);
+/** The docked sidebar (web SidebarProvider `open`). Below 768 the sheet below is used instead. */
 export const sidebarOpenAtom = Atom.make(true).pipe(Atom.keepAlive);
+/** web SidebarProvider `openMobile`: the off-canvas sheet below `md`, closed by default. */
+export const sidebarMobileOpenAtom = Atom.make(false).pipe(Atom.keepAlive);
+/** web useSidebarVisibility: whichever of the two applies at this width. */
+export const sidebarVisibleAtom = Atom.make((get) =>
+  get(mobileViewportAtom) ? get(sidebarMobileOpenAtom) : get(sidebarOpenAtom),
+).pipe(Atom.keepAlive);
+
+/** web useSidebar().toggleSidebar: the sheet below `md`, the docked sidebar above. */
+export function toggleSidebar(): void {
+  setSidebarVisible(!appAtomRegistry.get(sidebarVisibleAtom));
+}
+
+export function setSidebarVisible(visible: boolean): void {
+  appAtomRegistry.set(appAtomRegistry.get(mobileViewportAtom) ? sidebarMobileOpenAtom : sidebarOpenAtom, visible);
+}
+
+// web Sidebar.tsx navigateToThread / navigateToDraft / SidebarChrome: picking a
+// destination in the mobile sheet closes it. Settings pages swap in place, like web's
+// SettingsSidebarNav, which leaves the sheet open.
+let previousRouteKind = appAtomRegistry.get(routeAtom).kind;
+appAtomRegistry.subscribe(routeAtom, (route) => {
+  const withinSettings = route.kind === "settings" && previousRouteKind === "settings";
+  previousRouteKind = route.kind;
+  if (withinSettings) return;
+  if (appAtomRegistry.get(sidebarMobileOpenAtom)) appAtomRegistry.set(sidebarMobileOpenAtom, false);
+});
 export const detailsPanelOpenAtom = Atom.make(true).pipe(Atom.keepAlive);
 export const terminalOpenAtom = Atom.make(false).pipe(Atom.keepAlive);
 export const rightPanelOpenAtom = Atom.make(false).pipe(Atom.keepAlive);

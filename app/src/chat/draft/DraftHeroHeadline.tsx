@@ -2,8 +2,9 @@
 //   h1 30/36 normal: "What should we build in [project]?" (project: medium, dotted underline picker)
 //   p mt 8 h 24 14px: "or start without a project" (muted inline button, tooltip = shortcut)
 // The picker opens a 288px combobox: search field, projects, then "Add project".
-// Web wraps the heading onto two lines when it doesn't fit; t3-term keeps one
-// line and truncates the project name (no text measuring before layout).
+// The heading sits on one line only from `lg` up and when it fits
+// (DraftHeroProjectHeading measures a hidden one-line copy); otherwise it stacks:
+// "What should we build?" (24px, 30 from `sm`) over the project picker at 16px.
 import { useAtomValue } from "@effect/atom-react";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
@@ -26,6 +27,7 @@ import { Icon } from "../../ui/Icon.tsx";
 import { Popover, Tooltip } from "../../ui/overlay.tsx";
 import { Text } from "../../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
+import { largeViewportAtom, useSmallViewport } from "../../ui/viewport.tsx";
 import { normalizeSearchText } from "../../web/components/CommandPalette.logic.ts";
 import { shortcutLabelForCommand } from "../../web/keybindings.ts";
 
@@ -42,8 +44,27 @@ function projectKey(project: Pick<EnvironmentProject, "environmentId" | "id">): 
 }
 
 /** The dotted-underline trigger (InlineButton tone="picker"), at heading size. */
-function PickerTrigger({ label, open, onClick, small }: { label: string; open: boolean; onClick: () => void; small?: boolean }) {
+/** heading: the one-line heading's 30px; base: the stacked heading's `text-base`; small: 14px. */
+type PickerTriggerSize = "heading" | "base" | "small";
+const PICKER_TRIGGER_METRICS: Record<PickerTriggerSize, { fontSize: number; lineHeight: number; underlineTop: number; underline: number }> = {
+  heading: { fontSize: 30, lineHeight: 36, underlineTop: 33, underline: 2 },
+  base: { fontSize: 16, lineHeight: 24, underlineTop: 21, underline: 1 },
+  small: { fontSize: 14, lineHeight: 20, underlineTop: 19, underline: 1 },
+};
+
+function PickerTrigger({
+  label,
+  open,
+  onClick,
+  size = "heading",
+}: {
+  label: string;
+  open: boolean;
+  onClick: () => void;
+  size?: PickerTriggerSize;
+}) {
   const theme = useTheme();
+  const metrics = PICKER_TRIGGER_METRICS[size];
   const [hovered, setHovered] = useState(false);
   const solid = open || hovered;
   return (
@@ -57,8 +78,8 @@ function PickerTrigger({ label, open, onClick, small }: { label: string; open: b
       <text
         style={{
           color: theme.foreground,
-          fontSize: small ? 14 : 30,
-          lineHeight: small ? 20 : 36,
+          fontSize: metrics.fontSize,
+          lineHeight: metrics.lineHeight,
           fontWeight: 500,
           fontFamily: FONTS.sans,
           whiteSpace: "nowrap",
@@ -74,11 +95,13 @@ function PickerTrigger({ label, open, onClick, small }: { label: string; open: b
           position: "absolute",
           left: 0,
           right: 0,
-          top: small ? 19 : 33,
-          height: 0,
-          borderTopWidth: small ? 1 : 2,
-          borderStyle: solid ? "solid" : "dashed",
-          borderColor: solid ? theme.foreground : alpha(theme.foreground, 0.3),
+          top: metrics.underlineTop,
+          height: metrics.underline,
+          borderTopWidth: metrics.underline,
+          // GPUI paints no dashes on a 1px border, so the thin underline is a faint solid
+          // line standing in for web's `border-dotted`.
+          borderStyle: solid || metrics.underline < 2 ? "solid" : "dashed",
+          borderColor: solid ? theme.foreground : alpha(theme.foreground, metrics.underline < 2 ? 0.18 : 0.3),
           pointerEvents: "none",
         }}
       />
@@ -225,6 +248,11 @@ export function DraftHeroHeadline({
   useAtomValue(environmentPresentations.presentationsAtom);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [noProjectHovered, setNoProjectHovered] = useState(false);
+  const small = useSmallViewport();
+  const large = useAtomValue(largeViewportAtom);
+  // DraftHeroProjectHeading fitsInline: the one-line heading's natural width against the box.
+  const [containerWidth, setContainerWidth] = useState(0);
+  const [inlineWidth, setInlineWidth] = useState(0);
 
   const activeProject =
     environmentId !== null && projectId !== null
@@ -265,6 +293,9 @@ export function DraftHeroHeadline({
   };
 
   const pickerLabel = isScratchDraft ? "No project" : (activeProject?.title ?? "Choose a project");
+  const headingInline = large && inlineWidth > 0 && containerWidth > 0 && inlineWidth <= containerWidth;
+  // `text-2xl sm:text-3xl` for the stacked heading.
+  const headingSize = headingInline || !small ? { fontSize: 30, lineHeight: 36 } : { fontSize: 24, lineHeight: 32 };
   const projectSelector = canChooseProject ? (
     <ProjectPicker
       items={pickerItems}
@@ -273,7 +304,12 @@ export function DraftHeroHeadline({
       onOpenChange={setPickerOpen}
       onSelect={selectItem}
       trigger={
-        <PickerTrigger label={pickerLabel} open={pickerOpen} small={isScratchDraft} onClick={() => setPickerOpen(!pickerOpen)} />
+        <PickerTrigger
+          label={pickerLabel}
+          open={pickerOpen}
+          size={isScratchDraft ? "small" : headingInline ? "heading" : "base"}
+          onClick={() => setPickerOpen(!pickerOpen)}
+        />
       }
     />
   ) : (
@@ -285,7 +321,7 @@ export function DraftHeroHeadline({
   );
 
   const headingText = (value: string) => (
-    <text style={{ color: theme.foreground, fontSize: 30, lineHeight: 36, fontFamily: FONTS.sans, whiteSpace: "nowrap", flexShrink: 0 }}>{value}</text>
+    <text style={{ color: theme.foreground, ...headingSize, fontFamily: FONTS.sans, whiteSpace: "nowrap", flexShrink: 0 }}>{value}</text>
   );
 
   const noProjectShortcut = shortcutLabelForCommand(keybindings, "chat.newWithoutProject");
@@ -306,15 +342,58 @@ export function DraftHeroHeadline({
       </Tooltip>
     ) : null;
 
+  const projectHeading = hasResolvedProject && !isScratchDraft;
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%", maxWidth: 1024 }}>
-      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, maxWidth: "100%", minWidth: 0 }}>
-        {hasResolvedProject && !isScratchDraft ? (
+    <div
+      style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", width: "100%", maxWidth: 1024 }}
+      onLayout={(event) => {
+        const width = Math.round(event.width ?? 0);
+        if (width !== containerWidth) setContainerWidth(width);
+      }}
+    >
+      {projectHeading ? (
+        // The hidden one-line copy DraftHeroProjectHeading measures (`invisible absolute h-0`).
+        <div style={{ position: "absolute", top: 0, left: 0, height: 0, overflow: "hidden", opacity: 0, pointerEvents: "none" }}>
+          <div
+            style={{ display: "flex", flexDirection: "row", gap: 8 }}
+            onLayout={(event) => {
+              const width = Math.ceil(event.width ?? 0);
+              if (width !== inlineWidth) setInlineWidth(width);
+            }}
+          >
+            <text style={{ color: theme.foreground, fontSize: 30, lineHeight: 36, fontFamily: FONTS.sans, whiteSpace: "nowrap" }}>
+              What should we build in
+            </text>
+            <text style={{ color: theme.foreground, fontSize: 30, lineHeight: 36, fontWeight: 500, fontFamily: FONTS.sans, whiteSpace: "nowrap" }}>
+              {`${pickerLabel}?`}
+            </text>
+          </div>
+        </div>
+      ) : null}
+      <div
+        style={{
+          display: "flex",
+          flexDirection: projectHeading && !headingInline ? "column" : "row",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+          maxWidth: "100%",
+          minWidth: 0,
+        }}
+      >
+        {projectHeading && headingInline ? (
           <>
             {headingText("What should we build in")}
             <div style={{ display: "flex", flexDirection: "row", alignItems: "center", minWidth: 0, flexShrink: 1 }}>
               {projectSelector}
               {headingText("?")}
+            </div>
+          </>
+        ) : projectHeading ? (
+          <>
+            {headingText("What should we build?")}
+            <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center", minWidth: 0, maxWidth: "100%" }}>
+              {projectSelector}
             </div>
           </>
         ) : isScratchDraft ? (

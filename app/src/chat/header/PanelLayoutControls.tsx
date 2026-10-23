@@ -22,6 +22,7 @@ import {
 import { Icon, type IconName } from "../../ui/Icon.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
 import { LAYOUT, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
+import { useSmallViewport } from "../../ui/viewport.tsx";
 import { detailsPopoverOpenAtom, detailsPresentationAtom } from "../../state/git.ts";
 
 /** Width the right panel's header should keep clear at its right end while these sit over it. */
@@ -33,7 +34,7 @@ export interface PanelShortcutLabels {
   readonly rightPanel: string | null;
 }
 
-/** Toggle variant="ghost" size="sm": 28×28, radius 10, pressed fill, icon at 80%. */
+/** Toggle variant="ghost" size="sm": 28×28 (32 below `sm`), radius 10, pressed fill, icon at 80%. */
 export function PanelToggle({
   icon,
   pressed,
@@ -51,6 +52,8 @@ export function PanelToggle({
 }) {
   const theme = useTheme();
   const pressedBg = theme.accent;
+  // Toggle size="sm": `h-8 min-w-8 sm:h-7 sm:min-w-7`.
+  const size = useSmallViewport() ? 32 : 28;
   const button: ReactElement = (
     <div
       testId={testId}
@@ -59,8 +62,8 @@ export function PanelToggle({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        width: 28,
-        height: 28,
+        width: size,
+        height: size,
         borderRadius: RADIUS.lg,
         flexShrink: 0,
         backgroundColor: pressed ? pressedBg : "#00000000",
