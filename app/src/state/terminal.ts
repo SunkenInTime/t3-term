@@ -10,7 +10,7 @@
 // Without that, opening the drawer once would start a shell in every thread
 // visited afterwards.
 import { useAtomValue } from "@effect/atom-react";
-import { scopeProjectRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   combineTerminalSessionState,
   createTerminalEnvironmentAtoms,
@@ -246,7 +246,7 @@ export function useThreadTerminalContext(environmentId: EnvironmentId, threadId:
   const shell = useAtomValue(environmentThreadShells.threadShellAtom(threadRef));
   const projects = useAtomValue(projectIndexAtom);
   if (!shell) return null;
-  const project = projects.get(`${environmentId}:${scopeProjectRef(environmentId, shell.projectId).projectId}`);
+  const project = projects.get(`${environmentId}:${shell.projectId}`);
   if (!project) return null;
   const worktreePath = shell.worktreePath ?? null;
   return {

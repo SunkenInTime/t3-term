@@ -564,8 +564,7 @@ export function TabCloseButton(props: { visible: boolean; label: string; onClose
   return (
     <div
       testId={props.testId}
-      onClick={(event) => {
-        void event;
+      onClick={() => {
         if (props.visible) props.onClose();
       }}
       style={{
