@@ -17,7 +17,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { faviconUrlForOrigin } from "@t3tools/shared/favicon";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { PreviewSessionSnapshot } from "@t3tools/contracts";
+import type { DeviceServiceState, PreviewSessionSnapshot } from "@t3tools/contracts";
 
 import { environmentThreadShells } from "../state/environment.ts";
 import {
@@ -41,7 +41,7 @@ import { appAtomRegistry } from "../runtime/runtime.ts";
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Menu, MenuItem, MenuSeparator, Tooltip } from "../ui/overlay.tsx";
 import { IconButton, Kbd, Text } from "../ui/primitives.tsx";
-import { alpha, LAYOUT, RADIUS, useTheme } from "../ui/theme.ts";
+import { alpha, FONTS, LAYOUT, RADIUS, useTheme } from "../ui/theme.ts";
 import { TabCloseButton } from "../terminal/ThreadTerminalDrawer.tsx";
 import { DiffSurface } from "./diff/DiffSurface.tsx";
 import { FileEntryIcon } from "./files/FileEntryIcon.tsx";
@@ -188,6 +188,8 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
   const [addMenuOpen, setAddMenuOpen] = useAtom(rightPanelAddMenuOpenAtom);
+  // RightPanelTabs renamingDevice: the device tab whose name is being edited.
+  const [renamingDevice, setRenamingDevice] = useState<string | null>(null);
   const renderer = useGpuixRequired();
   const tabElements = useRef(new Map<string, number>());
   /** SortableTabList: a dragged tab takes the slot whose center the pointer passed. */
@@ -380,6 +382,13 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
               key={surface.id}
               surface={surface}
               title={surfaceTitle(surface, terminalLabels, previewSessions)}
+              tooltipDescription={deviceTabDescription(surface, deviceState)}
+              renaming={renamingDevice === surface.id}
+              onStartRename={surface.kind === "device" ? () => setRenamingDevice(surface.id) : undefined}
+              onFinishRename={(title) => {
+                rightPanelActions.renameDevice(threadKey, surface.id, title);
+                setRenamingDevice(null);
+              }}
               faviconUrl={previewFaviconUrl(surface, previewSessions)}
               active={surface.id === state.activeSurfaceId}
               isLast={index === state.surfaces.length - 1}
@@ -643,9 +652,23 @@ function AddSurfaceMenuItems({ actions }: { actions: readonly SurfaceAction[] })
   );
 }
 
+/** RightPanelTabs DeviceTabTooltip: "host · version" under a device tab's name. */
+function deviceTabDescription(surface: RightPanelSurface, state: DeviceServiceState): string | undefined {
+  const target = surface.kind === "device" ? surface.target : undefined;
+  if (!target) return undefined;
+  const device = state.devices.find((entry) => entry.hostId === target.hostId && entry.id === target.deviceId);
+  const host = state.hosts.find((entry) => entry.id === target.hostId);
+  return `${host?.label ?? "Device host"} · ${device?.version ?? (target.platform === "ios" ? "iOS" : "Android")}`;
+}
+
 function RightPanelTab(props: {
   surface: RightPanelSurface;
   title: string;
+  tooltipDescription?: string | undefined;
+  /** Device tabs: double-click edits the name in place. */
+  renaming: boolean;
+  onStartRename?: (() => void) | undefined;
+  onFinishRename: (title: string) => void;
   faviconUrl: string | null;
   active: boolean;
   isLast: boolean;
@@ -683,7 +706,10 @@ function RightPanelTab(props: {
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onClick={props.onActivate}
+      onClick={(event) => {
+        if ((event.clickCount ?? 1) >= 2 && props.onStartRename) props.onStartRename();
+        else props.onActivate();
+      }}
       onAuxClick={(event) => {
         if (event.isRightClick) setMenuOpen(true);
         else props.onClose();
@@ -718,9 +744,13 @@ function RightPanelTab(props: {
         }
         testId={`right-panel-tab-close-${props.surface.id}`}
       />
-      <Text size="xs" color={color} truncate>
-        {props.title}
-      </Text>
+      {props.renaming ? (
+        <DeviceTabNameInput title={props.title} onFinish={props.onFinishRename} />
+      ) : (
+        <Text size="xs" color={color} truncate>
+          {props.title}
+        </Text>
+      )}
     </div>
   );
   return (
@@ -728,7 +758,11 @@ function RightPanelTab(props: {
       open={menuOpen}
       onOpenChange={setMenuOpen}
       align="start"
-      trigger={() => <Tooltip content={props.title}>{tab}</Tooltip>}
+      trigger={() => (
+        <Tooltip content={props.title} {...(props.tooltipDescription ? { description: props.tooltipDescription } : {})}>
+          {tab}
+        </Tooltip>
+      )}
     >
       <MenuItem onSelect={props.onClose}>Close</MenuItem>
       <MenuItem onSelect={props.onCloseOthers} disabled={props.isOnly}>
@@ -740,6 +774,48 @@ function RightPanelTab(props: {
       <MenuSeparator />
       <MenuItem onSelect={props.onCloseAll}>Close all</MenuItem>
     </Menu>
+  );
+}
+
+/** RightPanelTabs: the device tab's rename field; Enter or blur saves, Escape keeps the old name. */
+function DeviceTabNameInput({ title, onFinish }: { title: string; onFinish: (title: string) => void }) {
+  const theme = useTheme();
+  const [value, setValue] = useState(title);
+  const finished = useRef(false);
+  const finish = (next: string) => {
+    if (finished.current) return;
+    finished.current = true;
+    onFinish(next);
+  };
+  return (
+    <input
+      testId="device-tab-name"
+      autoFocus
+      value={value}
+      theme={{ caret: theme.foreground, appearance: theme.appearance }}
+      onChange={(event) => setValue(event.value ?? "")}
+      onSubmit={() => finish(value)}
+      onBlur={() => finish(value)}
+      onKeyDown={(event: KeyEvent) => {
+        event.stopPropagation();
+        if (event.key === "escape") finish(title);
+      }}
+      style={{
+        width: 96,
+        minWidth: 0,
+        height: 18,
+        paddingLeft: 4,
+        paddingRight: 4,
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: theme.primary,
+        backgroundColor: theme.background,
+        fontSize: 12,
+        lineHeight: 16,
+        color: theme.foreground,
+        fontFamily: FONTS.sans,
+      }}
+    />
   );
 }
 

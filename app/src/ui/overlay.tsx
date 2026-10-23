@@ -473,12 +473,15 @@ export function TooltipProvider({ children }: { children: ReactNode }) {
 /** apps/web/src/components/ui/tooltip.tsx: radius 8, border, popover bg, 12px text. */
 export function Tooltip({
   content,
+  description,
   shortcut,
   side = "bottom",
   children,
   rootStyle,
 }: {
   content: string;
+  /** A second, muted line (RightPanelTabs DeviceTabTooltip: host and version). */
+  description?: string;
   shortcut?: string;
   side?: FloatingSide;
   children: ReactElement;
@@ -508,7 +511,14 @@ export function Tooltip({
           backgroundColor: theme.appearance === "dark" ? "#141414" : "#ffffff",
         }}
       >
-        <text style={{ color: theme.foreground, fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans }}>{content}</text>
+        {description ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <text style={{ color: theme.foreground, fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans }}>{content}</text>
+            <text style={{ color: theme.mutedForeground, fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans }}>{description}</text>
+          </div>
+        ) : (
+          <text style={{ color: theme.foreground, fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans }}>{content}</text>
+        )}
         {shortcut ? <Kbd>{shortcut}</Kbd> : null}
       </TooltipPrimitive.Content>
     </TooltipPrimitive.Root>
