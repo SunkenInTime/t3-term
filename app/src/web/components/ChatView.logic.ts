@@ -4,6 +4,7 @@
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type EnvironmentId,
+  type OrchestrationV2ThreadProjection,
   isProviderDriverKind,
   type ModelSelection,
   ProviderDriverKind,
@@ -12,6 +13,8 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { latestUnheldRun, usageLimitRunPresentedAsLatest } from "@t3tools/shared/orchestrationV2ThreadError";
 import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@t3tools/shared/model";
 
 import { stripInlineContextReferences } from "../lib/composerContextReferences";
@@ -359,4 +362,31 @@ export function shouldShowBranchMismatchBanner(input: {
     return false;
   }
   return input.composerHasContent || input.wasShownForCurrentMismatch;
+}
+
+/** Background work the provider still runs after the latest run ended. */
+export function deriveThreadPendingBackgroundTasks(
+  projection: Pick<
+    OrchestrationV2ThreadProjection,
+    "providerSessions" | "thread" | "runs" | "turnItems" | "providerThreads"
+  > | null,
+) {
+  if (projection === null) return [];
+  const sessionError =
+    projection.providerSessions.findLast(
+      (session) => session.providerInstanceId === projection.thread.providerInstanceId,
+    )?.lastError ?? null;
+  const latestRun =
+    usageLimitRunPresentedAsLatest(projection.runs, projection.turnItems, sessionError) ??
+    latestUnheldRun(projection.runs);
+  return [
+    ...derivePendingBackgroundWork({
+      latestRun,
+      providerThreads: projection.providerThreads,
+      turnItems: projection.turnItems,
+      activeProviderThreadId: projection.thread.activeProviderThreadId,
+      runs: projection.runs,
+      pullRequests: projection.thread.pullRequests,
+    }),
+  ];
 }

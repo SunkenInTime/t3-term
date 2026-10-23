@@ -40,6 +40,7 @@ import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thr
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
   type EnvironmentId,
+  MessageId,
   type ModelSelection,
   type ProjectId,
   type ProviderInstanceId,
@@ -175,6 +176,10 @@ import { usePendingThreadRequests } from "./usePendingThreadRequests.ts";
 import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
 import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
+import { useProjectCloneBanner } from "./useProjectCloneBanner.tsx";
+import { feedbackUploadsInFlight, upsertFeedbackSubmission } from "./ComposerFeedback.tsx";
+import { parseCodexFeedbackCommand, submitCodexFeedback } from "@t3tools/client-runtime/state/threads";
+import { isUsageLimitsCommand, USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
 
 export type { ComposerTarget } from "../../state/composer.ts";
 
@@ -715,6 +720,15 @@ function ComposerBody({
       return;
     }
     if (item.type === "provider-slash-command") {
+      // web ChatComposer onSelectComposerItem: choosing /usage-limits opens the panel
+      // right away (only when nothing but the prompt is staged, like web's gate).
+      if (item.command.name === USAGE_LIMITS_COMMAND.name && banners.usageLimitsOffered && draft.attachments.length === 0) {
+        applyPromptReplacement(active.rangeStart, active.rangeEnd, "");
+        setTriggerState(null);
+        setHighlightedItemId(null);
+        banners.openUsageLimits();
+        return;
+      }
       const replacement = `/${item.command.name} `;
       const end = extendReplacementRangeForTrailingSpace(current, active.rangeEnd, replacement);
       applyPromptReplacement(active.rangeStart, end, replacement);
@@ -737,6 +751,34 @@ function ComposerBody({
     setHighlightedSearchKey(menuSearchKey);
   };
 
+  // ── Notices ───────────────────────────────────────────────────────────
+  const projectClone = useProjectCloneBanner(projectId ? { environmentId, projectId } : null);
+  const banners = useComposerBannerItems({
+    projectCloneBannerItem: projectClone.projectCloneBannerItem,
+    environmentId,
+    threadId,
+    draftKey,
+    shell,
+    projection,
+    runtime,
+    projectCwd: project?.workspaceRoot ?? null,
+    isWorking: isRunning || sending,
+    activePendingRequestId:
+      requests.activePendingApproval?.requestId ?? requests.activePendingUserInput?.requestId ?? null,
+    composerHasDraftContent: prompt.trim().length > 0 || draft.attachments.length > 0,
+    providerInstanceId: noProviderAvailable ? null : selectedInstanceId,
+    providerDriver: selectedProviderStatus?.driver ?? null,
+    providers: providerStatuses,
+    usageLimitSources: serverConfig?.usageLimitSources,
+    getSendContext: () => ({
+      providerAvailable: !noProviderAvailable,
+      modelSelection: selectedModelSelection,
+      runtimeMode,
+      interactionMode,
+    }),
+  });
+  const bannerItems = banners.items;
+
   // ── Send ──────────────────────────────────────────────────────────────
   const composerSendState = deriveComposerSendState({
     prompt,
@@ -744,12 +786,27 @@ function ComposerBody({
     terminalContexts: [],
   });
   const providerSendBlockReason = getAntigravitySendBlockReason(selectedProviderStatus, selectedModel);
-  const sendDisabledReason = providerSendBlockReason;
+  const sendDisabledReason =
+    (banners.feedbackUploading ? "Sending feedback" : projectClone.projectCloneSendBlockReason) ?? providerSendBlockReason;
   const followUpBehavior: "queue" | "steer" =
     requests.pendingApprovals.length > 0 ? "steer" : settings.followUpBehavior;
   const isCompacting = false;
 
   const submit = (dispatchMode?: ComposerDispatchMode, submissionIntent: ComposerSubmissionIntent = "foreground") => {
+    // web useComposerSend: /usage-limits is answered locally from the Limits snapshot.
+    if (
+      banners.usageLimitsOffered &&
+      draft.attachments.length === 0 &&
+      !queuedEdit.isEditing &&
+      isUsageLimitsCommand(readComposerDraft(promptKey).prompt)
+    ) {
+      if (banners.openUsageLimits()) {
+        valueRef.current = "";
+        caretRef.current = 0;
+        setComposerPrompt(promptKey, "");
+      }
+      return;
+    }
     if (activePendingProgress) {
       requests.onAdvanceActivePendingUserInput();
       return;
@@ -787,6 +844,13 @@ function ComposerBody({
       return;
     }
     if (!composerSendState.hasSendableContent && attachments.length === 0) return;
+    // web useComposerSend: /feedback in a Codex thread uploads the session to OpenAI.
+    const feedbackCommand =
+      selectedProvider === "codex" && attachments.length === 0 && !queuedEdit.isEditing ? parseCodexFeedbackCommand(trimmed) : null;
+    if (feedbackCommand) {
+      void submitFeedbackCommand(trimmed, feedbackCommand);
+      return;
+    }
     const validation = getComposerSubmissionValidationMessage({
       prompt: promptAtSend,
       submissionTarget: "provider-turn",
@@ -810,6 +874,32 @@ function ComposerBody({
           canSteer: !isCompacting,
         }),
     });
+  };
+
+  const submitFeedbackCommand = async (command: string, feedback: { readonly reason?: string }) => {
+    const threadKey = banners.routeThreadKey;
+    if (!threadId || !projection?.thread.activeProviderThreadId) {
+      toast({ type: "warning", title: "Start a Codex thread first", description: "Send a message before you submit feedback." });
+      return;
+    }
+    if (feedbackUploadsInFlight.has(threadKey)) return;
+    feedbackUploadsInFlight.add(threadKey);
+    await submitCodexFeedback({
+      submission: { id: MessageId.make(globalThis.crypto.randomUUID()), command, createdAt: new Date().toISOString() },
+      clearDraft: () => {
+        valueRef.current = "";
+        caretRef.current = 0;
+        setComposerPrompt(promptKey, "");
+      },
+      onUpdate: (submission) => upsertFeedbackSubmission(threadKey, submission),
+      upload: () =>
+        runAtomCommand(
+          appAtomRegistry,
+          threadEnvironment.uploadFeedback,
+          { environmentId, input: { threadId, ...feedback } } as never,
+          { reportFailure: false },
+        ) as never,
+    }).finally(() => feedbackUploadsInFlight.delete(threadKey));
   };
 
   const dispatchSend = async (input: {
@@ -1323,9 +1413,6 @@ function ComposerBody({
             environmentUnavailable || derivePhase(runtime) === "disconnected"
             ? DISCONNECTED_COMPOSER_PLACEHOLDER
             : DEFAULT_PLACEHOLDER;
-
-  // ── Notices ───────────────────────────────────────────────────────────
-  const bannerItems = useComposerBannerItems({ environmentId });
 
   // ── Render ────────────────────────────────────────────────────────────
   const controlsSize = isResting ? "xs" : "sm";
