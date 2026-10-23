@@ -77,6 +77,8 @@ import {
   themeHalvesAtom,
   type AppearanceMode,
 } from "../state/appearance.ts";
+import { useCustomThemes } from "../state/clientSettings.ts";
+import { toggleThemeEditor } from "../state/themeEditor.ts";
 import {
   environmentProjects,
   environmentThreadShells,
@@ -356,6 +358,7 @@ function CommandModePalette({
   const appearanceMode = useAtomValue(appearanceModeAtom);
   const resolvedAppearance = useAtomValue(resolvedAppearanceAtom);
   const themeHalves = useAtomValue(themeHalvesAtom);
+  const customThemes = useCustomThemes();
 
   // Add-project flow state.
   const [addProjectEnvironmentId, setAddProjectEnvironmentId] = useState<EnvironmentId | null>(null);
@@ -849,9 +852,16 @@ function CommandModePalette({
 
   // ── Theme items (CommandPaletteThemeItems) ───────────────────────────
 
+  const seenThemeIds = new Set<string>();
   const themeCards = [
     { id: null as string | null, label: "T3 Code", previews: STANDARD_PREVIEWS },
-    ...BUILT_IN_THEMES.map((definition) => ({
+    ...[...BUILT_IN_THEMES, ...customThemes]
+      .filter((definition) => {
+        if (seenThemeIds.has(definition.id)) return false;
+        seenThemeIds.add(definition.id);
+        return true;
+      })
+      .map((definition) => ({
       id: definition.id as string | null,
       label: definition.label,
       previews: (["light", "dark"] as const).flatMap((mode) => {
@@ -1111,6 +1121,15 @@ function CommandModePalette({
   });
   actionItems.push(changeThemeItem);
   actionItems.push(changeAppearanceItem);
+  actionItems.push({
+    kind: "action",
+    value: "action:theme-editor",
+    searchTerms: ["theme", "appearance", "colors", "palette", "customize"],
+    title: "Toggle theme editor",
+    icon: <ItemIcon name="palette" />,
+    shortcutCommand: "themeEditor.toggle",
+    run: async () => toggleThemeEditor(),
+  });
   if (environments.some((environment) => environment.serverConfig?.environment.capabilities.pullRequests === true)) {
     actionItems.push({
       kind: "action",

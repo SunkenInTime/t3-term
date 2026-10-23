@@ -52,6 +52,7 @@ import {
 import { EMPTY_THREAD_STATE, selectedSurface, type ThreadRightPanelState } from "../web/rightPanelStore.ts";
 import { readThreadPreviewState } from "../web/previewStateStore.ts";
 import { sidebarJumpHintsVisibleAtom } from "../state/sidebar.ts";
+import { toggleThemeEditor } from "../state/themeEditor.ts";
 import {
   copyActiveThreadReference,
   readProjects,
@@ -190,6 +191,11 @@ function runPaletteCommand(command: KeybindingCommand, event: KeyEvent): boolean
   if (command === "theme.select") {
     if (event.isHeld) return true;
     dispatchCommandPalette({ _tag: "OpenChangeTheme" });
+    return true;
+  }
+  if (command === "themeEditor.toggle") {
+    if (event.isHeld) return true;
+    toggleThemeEditor();
     return true;
   }
   if (command === "appearance.cycle") {
