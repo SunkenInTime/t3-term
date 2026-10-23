@@ -188,7 +188,7 @@ const TreeRow = memo(function TreeRow(props: {
   // The list's direct child is the row slot; it carries pierre's inline padding so the
   // row inside spans the full width between them.
   return (
-    <div style={{ display: "flex", flexDirection: "column", paddingLeft: TREE_INSET, paddingRight: TREE_INSET }}>
+    <div style={{ display: "flex", flexDirection: "column", width: "100%", paddingLeft: TREE_INSET, paddingRight: TREE_INSET }}>
     <div
       testId={`files-row:${row.path}`}
       role="treeitem"

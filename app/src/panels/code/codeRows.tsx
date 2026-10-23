@@ -81,9 +81,20 @@ export function wrapLine(text: string, columns: number): ReadonlyArray<readonly 
   let start = 0;
   while (text.length - start > columns) {
     let end = -1;
-    // A space right at the limit may hang past it, like CSS pre-wrap.
+    // A space right at the limit may hang past it, like CSS pre-wrap. A hyphen
+    // between letters is also a break opportunity (UAX #14: HY × AL), so
+    // "re-bake" can split after "re-" the way the browser splits it.
     for (let index = start + columns; index > start; index -= 1) {
       if (text[index] === " ") {
+        end = index + 1;
+        break;
+      }
+      if (
+        index < start + columns &&
+        text[index] === "-" &&
+        /[\p{L}]/u.test(text[index - 1] ?? "") &&
+        /[\p{L}]/u.test(text[index + 1] ?? "")
+      ) {
         end = index + 1;
         break;
       }
