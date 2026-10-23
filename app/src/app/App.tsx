@@ -17,6 +17,7 @@ import { AppThemeProvider } from "../state/clientSettings.ts";
 import { TooltipProvider } from "../ui/overlay.tsx";
 import { ToastHost } from "../ui/toast.tsx";
 import { ThreadNotificationCoordinator } from "../notifications/ThreadNotificationCoordinator.tsx";
+import { AppCoordinators } from "../coordinators/AppCoordinators.tsx";
 import { noteUserInput } from "../notifications/platform.ts";
 import { PerfRegion } from "../dev/PerfRegion.tsx";
 
@@ -41,6 +42,7 @@ export function App({ boot }: { boot: Boot }) {
               <DialogHost />
             </ConnectGate>
             <ThreadNotificationCoordinator />
+            <AppCoordinators />
             <ToastHost />
           </div>
         </TooltipProvider>
