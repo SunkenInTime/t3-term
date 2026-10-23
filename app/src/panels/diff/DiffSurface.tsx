@@ -589,7 +589,7 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
     );
   } else {
     body = (
-      <div style={{ display: "flex", flexDirection: "row", flexGrow: 1, minHeight: 0, overflow: "hidden" }}>
+      <div style={{ display: "flex", flexDirection: "row", width: "100%", flexGrow: 1, minHeight: 0, overflow: "hidden" }}>
         <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, minHeight: 0 }}>
           {gitSource?.truncated && !selectedTurn ? (
             <div style={{ paddingLeft: 12, paddingRight: 12, paddingTop: 6, paddingBottom: 6, borderBottomWidth: 1, borderColor: alpha(theme.border, 0.7), backgroundColor: alpha(theme.muted, 0.4), flexShrink: 0 }}>
@@ -653,7 +653,7 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
   }
 
   return (
-    <div testId="diff-surface" style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, minWidth: 0, backgroundColor: theme.background }}>
+    <div testId="diff-surface" style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, minWidth: 0, backgroundColor: theme.background }}>
       {header}
       {body}
       {lazySource && activeCwd
