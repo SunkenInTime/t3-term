@@ -6,11 +6,11 @@ import type { DevicePermission, DeviceSummary, DeviceTextSize } from "@t3tools/c
 import { useEffect, useState, type ReactNode } from "react";
 
 import { SegmentedToggle } from "../../dialogs/dialogKit.tsx";
-import { SettingsSelect, TextField } from "../../settings/controls.tsx";
+import { fieldBackground } from "../../settings/controls.tsx";
 import { Icon } from "../../ui/Icon.tsx";
-import { Switch } from "../../ui/overlay.tsx";
+import { Menu, MenuItem } from "../../ui/overlay.tsx";
 import { Button, IconButton, Text } from "../../ui/primitives.tsx";
-import { alpha, FONTS, useTheme } from "../../ui/theme.ts";
+import { alpha, FONTS, RADIUS, useTheme } from "../../ui/theme.ts";
 import { type DeviceEventLogEntry, subscribeDeviceEventLog } from "../../web/components/device/deviceHubApi.ts";
 import type { DeviceControls } from "./useDeviceControls.ts";
 
@@ -96,7 +96,10 @@ export function DeviceToolsPanel(props: {
         display: "flex",
         flexDirection: "column",
         flexGrow: 1,
+        flexBasis: 0,
+        minWidth: 0,
         minHeight: 0,
+        overflow: "hidden",
         borderLeftWidth: 1,
         borderColor: theme.border,
         backgroundColor: theme.background,
@@ -354,7 +357,7 @@ function SwitchRow(props: {
 }) {
   return (
     <Row label={props.label}>
-      <Switch
+      <SmallSwitch
         testId={props.testId}
         checked={props.checked ?? false}
         disabled={props.disabled || props.checked === undefined}
@@ -374,12 +377,12 @@ function ChoiceSelect<V extends string>(props: {
 }) {
   const current = props.options.find((option) => option.value === props.value);
   return (
-    <SettingsSelect<V>
+    <XsSelect<V>
       testId={props.testId}
-      size="sm"
       width={160}
       value={props.value}
-      label={current?.label ?? props.placeholder ?? "Unknown"}
+      label={current?.label ?? null}
+      placeholder={props.placeholder ?? "Unknown"}
       options={props.options}
       disabled={props.disabled}
       onChange={(value) => {
@@ -404,17 +407,15 @@ function SubmitRow(props: {
   };
   return (
     <div style={{ display: "flex", flexDirection: "row", gap: 6 }}>
-      <TextField
+      <CompactInput
         testId={props.testId}
-        size="sm"
-        mono
         value={value}
         placeholder={props.placeholder}
         disabled={props.disabled}
         onChange={setValue}
         onSubmit={submit}
       />
-      <Button size="xs" variant="outline" disabled={props.disabled || value.trim().length === 0} onClick={submit} style={{ height: 28 }}>
+      <Button size="xs" variant="outline" disabled={props.disabled || value.trim().length === 0} onClick={submit}>
         {props.action}
       </Button>
     </div>
@@ -435,16 +436,16 @@ function LocationSection(props: {
   return (
     <Section title="Location">
       <div style={{ display: "flex", flexDirection: "row", gap: 6 }}>
-        <TextField size="sm" mono placeholder="Latitude" value={latitude} disabled={props.disabled} onChange={setLatitude} />
-        <TextField size="sm" mono placeholder="Longitude" value={longitude} disabled={props.disabled} onChange={setLongitude} />
+        <CompactInput placeholder="Latitude" value={latitude} disabled={props.disabled} onChange={setLatitude} />
+        <CompactInput placeholder="Longitude" value={longitude} disabled={props.disabled} onChange={setLongitude} />
       </div>
       <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-        <SettingsSelect<string>
-          size="sm"
+        <XsSelect<string>
           width={128}
           align="start"
           value={null}
-          label="Preset…"
+          label={null}
+          placeholder="Preset…"
           disabled={props.disabled}
           options={LOCATION_PRESETS.map((preset) => ({ value: preset.label, label: preset.label }))}
           onChange={(value) => {
@@ -490,7 +491,7 @@ function PermissionsSection(props: {
   const decide = (decision: "grant" | "revoke" | "reset") => void props.onDecide(resolvedAppId, permission, decision);
   return (
     <Section title="Permissions">
-      <TextField size="sm" mono placeholder={props.defaultAppId || "App ID"} value={appId} disabled={props.disabled} onChange={setAppId} />
+      <CompactInput placeholder={props.defaultAppId || "App ID"} value={appId} disabled={props.disabled} onChange={setAppId} />
       <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
         <ChoiceSelect
           value={permission}
@@ -585,6 +586,147 @@ function EventLogSection(props: { readonly access: DeviceHubAccess; readonly dev
           )}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** ui/input.tsx size="compact" font="mono": a 28px field inside a 1px border, 9px inset, 12px text. */
+function CompactInput(props: {
+  readonly value: string;
+  readonly placeholder: string;
+  readonly disabled: boolean;
+  readonly onChange: (value: string) => void;
+  readonly onSubmit?: () => void;
+  readonly testId?: string | undefined;
+}) {
+  const theme = useTheme();
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        flexGrow: 1,
+        flexShrink: 1,
+        flexBasis: 0,
+        minWidth: 0,
+        height: 30,
+        paddingLeft: 9,
+        paddingRight: 9,
+        borderRadius: RADIUS.lg,
+        borderWidth: 1,
+        borderColor: theme.input,
+        backgroundColor: fieldBackground(theme),
+        opacity: props.disabled ? 0.64 : 1,
+      }}
+    >
+      <input
+        testId={props.testId}
+        value={props.value}
+        placeholder={props.placeholder}
+        readOnly={props.disabled}
+        theme={{ caret: theme.foreground, textMuted: theme.mutedForeground, appearance: theme.appearance }}
+        onChange={(event) => props.onChange(event.value ?? "")}
+        onSubmit={() => props.onSubmit?.()}
+        style={{ flexGrow: 1, minWidth: 0, height: 28, fontSize: 12, lineHeight: 28, color: theme.foreground, fontFamily: FONTS.mono }}
+      />
+    </div>
+  );
+}
+
+/** ui/select.tsx `SelectTrigger size="xs"`: 24 tall, radius md, 12px text, 14px chevron. */
+function XsSelect<V extends string>(props: {
+  readonly value: V | null;
+  readonly label: string | null;
+  readonly placeholder: string;
+  readonly options: ReadonlyArray<{ readonly value: V; readonly label: string }>;
+  readonly disabled: boolean;
+  readonly onChange: (value: V) => void;
+  readonly width: number;
+  readonly align?: "start" | "end";
+  readonly testId?: string | undefined;
+}) {
+  const theme = useTheme();
+  return (
+    <Menu
+      align={props.align ?? "end"}
+      minWidth={props.width}
+      testId={props.testId ? `${props.testId}-menu` : undefined}
+      trigger={({ toggle }) => (
+        <div
+          testId={props.testId}
+          onClick={props.disabled ? undefined : toggle}
+          style={{
+            display: "flex",
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 4,
+            width: props.width,
+            height: 24,
+            flexShrink: 0,
+            paddingLeft: 7,
+            paddingRight: 7,
+            borderRadius: RADIUS.md,
+            borderWidth: 1,
+            borderColor: theme.input,
+            backgroundColor: fieldBackground(theme),
+            opacity: props.disabled ? 0.64 : 1,
+            cursor: props.disabled ? "default" : "pointer",
+          }}
+        >
+          <Text size="xs" truncate color={props.label === null ? theme.mutedForeground : theme.foreground}>
+            {props.label ?? props.placeholder}
+          </Text>
+          <Icon name="chevron-down" size={14} color={alpha(theme.foreground, 0.5)} />
+        </div>
+      )}
+    >
+      {props.options.map((option) => (
+        <MenuItem key={option.value} checked={option.value === props.value} onSelect={() => props.onChange(option.value)}>
+          {option.label}
+        </MenuItem>
+      ))}
+    </Menu>
+  );
+}
+
+/** ui/switch.tsx size="sm": a 26 by 16 track around a 12px thumb. */
+function SmallSwitch(props: {
+  readonly checked: boolean;
+  readonly disabled: boolean;
+  readonly onChange: (checked: boolean) => void;
+  readonly testId?: string | undefined;
+}) {
+  const theme = useTheme();
+  return (
+    <div
+      testId={props.testId}
+      onClick={props.disabled ? undefined : () => props.onChange(!props.checked)}
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: props.checked ? "flex-end" : "flex-start",
+        width: 26,
+        height: 16,
+        padding: 2,
+        borderRadius: 8,
+        backgroundColor: props.checked ? theme.primary : theme.input,
+        opacity: props.disabled ? 0.64 : 1,
+        cursor: props.disabled ? "default" : "pointer",
+        flexShrink: 0,
+      }}
+    >
+      <div
+        style={{
+          width: 12,
+          height: 12,
+          borderRadius: 6,
+          backgroundColor: props.checked || theme.appearance === "light" ? "#ffffff" : theme.mutedForeground,
+          pointerEvents: "none",
+        }}
+      />
     </div>
   );
 }

@@ -133,9 +133,9 @@ export function DeviceWorkspace(props: {
           />
         </div>
       </div>
-      {tools && sideBySide ? <div style={{ display: "flex", width: TOOLS_PANEL_WIDTH, flexShrink: 0 }}>{tools}</div> : null}
+      {tools && sideBySide ? <div style={{ display: "flex", width: TOOLS_PANEL_WIDTH, flexShrink: 0, overflow: "hidden" }}>{tools}</div> : null}
       {tools && !sideBySide ? (
-        <div style={{ position: "absolute", top: 0, bottom: 0, right: 0, width: Math.min(TOOLS_PANEL_WIDTH, width), display: "flex" }}>
+        <div style={{ position: "absolute", top: 0, bottom: 0, right: 0, width: Math.min(TOOLS_PANEL_WIDTH, width), display: "flex", overflow: "hidden" }}>
           {tools}
         </div>
       ) : null}
