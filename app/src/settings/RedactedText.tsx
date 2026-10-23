@@ -1,6 +1,6 @@
-// apps/web/src/components/settings/RedactedSensitiveText.tsx. GPUI has no
-// blur filter, so the hidden state shows a deterministic look-alike string in
-// a faint color instead of a blurred real value.
+// apps/web/src/components/settings/RedactedSensitiveText.tsx. The hidden state
+// is web's deterministic look-alike string under blur-xs; GPUI has no blur
+// filter, so a soft shadow the size of that string stands in for it.
 import { useState } from "react";
 
 import { Tooltip } from "../ui/overlay.tsx";
@@ -41,10 +41,31 @@ export function RedactedText({
   const trimmed = value?.trim();
   if (!trimmed) return null;
   const revealed = controlled ?? own;
-  const text = (
-    <Text size="2xs" mono color={revealed ? theme.mutedForeground : alpha(theme.mutedForeground, 0.35)} truncate>
-      {revealed ? trimmed : redactedPlaceholder(trimmed)}
+  const text = revealed ? (
+    <Text size="2xs" mono color={theme.mutedForeground} truncate>
+      {trimmed}
     </Text>
+  ) : (
+    // blur-xs over the placeholder. GPUI has no filter, so the placeholder only
+    // sizes the box (transparent), and a soft shadow of a thin bar stands in
+    // for the blurred glyphs: the same gray smear, nothing legible.
+    <div style={{ position: "relative", display: "flex", minWidth: 0 }}>
+      <Text size="2xs" mono color="#00000000" truncate>
+        {redactedPlaceholder(trimmed)}
+      </Text>
+      <div
+        style={{
+          position: "absolute",
+          left: 2,
+          right: 2,
+          top: 5,
+          bottom: 5,
+          borderRadius: 2,
+          boxShadow: { offsetX: 0, offsetY: 0, blurRadius: 3, spreadRadius: 1, color: alpha(theme.mutedForeground, 0.3) },
+          pointerEvents: "none",
+        }}
+      />
+    </div>
   );
   if (controlled !== undefined) return text;
   return (

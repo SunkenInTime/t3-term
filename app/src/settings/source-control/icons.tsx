@@ -1,10 +1,12 @@
 // Version control and hosting marks from apps/web/src/components/Icons.tsx.
-// gpuix draws an <svg> in one tint, so each mark uses its dominant brand color.
+// gpuix draws an <svg> in one tint, so each mark uses its dominant brand color,
+// except the multi-color Jujutsu and Azure DevOps marks, which paint as images.
 import type { ReactNode } from "react";
 
 import { Icon } from "../../ui/Icon.tsx";
 import { useTheme } from "../../ui/theme.ts";
 import { BRAND_SVGS } from "../brandIcons.tsx";
+import { AZURE_DEVOPS_MARK_SRC, JUJUTSU_MARK_SRC } from "./colorMarks.ts";
 
 const svg = (viewBox: string, body: string) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" fill="#000">${body}</svg>`;
 
@@ -15,10 +17,6 @@ const SOURCES: Record<string, { source: string; color: string | null }> = {
       '<path d="M251.17 116.6 139.4 4.82a16.49 16.49 0 0 0-23.31 0l-23.21 23.2 29.44 29.45a19.57 19.57 0 0 1 24.8 24.96l28.37 28.38a19.61 19.61 0 1 1-11.75 11.06L137.28 95.4v69.64a19.62 19.62 0 1 1-16.13-.57V94.2a19.61 19.61 0 0 1-10.65-25.73L81.46 39.44 4.83 116.08a16.49 16.49 0 0 0 0 23.32L116.6 251.17a16.49 16.49 0 0 0 23.32 0l111.25-111.25a16.5 16.5 0 0 0 0-23.33"/>',
     ),
     color: "#de4c36",
-  },
-  jj: {
-    source: svg("0 0 1024 1024", '<rect width="1024" height="1024" rx="270"/>'),
-    color: "#a7bcd9",
   },
   github: { source: BRAND_SVGS.github, color: null },
   gitlab: {
@@ -46,7 +44,10 @@ const SOURCES: Record<string, { source: string; color: string | null }> = {
 export function SourceControlMark({ kind, size = 18 }: { kind: string; size?: number }): ReactNode {
   const theme = useTheme();
   const entry = SOURCES[kind];
-  if (kind === "azure-devops") return <Icon name="infinity" size={size} color="#0078d4" />;
+  const colorMark = kind === "jj" ? JUJUTSU_MARK_SRC : kind === "azure-devops" ? AZURE_DEVOPS_MARK_SRC : null;
+  if (colorMark) {
+    return <img src={colorMark} style={{ width: size, height: size, flexShrink: 0, pointerEvents: "none" }} />;
+  }
   if (!entry) return <Icon name="git-pull-request" size={size} color={theme.foreground} />;
   return (
     <svg
