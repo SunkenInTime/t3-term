@@ -12,10 +12,10 @@ import {
 } from "@t3tools/client-runtime/providerSkills";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
 import type { PublicInstance } from "@gpuix/react";
-import { memo, useEffect, useRef, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { Icon, type IconName } from "../../ui/Icon.tsx";
-import { FONTS, RADIUS, useTheme, type Palette } from "../../ui/theme.ts";
+import { FONTS, RADIUS, alpha, useTheme, type Palette } from "../../ui/theme.ts";
 import type { ComposerTriggerKind } from "../../web/composer-logic.ts";
 import type { ComposerCommandItem } from "../../web/components/chat/ComposerCommandMenu.ts";
 import { ComposerCommandMenuEntryIcon } from "./ComposerCommandMenuEntryIcon.tsx";
@@ -98,6 +98,10 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: Comp
     rowRefs.current.get(props.activeItemId)?.scrollIntoView?.();
   }, [props.activeItemId]);
 
+  const [scrollTop, setScrollTop] = useState(0);
+  // Rows are one truncated line, 28 tall, inside 8px of padding.
+  const contentHeight = props.items.length * 28 + 16;
+
   const onHover = (itemId: string) => {
     hoveredItemIdRef.current = itemId;
     props.onHighlightedItemChange(itemId);
@@ -123,7 +127,9 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: Comp
       }}
     >
       {props.items.length > 0 ? (
+        <div style={{ position: "relative", display: "flex", flexDirection: "column", minHeight: 0 }}>
         <div
+          onScrollChange={(event) => setScrollTop(-(event.scrollY ?? 0))}
           style={{
             display: "flex",
             flexDirection: "column",
@@ -152,6 +158,12 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: Comp
               }}
             />
           ))}
+        </div>
+        {/* ScrollArea scrollFade: 24px fades where rows are scrolled out of view. */}
+        {contentHeight > LIST_MAX_HEIGHT && scrollTop > 0 ? <MenuScrollFade edge="top" color={surface.background} /> : null}
+        {contentHeight > LIST_MAX_HEIGHT && scrollTop < contentHeight - LIST_MAX_HEIGHT - 1 ? (
+          <MenuScrollFade edge="bottom" color={surface.background} />
+        ) : null}
         </div>
       ) : (
         <div style={{ paddingLeft: 20, paddingRight: 20, paddingTop: 14, paddingBottom: 28 }}>
@@ -304,5 +316,35 @@ function SkillSourceBadge(props: { kind: ProviderSkillSourceKind; showSkillSuffi
         {`${SKILL_SOURCE_LABEL_BY_KIND[props.kind]}${props.showSkillSuffix ? " Skill" : ""}`}
       </text>
     </div>
+  );
+}
+
+function MenuScrollFade({ edge, color }: { edge: "top" | "bottom"; color: string }) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: 0,
+        right: 0,
+        [edge]: 0,
+        height: 24,
+        pointerEvents: "none",
+        background: {
+          type: "linear-gradient",
+          // angle 0 runs bottom to top
+          angle: 0,
+          stops:
+            edge === "bottom"
+              ? [
+                  { color, position: 0 },
+                  { color: alpha(color, 0), position: 1 },
+                ]
+              : [
+                  { color: alpha(color, 0), position: 0 },
+                  { color, position: 1 },
+                ],
+        },
+      }}
+    />
   );
 }
