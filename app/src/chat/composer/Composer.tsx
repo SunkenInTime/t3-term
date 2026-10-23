@@ -33,6 +33,7 @@ import {
   deriveThreadStructureRuntime,
   threadRuntimeHasInterruptibleRun,
 } from "@t3tools/client-runtime/state/thread-execution";
+import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thread-workflows";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
   type EnvironmentId,
@@ -294,9 +295,11 @@ function surfaceStyle(theme: ReturnType<typeof useTheme>) {
     borderWidth: 1,
     borderColor: theme.appearance === "dark" ? alpha("#ffffff", 0.05) : "#00000014",
     backgroundColor: glass,
+    // web --shadow-composer: 0 12px 28px -18px. GPUI's blurRadius spreads about
+    // twice as far as a CSS blur, so 14 here matches web's 28 pixel for pixel.
     ...(theme.appearance === "dark"
       ? {}
-      : { boxShadow: { offsetX: 0, offsetY: 12, blurRadius: 28, spreadRadius: -18, color: "#00000066" } }),
+      : { boxShadow: { offsetX: 0, offsetY: 12, blurRadius: 14, spreadRadius: -18, color: "#00000066" } }),
   };
 }
 
@@ -412,6 +415,10 @@ function ComposerBody({
     threadProvider: shell?.modelSelection.instanceId ?? null,
     providers: providerStatuses,
   });
+  // web ChatView: a thread whose provider session can hand off to another
+  // provider leaves the model picker unlocked.
+  const supportsProviderSwitchingViaHandoff = threadSupportsProviderHandoff(projection);
+  const modelPickerLockedProvider = supportsProviderSwitchingViaHandoff ? null : lockedProvider;
   const draftThreadModelSelection: ModelSelection | null =
     (sticky.activeProvider ? (sticky.modelSelectionByProvider[sticky.activeProvider] ?? null) : null) ??
     settings.defaultModelSelection ??
@@ -884,7 +891,7 @@ function ComposerBody({
       ? {
           providers: providerStatuses,
           hasStartedSession: runtime !== null,
-          supportsProviderSwitchingViaHandoff: false,
+          supportsProviderSwitchingViaHandoff,
           currentModelSelection: shell.modelSelection,
           currentProviderInstanceId: runtime?.providerInstanceId ?? null,
         }
@@ -892,7 +899,7 @@ function ComposerBody({
   );
   const onProviderModelSelect = (instanceId: ProviderInstanceId, model: string) => {
     const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-    if (lockedProvider !== null && entry && entry.driver !== lockedProvider) return;
+    if (!supportsProviderSwitchingViaHandoff && lockedProvider !== null && entry && entry.driver !== lockedProvider) return;
     const resolved = resolveAppModelSelectionForInstance(instanceId, settings, providerStatuses, model);
     if (!resolved) return;
     const remembered = sticky.modelSelectionByProvider[instanceId];
@@ -1095,7 +1102,7 @@ function ComposerBody({
         environmentId={environmentId}
         activeInstanceId={selectedInstanceId}
         model={selectedModel}
-        lockedProvider={lockedProvider}
+        lockedProvider={modelPickerLockedProvider}
         lockedContinuationGroupKey={lockedContinuationGroupKey}
         instanceEntries={providerInstanceEntries}
         modelOptionsByInstance={modelOptionsByInstance}

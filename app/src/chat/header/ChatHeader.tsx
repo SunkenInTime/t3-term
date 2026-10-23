@@ -309,7 +309,7 @@ function ThreadBreadcrumb({
           >
             {(hovered) => (
               <>
-                <ProjectGlyph project={project} size={14} />
+                <ProjectGlyph project={project} size={14} environmentId={thread.environmentId} />
                 <BreadcrumbText color={hovered ? theme.foreground : theme.mutedForeground} maxWidth={160}>
                   {projectName}
                 </BreadcrumbText>

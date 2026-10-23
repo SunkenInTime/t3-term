@@ -25,6 +25,7 @@ import { appAtomRegistry } from "../../runtime/runtime.ts";
 import { threadEnvironment } from "../../state/environment.ts";
 import { pendingEnvModeAtom, vcsEnvironment } from "../../state/git.ts";
 import { surfaceStyle } from "../../ui/overlay.tsx";
+import { Icon } from "../../ui/Icon.tsx";
 import { Text } from "../../ui/primitives.tsx";
 import { toast } from "../../ui/toast.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
@@ -43,6 +44,8 @@ import { ActionMenu } from "../header/ActionMenu.tsx";
 import { DetailsIcon, DetailsLabel, DetailsSelectRow } from "./detailsControls.tsx";
 
 const PICKER_WIDTH = 262;
+// BranchPicker.tsx max-h-56
+const LIST_MAX_HEIGHT = 224;
 const CREATE_PREFIX = "__create_new_branch__:";
 
 function errorMessage(error: unknown): string {
@@ -68,6 +71,8 @@ export function BranchRow({
   const branchCwd = activeWorktreePath ?? projectCwd;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [searchFocused, setSearchFocused] = useState(true);
+  const [listScroll, setListScroll] = useState(0);
   const [pending, setPending] = useState(false);
   const [optimistic, setOptimistic] = useState<string | null>(null);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
@@ -122,6 +127,10 @@ export function BranchRow({
         checkoutPullRequestItemValue: null,
       }),
   );
+  // Rows are 28 tall inside 12px of list padding (ComboboxListVirtualized py-1 + list py-2).
+  const listContentHeight = items.length * 28 + 24;
+  const listScrolls = listContentHeight > LIST_MAX_HEIGHT;
+  const fadeColor = String(surfaceStyle(theme).backgroundColor);
   const total = refsQuery.data?.totalCount ?? 0;
   const statusText =
     refsQuery.isPending && refsQuery.data === null
@@ -243,6 +252,8 @@ export function BranchRow({
             onToggle={() => {
               setOpen(!open);
               if (open) setQuery("");
+              // autoFocus takes focus when the input mounts, without an onFocus event.
+              else setSearchFocused(true);
             }}
             onRightClick={() => setContextMenuOpen(true)}
           >
@@ -269,23 +280,62 @@ export function BranchRow({
             }}
             style={{ ...surfaceStyle(theme), display: "flex", flexDirection: "column", width: PICKER_WIDTH }}
           >
-            <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, height: 36, paddingLeft: 10, paddingRight: 10, borderBottomWidth: 1, borderColor: theme.border }}>
-              <DetailsIcon name="search" />
-              <input
-                testId="branch-search"
-                autoFocus
-                value={query}
-                placeholder="Search refs..."
-                onChange={(event: EventPayload) => setQuery(String(event.value ?? ""))}
-                onSubmit={() => {
-                  const first = items[0];
-                  if (first) select(first);
+            {/* ComboboxSearchInput: px-3 pt-2.5, a 1px rule that turns ring-blue while focused. */}
+            <div style={{ flexShrink: 0, paddingTop: 9, paddingLeft: 12, paddingRight: 12 }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 4,
+                  paddingBottom: 6,
+                  borderBottomWidth: 1,
+                  borderColor: searchFocused ? theme.primary : alpha(theme.border, 0.7),
                 }}
-                theme={{ caret: theme.foreground }}
-                style={{ flexGrow: 1, minWidth: 0, color: theme.foreground, fontSize: 14, fontFamily: FONTS.sans, backgroundColor: "#00000000" }}
-              />
+              >
+                <Icon name="search" size={16} color={alpha(theme.mutedForeground, 0.55)} />
+                <input
+                  testId="branch-search"
+                  autoFocus
+                  value={query}
+                  placeholder="Search refs..."
+                  onFocus={() => setSearchFocused(true)}
+                  onBlur={() => setSearchFocused(false)}
+                  onChange={(event: EventPayload) => setQuery(String(event.value ?? ""))}
+                  onSubmit={() => {
+                    const first = items[0];
+                    if (first) select(first);
+                  }}
+                  theme={{ caret: theme.foreground }}
+                  style={{
+                    flexGrow: 1,
+                    minWidth: 0,
+                    height: 26,
+                    lineHeight: 26,
+                    color: theme.foreground,
+                    fontSize: 14,
+                    fontFamily: FONTS.sans,
+                    backgroundColor: "#00000000",
+                  }}
+                />
+              </div>
             </div>
-            <div style={{ display: "flex", flexDirection: "column", maxHeight: 256, ...(items.length > 8 ? { overflowY: "scroll" as const } : {}), padding: 4, scrollbarColor: theme.scrollbar, pointerEvents: "auto" }}>
+            <div style={{ position: "relative", display: "flex", flexDirection: "column", minHeight: 0 }}>
+            <div
+              onScrollChange={(event: EventPayload) => setListScroll(-(event.scrollY ?? 0))}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                maxHeight: LIST_MAX_HEIGHT,
+                ...(listScrolls ? { overflowY: "scroll" as const } : {}),
+                paddingTop: items.length === 0 ? 0 : 12,
+                paddingBottom: items.length === 0 ? 0 : 12,
+                paddingLeft: 8,
+                paddingRight: 4,
+                scrollbarColor: theme.scrollbar,
+                pointerEvents: "auto",
+              }}
+            >
               {items.length === 0 ? (
                 <div style={{ paddingTop: 16, paddingBottom: 16, display: "flex", justifyContent: "center" }}>
                   <Text color={theme.mutedForeground}>{loading ? "Loading refs..." : "No refs found."}</Text>
@@ -343,6 +393,10 @@ export function BranchRow({
                 })
               )}
             </div>
+            {/* getVirtualizedScrollFadeClassName: 24px fades where more refs are scrolled away. */}
+            {listScrolls && listScroll > 0 ? <ListFade edge="top" color={fadeColor} /> : null}
+            {listScrolls && listScroll < listContentHeight - LIST_MAX_HEIGHT - 1 ? <ListFade edge="bottom" color={fadeColor} /> : null}
+            </div>
             {statusText ? (
               <div style={{ paddingLeft: 10, paddingRight: 10, paddingTop: 6, paddingBottom: 6, borderTopWidth: 1, borderColor: theme.border }}>
                 <Text size="xs" color={theme.mutedForeground}>
@@ -354,6 +408,36 @@ export function BranchRow({
         </DismissableLayer>
       ) : null}
     </div>
+  );
+}
+
+function ListFade({ edge, color }: { edge: "top" | "bottom"; color: string }) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: 0,
+        right: 0,
+        [edge]: 0,
+        height: 24,
+        pointerEvents: "none",
+        background: {
+          type: "linear-gradient",
+          // angle 0 runs bottom to top
+          angle: 0,
+          stops:
+            edge === "bottom"
+              ? [
+                  { color, position: 0 },
+                  { color: alpha(color, 0), position: 1 },
+                ]
+              : [
+                  { color: alpha(color, 0), position: 0 },
+                  { color, position: 1 },
+                ],
+        },
+      }}
+    />
   );
 }
 

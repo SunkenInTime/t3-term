@@ -1,6 +1,8 @@
+import { BRAND_MARKS, type BrandMarkName } from "./brandMarks.ts";
 import { LUCIDE, type LucideName } from "./lucide.gen.ts";
 
-export type IconName = LucideName;
+/** A lucide icon, or a filled brand mark (`brand-*`) that ignores strokeWidth. */
+export type IconName = LucideName | BrandMarkName;
 
 const cache = new Map<string, string>();
 
@@ -8,7 +10,8 @@ function source(name: IconName, strokeWidth: number): string {
   const key = `${name}:${strokeWidth}`;
   let svg = cache.get(key);
   if (svg === undefined) {
-    svg = LUCIDE[name];
+    if (name in BRAND_MARKS) return BRAND_MARKS[name as BrandMarkName];
+    svg = LUCIDE[name as LucideName];
     if (strokeWidth !== 2) svg = svg.replace('stroke-width="2"', `stroke-width="${strokeWidth}"`);
     cache.set(key, svg);
   }

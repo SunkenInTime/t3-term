@@ -72,7 +72,8 @@ interface PendingDefaultBranchAction {
 
 export function sourceControlIconName(status: VcsStatusResult | null | undefined): IconName {
   const definition = sourceControlClients.get(status?.sourceControlProvider?.kind);
-  if (definition.icon === "github") return "github";
+  // sourceControlPresentation.ts: GitHub uses its filled mark.
+  if (definition.icon === "github") return "brand-github";
   if (definition.icon === "gitlab") return "gitlab";
   return "git-pull-request";
 }

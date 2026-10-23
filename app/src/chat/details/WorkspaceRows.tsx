@@ -344,6 +344,8 @@ function editorLabel(editorId: EditorId): string {
 function editorIcon(editorId: EditorId): IconName {
   if (editorId === "file-manager") return "folder";
   if (editorId === "zed") return "square-code";
+  // Web draws each editor's brand mark (OpenInPicker.tsx); Cursor's is bundled here.
+  if (editorId === "cursor") return "brand-cursor";
   return "code";
 }
 
