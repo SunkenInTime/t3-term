@@ -9,6 +9,7 @@ import { detailsPanelOpenAtom, rightPanelOpenAtom, terminalOpenAtom } from "../s
 import { RightPanel } from "../panels/RightPanel.tsx";
 import { ThreadPreviewHost } from "../panels/browser/ThreadPreviewHost.tsx";
 import { DeviceThreadHost } from "../panels/device/DeviceThreadHost.tsx";
+import { DeviceMiniPlayerHost } from "../panels/device/DeviceMiniPlayer.tsx";
 import { TerminalDrawer } from "../terminal/TerminalDrawer.tsx";
 import { Composer } from "./composer/Composer.tsx";
 import { reportTimelineWheel } from "./composer/composerResting.ts";
@@ -34,6 +35,7 @@ export function ChatView({ environmentId, threadId }: { environmentId: Environme
           {detailsOpen ? <ThreadDetailsCard environmentId={environmentId} threadId={threadId} /> : null}
           <ThreadPreviewHost environmentId={environmentId} threadId={threadId} />
           <DeviceThreadHost environmentId={environmentId} threadId={threadId} />
+          <DeviceMiniPlayerHost environmentId={environmentId} threadId={threadId} />
         </div>
         {terminalOpen ? <TerminalDrawer environmentId={environmentId} threadId={threadId} /> : null}
       </div>

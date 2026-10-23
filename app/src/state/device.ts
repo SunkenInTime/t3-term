@@ -14,6 +14,7 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
 import { deviceEnvironment, EMPTY_DEVICE_STATE, useDeviceState } from "../settings/integrations/state.ts";
 import { environmentSession } from "./environment.ts";
+import type { DeviceTabTarget } from "./rightPanel.ts";
 
 export { deviceEnvironment, EMPTY_DEVICE_STATE, useDeviceState };
 export { formatEnvironmentQueryError } from "../settings/query.ts";
@@ -61,4 +62,68 @@ export const deviceSetupDialogAtom = Atom.make<string | null>(null).pipe(Atom.ke
 
 export function openDeviceSetupDialog(threadKey: string): void {
   appAtomRegistry.set(deviceSetupDialogAtom, threadKey);
+}
+
+// ── Floating device (previewMiniPlayerStore.ts, device sources) ─────────
+
+export interface DeviceMiniPlayerState {
+  readonly source: DeviceTabTarget;
+  readonly position: { readonly x: number; readonly y: number } | null;
+  readonly width: number | null;
+  readonly lastInteraction: "drag" | "resize";
+}
+
+const deviceMiniPlayersAtom = Atom.make<Record<string, DeviceMiniPlayerState>>({}).pipe(Atom.keepAlive);
+
+export const deviceMiniPlayerAtom = Atom.family((threadKey: string) =>
+  Atom.make((get) => get(deviceMiniPlayersAtom)[threadKey] ?? null),
+);
+
+const sameDevice = (a: DeviceTabTarget, b: DeviceTabTarget) => a.hostId === b.hostId && a.deviceId === b.deviceId;
+
+function updateDeviceMiniPlayer(
+  threadKey: string,
+  update: (current: DeviceMiniPlayerState | null) => DeviceMiniPlayerState | null,
+): void {
+  appAtomRegistry.update(deviceMiniPlayersAtom, (all) => {
+    const current = all[threadKey] ?? null;
+    const next = update(current);
+    if (next === current) return all;
+    if (next === null) {
+      const { [threadKey]: _removed, ...rest } = all;
+      return rest;
+    }
+    return { ...all, [threadKey]: next };
+  });
+}
+
+export function openDeviceMiniPlayer(threadKey: string, source: DeviceTabTarget): void {
+  updateDeviceMiniPlayer(threadKey, (current) =>
+    current && sameDevice(current.source, source)
+      ? current
+      : { source, position: current?.position ?? null, width: current?.width ?? null, lastInteraction: current?.lastInteraction ?? "drag" },
+  );
+}
+
+export function closeDeviceMiniPlayer(threadKey: string): void {
+  updateDeviceMiniPlayer(threadKey, () => null);
+}
+
+export function moveDeviceMiniPlayer(threadKey: string, source: DeviceTabTarget, position: { x: number; y: number }): void {
+  updateDeviceMiniPlayer(threadKey, (current) =>
+    !current || !sameDevice(current.source, source) ? current : { ...current, position, lastInteraction: "drag" },
+  );
+}
+
+export function resizeDeviceMiniPlayer(
+  threadKey: string,
+  source: DeviceTabTarget,
+  width: number,
+  position?: { x: number; y: number },
+): void {
+  updateDeviceMiniPlayer(threadKey, (current) =>
+    !current || !sameDevice(current.source, source)
+      ? current
+      : { ...current, width, position: position ?? current.position, lastInteraction: "resize" },
+  );
 }

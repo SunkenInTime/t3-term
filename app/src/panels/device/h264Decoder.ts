@@ -18,7 +18,7 @@
 //   holds one frame back; the PAM encoder does not, and its header carries the
 //   frame size, so a stream that changes size needs no extra signalling.
 import type { Subprocess } from "bun";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 export interface DecodedFrame {
   readonly width: number;
@@ -74,7 +74,7 @@ let resolvedFfmpeg: string | null | undefined;
 export function ffmpegBinary(): string | null {
   if (resolvedFfmpeg !== undefined) return resolvedFfmpeg;
   const override = process.env.T3TERM_FFMPEG?.trim();
-  resolvedFfmpeg = override ? override : Bun.which("ffmpeg");
+  resolvedFfmpeg = override ? (existsSync(override) ? override : null) : Bun.which("ffmpeg");
   return resolvedFfmpeg;
 }
 

@@ -109,6 +109,16 @@ export function DeviceStreamView(props: {
   readonly axOverlay?: boolean;
   readonly onHandle?: (handle: DeviceStreamHandle | null) => void;
   readonly onScreen?: (screen: DeviceScreenSize | null) => void;
+  /** Web: `bg-black/90` without the phone view (the floating player), else the panel background. */
+  readonly background?: string;
+  /**
+   * gpuix delivers a press to every element under the pointer. A host whose own
+   * controls overlap the screen (the floating player's handle) reports here when
+   * the pointer is on them, so the device gets no touch.
+   */
+  readonly pointerBlocked?: () => boolean;
+  /** Corner radius of the screen image: gpuix clips an <img> by its own radius, not its parent's. */
+  readonly screenRadius?: number;
 }) {
   const theme = useTheme();
   const renderer = useGpuixRequired();
@@ -302,7 +312,8 @@ export function DeviceStreamView(props: {
         height: "100%",
         minHeight: 0,
         minWidth: 0,
-        backgroundColor: theme.background,
+        backgroundColor: props.background ?? theme.background,
+        ...(props.screenRadius ? { borderRadius: props.screenRadius, overflow: "hidden" } : {}),
       }}
     >
       <div
@@ -339,6 +350,7 @@ export function DeviceStreamView(props: {
           testId="device-frame"
           onMouseDown={(event: EventPayload) => {
             if (event.button !== undefined && event.button !== 0) return;
+            if (callbacks.current.pointerBlocked?.()) return;
             focusHost();
             const point = normalizedPoint(event);
             if (!point) return;
@@ -361,7 +373,15 @@ export function DeviceStreamView(props: {
           <img
             ref={imgRef}
             objectFit="fill"
-            style={{ position: "absolute", top: 0, left: 0, width: frame.width, height: frame.height, pointerEvents: "none" }}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: frame.width,
+              height: frame.height,
+              pointerEvents: "none",
+              ...(props.screenRadius ? { borderRadius: props.screenRadius } : {}),
+            }}
           />
           {axElements.map((element) => (
             <div
@@ -409,6 +429,7 @@ export function DeviceStreamView(props: {
               name={props.deviceName ?? "Device"}
               description={props.deviceDescription ?? ""}
               stage="stream"
+              {...(props.screenRadius ? { radius: props.screenRadius } : {})}
               message={status === "error" ? (detail ?? "Stream failed.") : "Connecting video…"}
               error={status === "error"}
             >
@@ -441,6 +462,7 @@ export function DeviceStreamView(props: {
               borderWidth: 2,
               borderColor: theme.primary,
               pointerEvents: "none",
+              ...(props.screenRadius ? { borderRadius: props.screenRadius } : {}),
             }}
           />
         ) : null}

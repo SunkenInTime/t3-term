@@ -13,6 +13,7 @@ import { Icon } from "../../ui/Icon.tsx";
 import { Button, IconButton, Text } from "../../ui/primitives.tsx";
 import { alpha, RADIUS, useTheme } from "../../ui/theme.ts";
 import { DeviceLoadingView } from "./DeviceLoadingView.tsx";
+import { floatDevice } from "./DeviceMiniPlayer.tsx";
 import { DeviceSetupDialog } from "./DeviceSetup.tsx";
 import { DeviceWorkspace } from "./DeviceWorkspace.tsx";
 
@@ -90,6 +91,16 @@ export function DevicePanel(props: {
       });
       settleOperation(null);
     }
+  };
+
+  const floatActive = () => {
+    if (!activeDevice) return;
+    floatDevice(environmentId, threadId, {
+      hostId: activeDevice.hostId,
+      deviceId: activeDevice.id,
+      platform: activeDevice.platform,
+      name: activeDevice.name,
+    });
   };
 
   const closeActive = (powerOff: boolean) => {
@@ -176,6 +187,7 @@ export function DevicePanel(props: {
             hostLabel={state.hosts.find((host) => host.id === activeDevice.hostId)?.label ?? "Device host"}
             hostDiagnostics={diagnostics.find(({ hostId }) => hostId === activeDevice.hostId)?.detail}
             visible={props.visible}
+            onFloat={floatActive}
             onClose={() => closeActive(false)}
             onPowerOff={() => closeActive(true)}
           />

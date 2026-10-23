@@ -14,6 +14,8 @@ export function DeviceLoadingView(props: {
   readonly error?: boolean;
   readonly children?: ReactNode;
   readonly testId?: string;
+  /** Rounds the backdrop inside the floating player, whose clip does not round children. */
+  readonly radius?: number;
 }) {
   const theme = useTheme();
   return (
@@ -27,13 +29,14 @@ export function DeviceLoadingView(props: {
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: theme.background,
+        ...(props.radius ? { borderRadius: props.radius } : {}),
         paddingLeft: 24,
         paddingRight: 24,
         paddingTop: 40,
         paddingBottom: 40,
       }}
     >
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, maxWidth: 384 }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, width: "100%", maxWidth: 384 }}>
         <div
           style={{
             display: "flex",
@@ -59,9 +62,9 @@ export function DeviceLoadingView(props: {
             </Text>
           ) : null}
         </div>
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, maxWidth: "100%" }}>
           {!props.error ? <Icon name="loader-circle" size={12} color={theme.mutedForeground} /> : null}
-          <Text size="xs" color={theme.mutedForeground} style={{ textAlign: "center" }}>
+          <Text size="xs" color={theme.mutedForeground} style={{ textAlign: "center", flexShrink: 1, minWidth: 0 }}>
             {props.message}
           </Text>
         </div>
