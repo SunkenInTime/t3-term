@@ -1,0 +1,436 @@
+// Pull request atoms. Wiring follows apps/web/src/state/pullRequests.ts; the list-page state
+// that web keeps in URL search params (apps/web/src/routes/_chat.pull-requests.tsx) and in its
+// right panel store (apps/web/src/rightPanelStore.ts) lives in atoms here.
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
+import { useAtomValue } from "@effect/atom-react";
+import { createPullRequestEnvironmentAtoms } from "@t3tools/client-runtime/state/pull-requests";
+import type {
+  EnvironmentId,
+  ProjectId,
+  PullRequestListInput,
+  PullRequestListStatsInput,
+  ServerConfig,
+} from "@t3tools/contracts";
+import { useMemo } from "react";
+import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/reactivity";
+
+import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
+import { termHome } from "../runtime/paths.ts";
+import {
+  mergePullRequestLists,
+  type EnvironmentPullRequestStat,
+  type MergedPullRequestList,
+} from "../web/components/pullRequest/pullRequestList.logic.ts";
+import {
+  pullRequestListPreferences,
+  readPullRequestListPreferences,
+  writePullRequestListPreferences,
+  type PullRequestListPreferences,
+} from "../web/components/pullRequest/pullRequestListPreferences.ts";
+import { pullRequestSurfaceId } from "../web/components/pullRequest/pullRequestListGroups.logic.ts";
+import {
+  AVAILABLE_CONNECTION_STATE,
+  connectionProjectionPhase,
+} from "@t3tools/client-runtime/connection";
+import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
+import { environmentCatalog, environmentShell, serverEnvironment } from "./environment.ts";
+import { routeAtom } from "./ui.ts";
+
+export const pullRequestEnvironment = createPullRequestEnvironmentAtoms(connectionAtomRuntime);
+
+// ── Storage ─────────────────────────────────────────────────────────────
+
+/**
+ * Web keeps list preferences and the last list snapshot in localStorage. This is the same
+ * getItem/setItem shape over one JSON file in the t3-term home, so the ported readers and
+ * writers run unchanged.
+ */
+function createFileStorage(file: string): Pick<Storage, "getItem" | "setItem"> {
+  let cache: Record<string, string> | null = null;
+  const load = (): Record<string, string> => {
+    if (cache !== null) return cache;
+    try {
+      const parsed = JSON.parse(NodeFS.readFileSync(file, "utf8")) as unknown;
+      cache = parsed && typeof parsed === "object" ? (parsed as Record<string, string>) : {};
+    } catch {
+      cache = {};
+    }
+    return cache;
+  };
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  return {
+    getItem: (key) => load()[key] ?? null,
+    setItem: (key, value) => {
+      const values = load();
+      if (values[key] === value) return;
+      values[key] = value;
+      // Snapshots arrive in bursts while a list loads; one write per burst is enough.
+      if (flushTimer !== null) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        try {
+          NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
+          NodeFS.writeFileSync(file, JSON.stringify(values));
+        } catch {}
+      }, 250);
+    },
+  };
+}
+
+export const pullRequestStorage = createFileStorage(
+  NodePath.join(termHome(), "pull-requests-storage.json"),
+);
+
+// ── Page search state (web: URL search params) ──────────────────────────
+
+/** apps/web/src/components/pullRequest/usePullRequestListView.ts `PullRequestsSearch`. */
+export interface PullRequestsSearch extends PullRequestListPreferences {
+  readonly environmentId?: EnvironmentId;
+  readonly projectId?: ProjectId;
+  readonly host?: string;
+  readonly repository?: string;
+  readonly number?: number;
+  readonly selectedProjectId?: ProjectId;
+  readonly selectedHost?: string;
+  readonly selectedEnvironmentId?: EnvironmentId;
+}
+
+export type PullRequestsSearchPatch = {
+  [Key in keyof PullRequestsSearch]?: PullRequestsSearch[Key] | undefined;
+};
+
+/** The same normalisation `updateSearch` in PullRequestsPage.tsx applies to the URL. */
+export function normalizePullRequestsSearch(
+  previous: PullRequestsSearch,
+  patch: PullRequestsSearchPatch,
+): PullRequestsSearch {
+  const next = { ...previous, ...patch };
+  return {
+    involvement: next.involvement ?? previous.involvement,
+    state: next.state ?? previous.state,
+    ...(next.sort && next.sort !== "ready" ? { sort: next.sort } : {}),
+    ...(next.repository ? { repository: next.repository } : {}),
+    ...(next.number ? { number: next.number } : {}),
+    ...(next.projectId ? { projectId: next.projectId } : {}),
+    ...(next.environmentId ? { environmentId: next.environmentId } : {}),
+    ...(next.host ? { host: next.host } : {}),
+    ...(next.selectedHost ? { selectedHost: next.selectedHost } : {}),
+    ...(next.selectedProjectId ? { selectedProjectId: next.selectedProjectId } : {}),
+    ...(next.selectedEnvironmentId ? { selectedEnvironmentId: next.selectedEnvironmentId } : {}),
+    ...(next.q ? { q: next.q } : {}),
+    ...(next.draft ? { draft: next.draft } : {}),
+    ...(next.review ? { review: next.review } : {}),
+    ...(next.checks ? { checks: next.checks } : {}),
+    ...(next.author ? { author: next.author } : {}),
+    ...(next.labels && next.labels.length > 0 ? { labels: next.labels } : {}),
+  };
+}
+
+export const pullRequestsSearchAtom = Atom.make<PullRequestsSearch>(
+  readPullRequestListPreferences(pullRequestStorage),
+).pipe(Atom.keepAlive, Atom.withLabel("t3term-pull-requests:search"));
+
+export function updatePullRequestsSearch(patch: PullRequestsSearchPatch): void {
+  appAtomRegistry.set(
+    pullRequestsSearchAtom,
+    normalizePullRequestsSearch(appAtomRegistry.get(pullRequestsSearchAtom), patch),
+  );
+}
+
+/** `updateListScope` in PullRequestsPage.tsx: remembers the list scope, then applies it. */
+export function updatePullRequestListScope(patch: PullRequestsSearchPatch): void {
+  const search = appAtomRegistry.get(pullRequestsSearchAtom);
+  writePullRequestListPreferences(
+    pullRequestListPreferences({
+      ...search,
+      ...patch,
+      involvement: patch.involvement ?? search.involvement,
+      state: patch.state ?? search.state,
+    } as PullRequestListPreferences),
+    pullRequestStorage,
+  );
+  updatePullRequestsSearch(patch);
+}
+
+/**
+ * Opens the Pull requests page, optionally narrowed (e.g. `{ projectId, environmentId }` for one
+ * project, or `{ repository, number, selectedProjectId, selectedEnvironmentId }` to open one pull
+ * request's detail). Like web's `navigate({ to: "/pull-requests", search })`.
+ */
+export function openPullRequestsPage(patch: PullRequestsSearchPatch = {}): void {
+  if (Object.keys(patch).length > 0) updatePullRequestsSearch(patch);
+  appAtomRegistry.set(routeAtom, { kind: "pull-requests" });
+}
+
+// ── Detail panel (web: rightPanelStore for PULL_REQUESTS_PANEL_REF) ──────
+
+export type PullRequestDetailTab = "summary" | "timeline" | "code";
+
+export interface PullRequestSurface {
+  readonly id: string;
+  readonly environmentId?: string;
+  readonly projectId: string;
+  readonly host?: string;
+  readonly repository: string;
+  readonly number: number;
+  readonly detailTab?: PullRequestDetailTab;
+}
+
+export interface PullRequestPanelState {
+  readonly isOpen: boolean;
+  readonly surfaces: ReadonlyArray<PullRequestSurface>;
+  readonly activeSurfaceId: string | null;
+}
+
+export const pullRequestPanelAtom = Atom.make<PullRequestPanelState>({
+  isOpen: false,
+  surfaces: [],
+  activeSurfaceId: null,
+}).pipe(Atom.keepAlive, Atom.withLabel("t3term-pull-requests:panel"));
+
+function updatePanel(update: (state: PullRequestPanelState) => PullRequestPanelState): void {
+  appAtomRegistry.set(pullRequestPanelAtom, update(appAtomRegistry.get(pullRequestPanelAtom)));
+}
+
+export const pullRequestPanel = {
+  open(target: Omit<PullRequestSurface, "id">): void {
+    const surface: PullRequestSurface = { ...target, id: pullRequestSurfaceId(target) };
+    updatePanel((state) => ({
+      isOpen: true,
+      surfaces: state.surfaces.some((entry) => entry.id === surface.id)
+        ? state.surfaces
+        : [...state.surfaces, surface],
+      activeSurfaceId: surface.id,
+    }));
+  },
+  show(): void {
+    updatePanel((state) => ({ ...state, isOpen: state.activeSurfaceId !== null }));
+  },
+  close(): void {
+    updatePanel((state) => ({ ...state, isOpen: false }));
+  },
+  activate(surfaceId: string): void {
+    updatePanel((state) => ({ ...state, isOpen: true, activeSurfaceId: surfaceId }));
+  },
+  closeSurface(surfaceId: string): void {
+    updatePanel((state) => {
+      const index = state.surfaces.findIndex((surface) => surface.id === surfaceId);
+      if (index < 0) return state;
+      const surfaces = state.surfaces.filter((surface) => surface.id !== surfaceId);
+      const activeSurfaceId =
+        state.activeSurfaceId !== surfaceId
+          ? state.activeSurfaceId
+          : (surfaces[Math.min(index, surfaces.length - 1)]?.id ?? null);
+      return { isOpen: state.isOpen && activeSurfaceId !== null, surfaces, activeSurfaceId };
+    });
+  },
+  setDetailTab(surfaceId: string, detailTab: PullRequestDetailTab): void {
+    updatePanel((state) => ({
+      ...state,
+      surfaces: state.surfaces.map((surface) =>
+        surface.id === surfaceId ? { ...surface, detailTab } : surface,
+      ),
+    }));
+  },
+};
+
+// ── Environments that can list pull requests ─────────────────────────────
+
+export interface PullRequestEnvironmentPresentation {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+  readonly serverConfig: ServerConfig | null;
+}
+
+/** The parts of web's `useEnvironments()` the page reads. */
+export const pullRequestEnvironmentsAtom = Atom.make(
+  (get): ReadonlyArray<PullRequestEnvironmentPresentation> => {
+    const catalog = get(environmentCatalog.catalogValueAtom);
+    return [...catalog.entries].map(([environmentId, entry]) => ({
+      environmentId,
+      label: entry.target.label,
+      serverConfig: get(serverEnvironment.configValueAtom(environmentId)),
+    }));
+  },
+).pipe(Atom.withLabel("t3term-pull-requests:environments"));
+
+/**
+ * apps/web/src/state/shell.ts `allEnvironmentShellsBootstrappedAtom`: every enabled environment
+ * has sent its first shell snapshot, or has given up connecting.
+ */
+export const pullRequestProjectsKnownAtom = Atom.make((get) => {
+  const catalog = get(environmentCatalog.catalogValueAtom);
+  if (!catalog.isReady) return false;
+  for (const environmentId of enabledEnvironmentIds(catalog)) {
+    if (Option.isSome(get(environmentShell.stateValueAtom(environmentId)).snapshot)) continue;
+    const connection = Option.getOrElse(
+      AsyncResult.value(get(environmentCatalog.stateAtom(environmentId))),
+      () => AVAILABLE_CONNECTION_STATE,
+    );
+    if (connectionProjectionPhase(connection) !== "disconnected") return false;
+  }
+  return true;
+}).pipe(Atom.withLabel("t3term-pull-requests:projects-known"));
+
+// ── Merged list queries (apps/web/src/state/pullRequests.ts) ─────────────
+
+export interface EnvironmentQueryTarget<Input> {
+  readonly environmentId: EnvironmentId;
+  readonly input: Input;
+}
+
+interface MergedEnvironmentQueryView<A> {
+  readonly values: ReadonlyArray<readonly [EnvironmentId, A]>;
+  readonly error: string | null;
+  readonly isPending: boolean;
+}
+
+function formatEnvironmentQueryError(cause: Cause.Cause<unknown>): string {
+  const error = Cause.squash(cause);
+  return error instanceof Error && error.message.trim().length > 0
+    ? error.message
+    : "The environment request failed.";
+}
+
+/**
+ * React cannot subscribe to a list of atoms whose length changes, so the fan-out happens inside
+ * one derived atom keyed by the targets. An environment that fails contributes nothing rather
+ * than blanking the page.
+ */
+function createMergedEnvironmentQuery<Input, A>(
+  label: string,
+  atomFor: (
+    target: EnvironmentQueryTarget<Input>,
+  ) => Atom.Atom<AsyncResult.AsyncResult<A, unknown>>,
+) {
+  const family = Atom.family((key: string) =>
+    Atom.make((get): MergedEnvironmentQueryView<A> => {
+      const targets = JSON.parse(key) as ReadonlyArray<EnvironmentQueryTarget<Input>>;
+      const values: Array<readonly [EnvironmentId, A]> = [];
+      let error: string | null = null;
+      let isPending = false;
+      for (const target of targets) {
+        const result = get(atomFor(target));
+        isPending ||= result.waiting;
+        if (result._tag === "Failure" && error === null) {
+          error = formatEnvironmentQueryError(result.cause);
+        }
+        const value = Option.getOrNull(AsyncResult.value(result));
+        if (value !== null) values.push([target.environmentId, value]);
+      }
+      return { values, error, isPending };
+    }).pipe(Atom.withLabel(`${label}:${key}`)),
+  );
+  const empty = Atom.make<MergedEnvironmentQueryView<A>>({
+    values: [],
+    error: null,
+    isPending: false,
+  }).pipe(Atom.withLabel(`${label}:empty`));
+  return function useMergedQuery(targets: ReadonlyArray<EnvironmentQueryTarget<Input>>) {
+    const key = JSON.stringify(targets);
+    const view = useAtomValue(targets.length === 0 ? empty : family(key));
+    const refresh = (override?: ReadonlyArray<EnvironmentQueryTarget<Input>>) => {
+      const refreshTargets =
+        override ?? (JSON.parse(key) as ReadonlyArray<EnvironmentQueryTarget<Input>>);
+      for (const atom of new Set(refreshTargets.map(atomFor))) {
+        appAtomRegistry.refresh(atom);
+      }
+    };
+    return { ...view, refresh };
+  };
+}
+
+const usePullRequestListsQuery = createMergedEnvironmentQuery(
+  "t3term-pull-requests:list",
+  pullRequestEnvironment.list,
+);
+
+const usePullRequestStatsQuery = createMergedEnvironmentQuery(
+  "t3term-pull-requests:list-stats",
+  pullRequestEnvironment.listStats,
+);
+
+const usePullRequestTurnRefreshQuery = createMergedEnvironmentQuery(
+  "t3term-pull-requests:turn-refreshes",
+  ({ environmentId }: EnvironmentQueryTarget<Readonly<Record<string, never>>>) =>
+    pullRequestEnvironment.refreshes({ environmentId, input: {} }),
+);
+
+export function usePullRequestTurnRefreshes(
+  environmentIds: ReadonlyArray<EnvironmentId>,
+): ReadonlyArray<readonly [EnvironmentId, number]> {
+  return usePullRequestTurnRefreshQuery(
+    environmentIds.map((environmentId) => ({ environmentId, input: {} })),
+  ).values;
+}
+
+export interface MergedPullRequestListView {
+  readonly data: MergedPullRequestList | null;
+  readonly error: string | null;
+  readonly isPending: boolean;
+  readonly refresh: (targets?: ReadonlyArray<EnvironmentQueryTarget<PullRequestListInput>>) => void;
+}
+
+export function usePullRequestList(
+  targets: ReadonlyArray<EnvironmentQueryTarget<PullRequestListInput>>,
+): MergedPullRequestListView {
+  const query = usePullRequestListsQuery(targets);
+  // Web's React Compiler caches this on `query.values`; render-time state checks compare the
+  // merged list by identity, so it has to stay the same object until the answers change.
+  const data = useMemo(() => mergePullRequestLists(query.values), [query.values]);
+  return { data, error: query.error, isPending: query.isPending, refresh: query.refresh };
+}
+
+export function usePullRequestListStats(
+  targets: ReadonlyArray<EnvironmentQueryTarget<PullRequestListStatsInput>>,
+): {
+  readonly stats: ReadonlyArray<EnvironmentPullRequestStat> | null;
+  readonly isPending: boolean;
+  readonly refresh: (
+    targets?: ReadonlyArray<EnvironmentQueryTarget<PullRequestListStatsInput>>,
+  ) => void;
+} {
+  const query = usePullRequestStatsQuery(targets);
+  const stats = useMemo(
+    () =>
+      query.values.length === 0
+        ? null
+        : query.values.flatMap(([environmentId, result]) =>
+            result.stats.map((stat) => ({ ...stat, environmentId })),
+          ),
+    [query.values],
+  );
+  return { stats, isPending: query.isPending, refresh: query.refresh };
+}
+
+// ── Single-query helper (apps/web/src/state/query.ts useEnvironmentQuery) ─
+
+const EMPTY_ASYNC_RESULT_ATOM = Atom.make(AsyncResult.initial<never, never>(false)).pipe(
+  Atom.withLabel("t3term-pull-requests:empty-query"),
+);
+
+export interface EnvironmentQueryView<A> {
+  readonly data: A | null;
+  readonly error: string | null;
+  readonly failure: unknown;
+  readonly isPending: boolean;
+  readonly refresh: () => void;
+}
+
+export function useEnvironmentQuery<A, E>(
+  atom: Atom.Atom<AsyncResult.AsyncResult<A, E>> | null,
+): EnvironmentQueryView<A> {
+  const selectedAtom = (atom ?? EMPTY_ASYNC_RESULT_ATOM) as Atom.Atom<AsyncResult.AsyncResult<A, E>>;
+  const result = useAtomValue(selectedAtom);
+  return {
+    data: Option.getOrNull(AsyncResult.value(result)),
+    error: result._tag === "Failure" ? formatEnvironmentQueryError(result.cause) : null,
+    failure: result._tag === "Failure" ? Option.getOrNull(Cause.findErrorOption(result.cause)) : null,
+    isPending: atom !== null && result.waiting,
+    refresh: () => appAtomRegistry.refresh(selectedAtom),
+  };
+}
