@@ -39,7 +39,9 @@ import { rightPanelMaximizedAtom, rightPanelSurfaceAtom, rightPanelSurfaceReques
 import { selectedPullRequestAtom } from "../state/gitPullRequests.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { Icon, type IconName } from "../ui/Icon.tsx";
-import { Menu, MenuItem, MenuSeparator, Tooltip } from "../ui/overlay.tsx";
+import { Menu, MenuItem, MenuSeparator, Tooltip, surfaceStyle } from "../ui/overlay.tsx";
+import { FloatingLayer } from "@gpuix/react/floating";
+import { useBrowserDefaults } from "../web/browser/browserDefaults.ts";
 import { IconButton, Kbd, Text } from "../ui/primitives.tsx";
 import { alpha, LAYOUT, RADIUS, useTheme } from "../ui/theme.ts";
 import { TabCloseButton } from "../terminal/ThreadTerminalDrawer.tsx";
@@ -88,6 +90,8 @@ interface SurfaceAction {
   readonly shortcut: string;
   readonly available: boolean;
   readonly onClick: () => void;
+  /** Browser only: open the tab in a browser profile (web onAddBrowserInProfile). */
+  readonly onClickProfile?: (profileId: string) => void;
 }
 
 /** Room for the pinned titlebar controls: three 28px toggles, gaps and the 12px inset. */
@@ -261,6 +265,16 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
     terminalLabels.set(session.target.terminalId, resolveTerminalSessionLabel(session.target.terminalId, session.state.summary));
   }
 
+  /** useRightPanelActions createBrowserSurface: no profile is the default profile. */
+  function openBrowser(profileId?: string) {
+    void addBrowserSurface(threadRefOf(environmentId, threadId), profileId).then((result) => {
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        toast({ type: "error", title: "Unable to open browser", description: error instanceof Error ? error.message : undefined });
+      }
+    });
+  }
+
   const visiblePullRequests = shell ? visibleThreadPullRequests(shell.pullRequests) : [];
   const hasProject = terminalContext !== null;
   const actions: SurfaceAction[] = [
@@ -271,14 +285,8 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
       shortcut: "B",
       // ChatView: isPreviewSupportedInRuntime() || useEnvironmentSupportsServerBrowser; t3-term has no desktop bridge.
       available: serverBrowser,
-      onClick: () => {
-        void addBrowserSurface(threadRefOf(environmentId, threadId)).then((result) => {
-          if (result._tag === "Failure") {
-            const error = squashAtomCommandFailure(result);
-            toast({ type: "error", title: "Unable to open browser", description: error instanceof Error ? error.message : undefined });
-          }
-        });
-      },
+      onClick: () => openBrowser(),
+      onClickProfile: (profileId) => openBrowser(profileId),
     },
     {
       key: "terminal",
@@ -424,7 +432,7 @@ export function RightPanel({ environmentId, threadId }: { environmentId: Environ
               </Tooltip>
             )}
           >
-            <AddSurfaceMenuItems actions={actions} />
+            <AddSurfaceMenuItems actions={actions} onClose={() => setAddMenuOpen(false)} />
           </Menu>
         </div>
       </div>
@@ -602,14 +610,26 @@ function SurfaceLauncher({ actions }: { actions: readonly SurfaceAction[] }) {
   );
 }
 
-function AddSurfaceMenuItems({ actions }: { actions: readonly SurfaceAction[] }) {
+function AddSurfaceMenuItems({ actions, onClose }: { actions: readonly SurfaceAction[]; onClose: () => void }) {
   const theme = useTheme();
+  const [browserSubmenuOpen, setBrowserSubmenuOpen] = useState(false);
   return (
     <>
       {actions.map((action) => {
+        if (action.key === "browser" && action.available && action.onClickProfile) {
+          return (
+            <BrowserProfileMenuItem
+              key={action.label}
+              action={action}
+              open={browserSubmenuOpen}
+              onOpenChange={setBrowserSubmenuOpen}
+              onClose={onClose}
+            />
+          );
+        }
         const item = (
+          <div key={action.label} style={{ display: "flex", flexDirection: "column" }} onMouseEnter={() => setBrowserSubmenuOpen(false)}>
           <MenuItem
-            key={action.label}
             icon={action.icon}
             disabled={!action.available}
             onSelect={action.onClick}
@@ -622,6 +642,7 @@ function AddSurfaceMenuItems({ actions }: { actions: readonly SurfaceAction[] })
           >
             {action.label}
           </MenuItem>
+          </div>
         );
         return action.available ? (
           item
@@ -632,6 +653,112 @@ function AddSurfaceMenuItems({ actions }: { actions: readonly SurfaceAction[] })
         );
       })}
     </>
+  );
+}
+
+const BROWSER_PROFILE_SUBMENU_WIDTH = 160;
+
+/**
+ * RightPanelTabs add-surface menu: Browser is a MenuSub. Clicking the row opens
+ * the default profile; hovering it lists the profiles (Default, Incognito, and
+ * any the user added) to open the tab in.
+ */
+function BrowserProfileMenuItem({
+  action,
+  open,
+  onOpenChange,
+  onClose,
+}: {
+  action: SurfaceAction;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onClose: () => void;
+}) {
+  const theme = useTheme();
+  const profiles = useBrowserDefaults().profiles;
+  const windowSize = useWindowSize();
+  const [rowRight, setRowRight] = useState(0);
+  // MenuSubPopup flips to the left when the right side has no room (the menu sits at the panel's right edge).
+  const side = rowRight + 8 + BROWSER_PROFILE_SUBMENU_WIDTH > windowSize.width ? "left" : "right";
+  return (
+    <div style={{ display: "flex", position: "relative", flexDirection: "column" }}>
+      <div
+        testId={`right-panel-add-${action.key}`}
+        onLayout={(event) => setRowRight((event.x ?? 0) + (event.width ?? 0))}
+        onMouseEnter={() => onOpenChange(true)}
+        onClick={() => {
+          onClose();
+          action.onClick();
+        }}
+        style={{
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 8,
+          minHeight: 28,
+          paddingLeft: 8,
+          paddingRight: 8,
+          borderRadius: RADIUS.sm,
+          cursor: "pointer",
+          backgroundColor: open ? theme.accent : "#00000000",
+          hover: { backgroundColor: theme.accent },
+        }}
+      >
+        <Icon name={action.icon} size={16} color={theme.mutedForeground} />
+        <Text color={theme.foreground} style={{ flexGrow: 1, minWidth: 0 }}>
+          {action.label}
+        </Text>
+        <Text size="xs" color={alpha(theme.mutedForeground, 0.72)} style={{ marginLeft: 16 }}>
+          {action.shortcut}
+        </Text>
+        <Icon name="chevron-right" size={16} color={theme.mutedForeground} />
+      </div>
+      {open ? (
+        <FloatingLayer
+          side={side}
+          align="start"
+          sideOffset={8}
+          alignOffset={-4}
+          testId="right-panel-add-browser-profiles"
+          style={{
+            ...surfaceStyle(theme),
+            display: "flex",
+            flexDirection: "column",
+            padding: 4,
+            minWidth: BROWSER_PROFILE_SUBMENU_WIDTH,
+            maxWidth: 224,
+          }}
+        >
+          {profiles.map((profile) => (
+            <div
+              key={profile.id}
+              testId={`right-panel-add-browser-profile-${profile.id}`}
+              // The submenu lies outside the menu's surface, whose outside press
+              // closes the menu before a click could land: act on the press.
+              onMouseDown={() => {
+                onClose();
+                action.onClickProfile?.(profile.id);
+              }}
+              style={{
+                display: "flex",
+                flexDirection: "row",
+                alignItems: "center",
+                minHeight: 28,
+                paddingLeft: 8,
+                paddingRight: 8,
+                borderRadius: RADIUS.sm,
+                cursor: "pointer",
+                hover: { backgroundColor: theme.accent },
+              }}
+            >
+              <Text color={theme.foreground} truncate>
+                {profile.name}
+              </Text>
+            </div>
+          ))}
+        </FloatingLayer>
+      ) : null}
+    </div>
   );
 }
 
