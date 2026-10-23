@@ -2,6 +2,7 @@
 // icon/chevron sizing and the 1×16 separator between control blocks.
 //   sm: h 28, px 10, gap 6, 14px medium muted label, 16px icons, chevron 14 @2.25
 //   xs: h 24, px 7, gap 4, 12px normal muted/70 label, 14px icons (resting strip)
+import type { Props } from "@gpuix/react";
 import type { ReactNode } from "react";
 
 import { Icon, type IconName } from "../../ui/Icon.tsx";
@@ -10,6 +11,7 @@ import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 
 export type ComposerControlSize = "sm" | "xs";
 
+/** Extra props (mouse/focus handlers, tabIndex) pass through so Tooltip/Menu triggers can wrap it. */
 export function ComposerControl({
   children,
   size = "sm",
@@ -18,18 +20,20 @@ export function ComposerControl({
   onClick,
   testId,
   style,
+  ...rest
 }: {
   children: ReactNode;
   size?: ComposerControlSize;
   pressed?: boolean;
   disabled?: boolean;
-  onClick?: () => void;
+  onClick?: Props["onClick"];
   testId?: string;
   style?: Style;
-}) {
+} & Omit<Props, "style" | "onClick" | "children">) {
   const theme = useTheme();
   return (
     <div
+      {...rest}
       testId={testId}
       onClick={disabled ? undefined : onClick}
       style={{
@@ -112,15 +116,24 @@ export function ComposerControlIcon({
   );
 }
 
+/**
+ * web gives control svgs `-mx-0.5`; measured against Chrome the chevron sits 2px closer to its label. gpuix
+ * mislays flex items with negative margins, so the glyph overhangs a narrower box instead.
+ */
 export function ComposerControlChevron({ size = "sm", color }: { size?: ComposerControlSize; color?: string }) {
   const theme = useTheme();
+  const glyph = size === "xs" ? 12 : 14;
   return (
-    <Icon
-      name="chevron-down"
-      size={size === "xs" ? 12 : 14}
-      strokeWidth={2.25}
-      color={color ?? (size === "xs" ? alpha(theme.mutedForeground, 0.35) : theme.mutedForeground)}
-    />
+    <div style={{ position: "relative", width: glyph - 2, height: glyph, flexShrink: 0 }}>
+      <div style={{ position: "absolute", top: 0, left: -2, width: glyph, height: glyph }}>
+        <Icon
+          name="chevron-down"
+          size={glyph}
+          strokeWidth={2.25}
+          color={color ?? (size === "xs" ? alpha(theme.mutedForeground, 0.35) : theme.mutedForeground)}
+        />
+      </div>
+    </div>
   );
 }
 

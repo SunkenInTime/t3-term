@@ -17,13 +17,17 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
+import { createAttachmentEnvironmentAtoms } from "@t3tools/client-runtime/state/attachments";
 import { resolveModelPreferences } from "@t3tools/shared/serverSettings";
 import { Atom } from "effect/reactivity";
 
-import { appAtomRegistry } from "../runtime/runtime.ts";
+import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
 import { termHome } from "../runtime/paths.ts";
 import { serverEnvironment } from "./environment.ts";
 import { modelPickerOpenAtom } from "./ui.ts";
+
+/** Upload URL minting and pending-upload release (client-runtime state/attachments). */
+export const composerAttachmentEnvironment = createAttachmentEnvironmentAtoms(connectionAtomRuntime);
 
 // ── Targets ─────────────────────────────────────────────────────────────
 
