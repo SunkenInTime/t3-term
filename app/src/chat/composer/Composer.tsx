@@ -125,7 +125,7 @@ import {
   ComposerAttachmentMediaRow,
 } from "./ComposerAttachmentStrip.tsx";
 import { ComposerTopBanners } from "./ComposerBanner.tsx";
-import { ComposerCommandMenu } from "./ComposerCommandMenu.tsx";
+import { ComposerCommandMenu, ComposerCommandMenuLayer } from "./ComposerCommandMenu.tsx";
 import { ComposerControlSeparator } from "./ComposerControl.tsx";
 import { ComposerFooterModeControls, type RuntimeModeOption } from "./ComposerFooterControls.tsx";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions.tsx";
@@ -1203,24 +1203,20 @@ function ComposerBody({
       >
         <SurfaceHighlight />
         {menuIsOpen && surfaceWidth !== null ? (
-          <div style={{ position: "absolute", top: 17, left: 22, right: 22, height: 0 }}>
-            <anchored side="top" align="start" deferred priority={2} occlude style={{ pointerEvents: "auto" }}>
-              <div style={{ display: "flex", flexDirection: "column", width: Math.max(0, surfaceWidth - 44) }}>
-                <ComposerCommandMenu
-                  items={menu.items}
-                  isLoading={menu.isLoading}
-                  triggerKind={trigger?.kind ?? null}
-                  emptyStateText={menu.emptyState}
-                  activeItemId={activeMenuItemId}
-                  onHighlightedItemChange={(itemId) => {
-                    setHighlightedItemId(itemId);
-                    setHighlightedSearchKey(menuSearchKey);
-                  }}
-                  onSelect={onSelectMenuItem}
-                />
-              </div>
-            </anchored>
-          </div>
+          <ComposerCommandMenuLayer surfaceWidth={surfaceWidth}>
+            <ComposerCommandMenu
+              items={menu.items}
+              isLoading={menu.isLoading}
+              triggerKind={trigger?.kind ?? null}
+              emptyStateText={menu.emptyState}
+              activeItemId={activeMenuItemId}
+              onHighlightedItemChange={(itemId) => {
+                setHighlightedItemId(itemId);
+                setHighlightedSearchKey(menuSearchKey);
+              }}
+              onSelect={onSelectMenuItem}
+            />
+          </ComposerCommandMenuLayer>
         ) : null}
         <div
           style={{

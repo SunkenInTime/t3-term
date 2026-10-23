@@ -39,7 +39,6 @@ import {
 } from "../../state/environment.ts";
 import { routeAtom } from "../../state/ui.ts";
 import type { IconName } from "../../ui/Icon.tsx";
-import { Icon } from "../../ui/Icon.tsx";
 import { Popover } from "../../ui/overlay.tsx";
 import { RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import {
@@ -55,6 +54,7 @@ import {
 import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector.tsx";
 import {
   BranchToolbarControl,
+  BranchToolbarIcon,
   BranchToolbarMenuLabel,
   BranchToolbarMenuRow,
   BranchToolbarMenuText,
@@ -294,7 +294,7 @@ function RunContextSelector(props: {
                 props.onEnvironmentChange(env);
               }}
             >
-              <Icon name={MACHINE_ICON[env.machine]} size={12} color={theme.foreground} />
+              <BranchToolbarIcon name={MACHINE_ICON[env.machine]} color={theme.foreground} />
               <BranchToolbarMenuText>{env.label}</BranchToolbarMenuText>
             </BranchToolbarMenuRow>
           ))}
@@ -314,7 +314,7 @@ function RunContextSelector(props: {
               props.onEnvModeChange("local");
             }}
           >
-            <Icon name={props.activeWorktreePath ? "folder-git" : "folder"} size={12} color={theme.foreground} />
+            <BranchToolbarIcon name={props.activeWorktreePath ? "folder-git" : "folder"} color={theme.foreground} />
             <BranchToolbarMenuText>{resolveCurrentWorkspaceLabel(props.activeWorktreePath)}</BranchToolbarMenuText>
           </BranchToolbarMenuRow>
           <BranchToolbarMenuRow
@@ -325,7 +325,7 @@ function RunContextSelector(props: {
               props.onEnvModeChange("worktree");
             }}
           >
-            <Icon name="folder-git-2" size={12} color={theme.foreground} />
+            <BranchToolbarIcon name="folder-git-2" color={theme.foreground} />
             <BranchToolbarMenuText>{resolveEnvModeLabel("worktree")}</BranchToolbarMenuText>
           </BranchToolbarMenuRow>
           {props.previousWorktreeLabel ? (
@@ -336,7 +336,7 @@ function RunContextSelector(props: {
                 props.onUsePreviousWorktree();
               }}
             >
-              <Icon name="folder-git" size={12} color={theme.foreground} />
+              <BranchToolbarIcon name="folder-git" color={theme.foreground} />
               <BranchToolbarMenuText>{props.previousWorktreeLabel}</BranchToolbarMenuText>
             </BranchToolbarMenuRow>
           ) : null}

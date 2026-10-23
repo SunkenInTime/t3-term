@@ -68,7 +68,8 @@ export function BranchToolbarBranchSelector(props: BranchToolbarBranchSelectorPr
   const branchCwd = activeWorktreePath ?? projectCwd;
   const [query, setQuery] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0);
-  const [searchFocused, setSearchFocused] = useState(false);
+  // The search input autofocuses when the popup opens; GPUI does not report that as a focus event.
+  const [searchFocused, setSearchFocused] = useState(true);
   const [pending, setPending] = useState(false);
   const [optimisticBranch, setOptimisticBranch] = useState<string | null | undefined>(undefined);
   const rowRefs = useRef(new Map<string, PublicInstance>());
@@ -158,6 +159,7 @@ export function BranchToolbarBranchSelector(props: BranchToolbarBranchSelectorPr
   const close = () => {
     props.onOpenChange(false);
     setQuery("");
+    setSearchFocused(true);
   };
 
   const runBranchAction = (action: () => Promise<void>) => {
