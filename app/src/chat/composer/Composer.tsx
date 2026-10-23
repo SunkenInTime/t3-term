@@ -193,6 +193,16 @@ import { usePendingThreadRequests } from "./usePendingThreadRequests.ts";
 import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
 import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
+import {
+  draftFanoutSelectionsAtom,
+  type MultipleModelTarget,
+  multipleModelSendBlock,
+  resolveMultipleModelTargets,
+  sendToMultipleModels,
+} from "./multipleModelSend.ts";
+import { resolveModelPickerSelectedModel } from "../../web/components/chat/ModelPickerContent.logic.ts";
+import { useEnvironmentQuery } from "../../palette/hooks.ts";
+import { vcsEnvironment } from "../../state/git.ts";
 import { ProviderSubagentBar } from "./ProviderSubagentBar.tsx";
 import { formatModelSlugName, resolveSelectableModel } from "@t3tools/shared/model";
 import { getTriggerDisplayModelName } from "../../web/components/chat/providerIconUtils.ts";
@@ -862,8 +872,43 @@ function ComposerBody({
     terminalContexts: [],
   });
   const providerSendBlockReason = getAntigravitySendBlockReason(selectedProviderStatus, selectedModel);
+  // ── Multiple models (web useMultipleModelSend; drafts only) ──────────
+  const fanoutSelections = useAtomValue(draftFanoutSelectionsAtom(draftKey));
+  const multipleModelSelections = target.kind === "draft" ? fanoutSelections : null;
+  const supportsMultipleModels = serverConfig?.environment.capabilities.requiredWorktreeBootstrap === true;
+  const draftGitStatus = useEnvironmentQuery(
+    target.kind === "draft" && project ? vcsEnvironment.status({ environmentId, input: { cwd: project.workspaceRoot } }) : null,
+  );
+  const draftIsGitRepo = (draftGitStatus.data as { isRepo?: boolean } | null)?.isRepo ?? true;
+  const setMultipleModelSelections = (selections: ReadonlyArray<ModelSelection> | null) =>
+    appAtomRegistry.set(draftFanoutSelectionsAtom(draftKey), selections);
+  // web ComposerModelPicker.toggleModel: two or more models switch to a multiple-model send.
+  const toggleModel = (instanceId: ProviderInstanceId, model: string) => {
+    const current = multipleModelSelections ?? [selectedModelSelection];
+    const matchesModel = (selection: ModelSelection) => {
+      if (selection.instanceId !== instanceId) return false;
+      const entry = providerInstanceEntries.find((candidate) => candidate.instanceId === selection.instanceId);
+      const resolvedModel = resolveModelPickerSelectedModel({
+        driverKind: entry?.driverKind,
+        model: selection.model,
+        options: modelOptionsByInstance.get(selection.instanceId) ?? [],
+      });
+      return (resolvedModel?.slug ?? selection.model) === model;
+    };
+    const exists = current.some(matchesModel);
+    const next = exists ? current.filter((selection) => !matchesModel(selection)) : [...current, createModelSelection(instanceId, model)];
+    if (next.length > 1) {
+      setMultipleModelSelections(next);
+    } else {
+      setMultipleModelSelections(null);
+      const remaining = next[0] ?? selectedModelSelection;
+      onProviderModelSelect(remaining.instanceId, remaining.model);
+    }
+  };
   const sendDisabledReason =
-    (banners.feedbackUploading ? "Sending feedback" : projectClone.projectCloneSendBlockReason) ?? providerSendBlockReason;
+    (multipleModelSelections?.length === 0 ? "Select at least one model." : null) ??
+    (banners.feedbackUploading ? "Sending feedback" : projectClone.projectCloneSendBlockReason) ??
+    (multipleModelSelections === null ? providerSendBlockReason : null);
   const followUpBehavior: "queue" | "steer" =
     requests.pendingApprovals.length > 0 ? "steer" : settings.followUpBehavior;
   const isCompacting = false;
@@ -923,7 +968,7 @@ function ComposerBody({
     // web useComposerSend: /feedback in a Codex thread uploads the session to OpenAI.
     const feedbackCommand =
       selectedProvider === "codex" && attachments.length === 0 && !queuedEdit.isEditing ? parseCodexFeedbackCommand(trimmed) : null;
-    if (feedbackCommand) {
+    if (feedbackCommand && multipleModelSelections === null) {
       void submitFeedbackCommand(trimmed, feedbackCommand);
       return;
     }
@@ -933,6 +978,10 @@ function ComposerBody({
     });
     if (validation) {
       setSubmissionError(validation);
+      return;
+    }
+    if (multipleModelSelections !== null && project) {
+      void submitMultipleModels(promptAtSend, attachments);
       return;
     }
     void dispatchSend({
@@ -949,6 +998,59 @@ function ComposerBody({
           activeTurnDefault: followUpBehavior,
           canSteer: !isCompacting,
         }),
+    });
+  };
+
+  const submitMultipleModels = async (promptAtSend: string, attachments: ReadonlyArray<ComposerAttachmentDraft>) => {
+    if (!project || multipleModelSelections === null) return;
+    const block = multipleModelSendBlock({
+      selectionCount: multipleModelSelections.length,
+      serverSupportsWorktreeBootstrap: supportsMultipleModels,
+      isLocalDraftThread: target.kind === "draft",
+      isGitRepo: draftIsGitRepo,
+      branch: draft.branch ?? null,
+    });
+    if (block === "server-outdated") {
+      appAtomRegistry.set(composerSendErrorAtom(draftKey), "Update this server before starting multiple models.");
+      return;
+    }
+    if (block === "needs-new-git-thread") {
+      toast({
+        type: "warning",
+        title: "Choose models and a base branch",
+        description: "Multiple models need a new thread in a Git project. Each gets its own worktree.",
+      });
+      return;
+    }
+    const targets: MultipleModelTarget[] = [];
+    for (const resolved of resolveMultipleModelTargets({
+      selections: multipleModelSelections,
+      providerInstanceEntries,
+      messageText: promptAtSend.trim(),
+      planModeEnabled: settings.planModeEnabled,
+      interactionMode,
+    })) {
+      if ("error" in resolved) {
+        appAtomRegistry.set(composerSendErrorAtom(draftKey), resolved.error);
+        return;
+      }
+      targets.push(resolved);
+    }
+    setTriggerState(null);
+    valueRef.current = "";
+    caretRef.current = 0;
+    await sendToMultipleModels({
+      environmentId,
+      draftKey,
+      projectId: project.id,
+      projectCwd: project.workspaceRoot,
+      branch: draft.branch!,
+      startFromOrigin: draft.startFromOrigin ?? false,
+      prompt: promptAtSend,
+      attachments,
+      selections: multipleModelSelections,
+      targets,
+      runtimeMode,
     });
   };
 
@@ -1625,7 +1727,16 @@ function ComposerBody({
           onOpenChange={setModelPickerOpen}
           getModelDisabledReason={getModelDisabledReason}
           onOpenProviderSetup={() => appAtomRegistry.set(routeAtom, { kind: "settings", page: "providers" })}
-          onInstanceModelChange={onProviderModelSelect}
+          onInstanceModelChange={(instanceId, model) => {
+            setMultipleModelSelections(null);
+            onProviderModelSelect(instanceId, model);
+          }}
+          {...(target.kind === "draft" && supportsMultipleModels
+            ? {
+                ...(multipleModelSelections !== null ? { selectedModels: multipleModelSelections } : {}),
+                onToggleModel: toggleModel,
+              }
+            : {})}
           measure={activeControls.measure.picker}
           collapseLabel={controlsCollapsed && restingPickerLabelCollapsed}
         />
