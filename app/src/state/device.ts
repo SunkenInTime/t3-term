@@ -6,6 +6,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { type DeviceHubAccess, resolveDeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAccess";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { useMemo } from "react";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
@@ -33,7 +34,9 @@ const EMPTY_ACCESS_ATOM = Atom.make(AsyncResult.initial<DeviceHubAccess, never>(
 
 export function useDeviceHubAccess(environmentId: EnvironmentId | null, hostId = "local"): DeviceHubAccess | null {
   const result = useAtomValue(environmentId === null ? EMPTY_ACCESS_ATOM : deviceHubAccessAtom(environmentId));
-  return AsyncResult.isSuccess(result) ? { ...result.value, query: { ...result.value.query, hostId } } : null;
+  const value = AsyncResult.isSuccess(result) ? result.value : null;
+  // Streams restart when access changes identity; web's compiler memoizes this, here it is explicit.
+  return useMemo(() => (value ? { ...value, query: { ...value.query, hostId } } : null), [value, hostId]);
 }
 
 export function refreshDeviceHubAccess(environmentId: EnvironmentId): void {

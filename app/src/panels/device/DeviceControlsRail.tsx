@@ -233,7 +233,7 @@ function RailButton(props: {
           ...(props.disabled ? {} : { hover: { backgroundColor: theme.accent } }),
         }}
       >
-        <Icon name={props.icon} size={16} color={theme.foreground} />
+        <Icon name={props.icon} size={16} color={props.pressed ? theme.foreground : theme.mutedForeground} />
       </div>
     </Tooltip>
   );

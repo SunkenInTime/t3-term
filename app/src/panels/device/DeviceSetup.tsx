@@ -108,21 +108,18 @@ function DeviceSetup(props: {
 
   return (
     <>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 24, paddingBottom: 16 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingRight: 24 }}>
-          <Text size="xl" weight={600}>
-            Set up devices
-          </Text>
-          <Text color={theme.mutedForeground}>Review what runs on this environment before using simulators and emulators.</Text>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", marginTop: 10 }}>
-          <WizardSteps
-            steps={["Device hub", "Simulators", "Agent access"]}
-            currentStep={step}
-            onStepChange={setStep}
-            isStepDisabled={(requested) => busy || pending !== null || requested > step}
-          />
-        </div>
+      {/* DialogHeader: gap-2 p-6, pb-3 above a panel; DialogTitle is text-xl leading-none. */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 24, paddingBottom: 12 }}>
+        <Text size="xl" weight={600} style={{ lineHeight: 20 }}>
+          Set up devices
+        </Text>
+        <Text color={theme.mutedForeground}>Review what runs on this environment before using simulators and emulators.</Text>
+        <WizardSteps
+          steps={["Device hub", "Simulators", "Agent access"]}
+          currentStep={step}
+          onStepChange={setStep}
+          isStepDisabled={(requested) => busy || pending !== null || requested > step}
+        />
       </div>
       <WizardPanel>
         <DeviceHostUpdates state={props.state} environmentId={props.environmentId} />
@@ -130,9 +127,9 @@ function DeviceSetup(props: {
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <Text weight={500}>Enable the device hub</Text>
             <div style={{ display: "flex", flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
-              <Text color={theme.mutedForeground} style={{ flexGrow: 1, flexBasis: 0 }}>
-                {deviceHubDescription}
-              </Text>
+              <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 }}>
+                <Text color={theme.mutedForeground}>{deviceHubDescription}</Text>
+              </div>
               <div style={{ marginTop: 2 }}>
                 <Switch
                   testId="device-setup-hub-switch"
@@ -177,9 +174,9 @@ function DeviceSetup(props: {
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <Text weight={500}>Allow agent control</Text>
             <div style={{ display: "flex", flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
-              <Text color={theme.mutedForeground} style={{ flexGrow: 1, flexBasis: 0 }}>
-                {agentDeviceDescription}
-              </Text>
+              <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 }}>
+                <Text color={theme.mutedForeground}>{agentDeviceDescription}</Text>
+              </div>
               <div style={{ marginTop: 2 }}>
                 <Switch
                   testId="device-setup-agent-switch"
