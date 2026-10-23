@@ -109,6 +109,7 @@ import {
   PullRequestResolveConflictsButton,
 } from "./PullRequestDetailActions.tsx";
 import { PullRequestGuideTab } from "./guide/PullRequestGuideTab.tsx";
+import { REVIEW_GUIDE_FIXTURE } from "./guide/guideFixture.ts";
 import { useReviewGuideWriter } from "./guide/useReviewGuideWriter.ts";
 import {
   PullRequestBaseBranch,
@@ -498,7 +499,7 @@ export function PullRequestDetailView({
     listEntry.number === reference.number
       ? listEntry
       : null;
-  const reviewGuidesEnabled = serverConfig?.settings.reviewGuidesEnabled === true;
+  const reviewGuidesEnabled = serverConfig?.settings.reviewGuidesEnabled === true || REVIEW_GUIDE_FIXTURE !== null;
   const requestedTab: PullRequestDetailTab = surface.detailTab ?? "summary";
   const selectTab = (next: PullRequestDetailTab) => {
     if (onTabChange) onTabChange(next);

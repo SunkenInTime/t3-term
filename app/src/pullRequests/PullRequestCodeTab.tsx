@@ -1027,7 +1027,7 @@ function PullRequestFileTree({
     return out;
   }, [files, collapsed]);
   const statusColor = (file: DiffFileModel) =>
-    file.kind === "new" ? theme.diffAdd : file.kind === "deleted" ? theme.diffDel : file.kind === "renamed" ? theme.infoForeground : theme.warningForeground;
+    file.kind === "new" ? theme.diffAdd : file.kind === "deleted" ? theme.diffDel : file.kind === "renamed" ? theme.warningForeground : theme.infoForeground;
   return (
     <div
       testId="pr-code-file-tree"
@@ -1041,6 +1041,25 @@ function PullRequestFileTree({
         borderColor: alpha(theme.border, 0.6),
       }}
     >
+      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, height: 36, paddingLeft: 12, paddingRight: 8, flexShrink: 0 }}>
+        <Text size="xs" weight={600} style={{ flexGrow: 1 }}>
+          Files
+        </Text>
+        <Text size="xs" color={theme.mutedForeground}>
+          {String(files.length)}
+        </Text>
+        <Tooltip content={collapsed.size > 0 ? "Expand all folders" : "Collapse all folders"}>
+          <div
+            testId="pr-code-tree-fold"
+            onClick={() =>
+              setCollapsed(collapsed.size > 0 ? new Set() : new Set(rows.filter((row) => row.node.file === null).map((row) => row.node.path)))
+            }
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, borderRadius: RADIUS.sm, cursor: "pointer", hover: { backgroundColor: theme.accent } }}
+          >
+            <Icon name={collapsed.size > 0 ? "chevrons-up-down" : "chevrons-down-up"} size={12} color={theme.mutedForeground} />
+          </div>
+        </Tooltip>
+      </div>
       <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, overflowY: "scroll", scrollbarColor: theme.scrollbar, padding: 4 }}>
         {rows.map(({ node, label, depth }) => {
           const file = node.file;
@@ -1093,10 +1112,13 @@ function PullRequestFileTree({
               {file ? (
                 <>
                   {isViewed?.(file.path) ? <Icon name="check" size={12} color={theme.mutedForeground} /> : null}
-                  <PullRequestDiffStat additions={file.additions} deletions={file.deletions} fontSize={10} lineHeight={14} />
-                  <div style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: statusColor(file), flexShrink: 0 }} />
+                  <text style={{ color: statusColor(file), fontSize: 11, lineHeight: 16, fontWeight: 600, fontFamily: FONTS.sans, flexShrink: 0 }}>
+                    {file.kind === "new" ? "A" : file.kind === "deleted" ? "D" : file.kind === "renamed" ? "R" : "M"}
+                  </text>
                 </>
-              ) : null}
+              ) : (
+                <div style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: alpha(theme.infoForeground, 0.7), flexShrink: 0 }} />
+              )}
             </div>
           );
         })}

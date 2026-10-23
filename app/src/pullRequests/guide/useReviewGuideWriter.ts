@@ -10,6 +10,7 @@ import { guideRunKey, guideRunStore, pullRequestEnvironment, useEnvironmentQuery
 import { toast } from "../../ui/toast.tsx";
 import { readableFailure } from "../../web/components/pullRequest/pullRequestDetail.logic.ts";
 import { runPullRequestWrite } from "../pullRequestWrites.ts";
+import { REVIEW_GUIDE_FIXTURE } from "./guideFixture.ts";
 
 export function useReviewGuideWriter({
   environmentId,
@@ -23,7 +24,7 @@ export function useReviewGuideWriter({
   const query = useEnvironmentQuery(pullRequestEnvironment.reviewGuide({ environmentId, input: reference }));
   const canWrite = useAtomValue(pullRequestEnvironment.generateReviewGuide.permissionAtom(environmentId));
   const [starting, setStarting] = useState(false);
-  const data = query.data;
+  const data = REVIEW_GUIDE_FIXTURE ?? query.data;
   const running = starting || data?.run?._tag === "Running";
 
   const latest = useRef({ data, title });
