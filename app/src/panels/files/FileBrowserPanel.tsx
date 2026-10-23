@@ -281,6 +281,11 @@ const TreeRow = memo(function TreeRow(props: {
         alignItems: "center",
         position: "relative",
         height: ROW_HEIGHT,
+        // The ActionMenu root around the row is a flex row; the row still spans it.
+        flexGrow: 1,
+        minWidth: 0,
+        // A press-and-drag here is a mention drag, not a text selection.
+        userSelect: "none",
         // pierre's 8px item padding less this row's 1px focus border, and its 1px icon nudge.
         paddingLeft: 6,
         paddingRight: 7,
