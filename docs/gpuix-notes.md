@@ -82,3 +82,11 @@ Bundled highlight languages: Rust, TS, TSX, JS, JSX, Python, Go, JSON, Bash, TOM
 - `<img style={{ height: "100%" }}>` resolved against an outer definite ancestor rather than its flex parent; size live images in px from `onLayout`.
 - `renderer.focusElement(inputId)` focuses an `<input>` without firing its `onFocus`; check `renderer.getFocusedElementId()` and set any focused state yourself.
 - Negative margins on a row's children (web's `-mx-0.5` on a leading icon) collapsed a content-sized floating menu to its `minWidth` and truncated its text. Give the icon a narrower fixed-width slot and let it overflow centered instead.
+
+## Text editing findings from the Files editor (gpuix 0.11.0, Windows)
+
+- Sibling `<text>` elements in a block `div` stack as separate lines; they only sit on one line as flex items, and then each run's box is rounded to whole pixels, so a long run of tokens drifts by up to a pixel per token. To line glyphs up with something else (a textarea), place each run absolutely at `column × ch`.
+- A `<textarea>` soft-wraps with GPUI's line wrapper (`compute_wrap_boundaries`), not CSS rules. `panels/code/codeRows.tsx` `gpuiWrapBoundaries` reproduces it for monospaced text, so painted rows break where the textarea breaks.
+- `<textarea>` defaults to `maxRows` 10 and then scrolls inside; give it `height` (or a large `maxRows`) when it must show all its lines.
+- A textarea that takes focus (`autoFocus`, or `renderer.focusElement`) in the frame its `<virtual-list>` row first appears scrolls that row to the top. Mount it unfocused and remount it with `autoFocus` a frame later (`panels/diff/DiffCommentAnnotation.tsx`).
+- A transparent-text textarea (`color: "#00000000"`) still draws its caret and selection: that is how `panels/files/FileEditor.tsx` edits over highlighted rows.

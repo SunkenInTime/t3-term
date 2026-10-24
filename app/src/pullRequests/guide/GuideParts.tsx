@@ -11,8 +11,8 @@ import type {
 } from "@t3tools/contracts";
 import { useMemo, useState } from "react";
 
-import { parseDiffFiles, type DiffFileModel, type DiffLineAnnotation } from "../../panels/diff/diffModel.ts";
-import { DiffView } from "../../panels/diff/DiffView.tsx";
+import { parseDiffFiles, type DiffFileModel } from "../../panels/diff/diffModel.ts";
+import { DiffView, type DiffExternalAnnotation } from "../../panels/diff/DiffView.tsx";
 import type { PendingReviewComment } from "../../state/pullRequests.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
@@ -271,7 +271,7 @@ export function GuideExcerpt({
     }
     if (draft !== null) groupAt(draft.side, draft.line).draft = true;
   }
-  const annotations: ReadonlyMap<string, ReadonlyArray<DiffLineAnnotation>> | undefined =
+  const annotations: ReadonlyMap<string, ReadonlyArray<DiffExternalAnnotation>> | undefined =
     slice === null
       ? undefined
       : new Map([

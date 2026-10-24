@@ -70,22 +70,24 @@ export function FileSurfaceAction(props: {
 }
 
 /** border-b border-warning/20 bg-warning-surface px-3 py-1.5 text-2xs text-warning-foreground */
-export function FileSurfaceNotice(props: { readonly children: string }) {
+/** The warning strip under the subheader; "muted" is the plain `border-b text-muted-foreground` one. */
+export function FileSurfaceNotice(props: { readonly children: string; readonly tone?: "warning" | "muted" }) {
   const theme = useTheme();
+  const muted = props.tone === "muted";
   return (
     <div
       style={{
         flexShrink: 0,
         borderBottomWidth: 1,
-        borderColor: alpha(theme.warning, 0.2),
-        backgroundColor: alpha(theme.warning, theme.appearance === "dark" ? 0.08 : 0.06),
+        borderColor: muted ? theme.border : alpha(theme.warning, 0.2),
+        backgroundColor: muted ? "#00000000" : alpha(theme.warning, theme.appearance === "dark" ? 0.08 : 0.06),
         paddingLeft: 12,
         paddingRight: 12,
         paddingTop: 6,
         paddingBottom: 6,
       }}
     >
-      <Text size="2xs" color={theme.warningForeground}>
+      <Text size="2xs" color={muted ? theme.mutedForeground : theme.warningForeground}>
         {props.children}
       </Text>
     </div>

@@ -28,7 +28,17 @@ import {
 import { requestSyntaxTokens, peekSyntaxTokens, type SyntaxLines } from "../code/highlighter.ts";
 import { EXPAND_BOTH, EXPAND_DOWN, EXPAND_UP, FILE_ADDED, FILE_DELETED, FILE_MODIFIED, FILE_MOVED } from "./pierreIcons.ts";
 import { useListWindow } from "../code/listWindow.ts";
-import { buildDiffRows, type DiffFileModel, type DiffLayout, type DiffLineAnnotation, type DiffRow, type LineCell } from "./diffModel.ts";
+import {
+  buildDiffRows,
+  type DiffFileModel,
+  type DiffLayout,
+  type DiffLine,
+  type DiffLineAnnotation,
+  type DiffRow,
+  type LineCell,
+} from "./diffModel.ts";
+import { DiffCommentAnnotation } from "./DiffCommentAnnotation.tsx";
+import { linePoint, useDiffComments, type DiffComments, type DiffCommentsConfig } from "./useDiffComments.ts";
 
 const WINDOW = 160;
 
@@ -81,30 +91,65 @@ export interface DiffViewProps {
   readonly onOpenFile: (path: string) => void;
   /** Changes whenever the patch content changes, so scroll and window reset. */
   readonly resetKey: string;
-  /** Drawn under their lines, keyed by file path (the pull request Code tab's review threads). */
-  readonly annotations?: ReadonlyMap<string, ReadonlyArray<DiffLineAnnotation>>;
-  readonly renderAnnotation?: (file: DiffFileModel, annotation: DiffLineAnnotation) => ReactNode;
-  /** A press on a line's number (pierre's gutter utility): starts a line comment. */
+  /** Line comments sent to this thread's composer; null turns them off. */
+  readonly comments?: DiffCommentsConfig | null;
+  /** Scrolls a file's header to the top once per request (the file tree's reveal). */
+  readonly reveal?: { readonly path: string; readonly requestId: number } | null;
+  /**
+   * The pull request Code tab's own annotations (review threads, pending comments, its draft),
+   * keyed by file path and drawn by `renderAnnotation` under their lines.
+   */
+  readonly annotations?: ReadonlyMap<string, ReadonlyArray<DiffExternalAnnotation>>;
+  readonly renderAnnotation?: (file: DiffFileModel, annotation: DiffExternalAnnotation) => ReactNode;
+  /**
+   * With `comments` off: the gutter's "+" on one line calls this instead of opening the
+   * composer comment form (the pull request review comment flow).
+   */
   readonly onLineNumberClick?: (file: DiffFileModel, side: "additions" | "deletions", lineNumber: number) => void;
   /** Extra controls at the end of a file header (the viewed checkbox). */
   readonly renderHeaderExtras?: (file: DiffFileModel) => ReactNode;
   /** Paint every row in a plain column that grows with its content, for a short excerpt inside an outer scroller. */
   readonly inline?: boolean;
-  /** The row list as built, for callers that scroll a file into view. */
-  readonly onRows?: (rows: ReadonlyArray<DiffRow>) => void;
-  /** Asks the list to bring this row index to the top. */
-  readonly scrollRequest?: { readonly index: number; readonly nonce: number } | null;
-  /** The last rows came on screen: time to ask for the next page of a paged diff. */
-  readonly onReachEnd?: () => void;
   /** Inline only: no file header rows, for a diff drawn under a row that already names the file. */
   readonly hideFileHeaders?: boolean;
+  /** The last rows came on screen: time to ask for the next page of a paged diff. */
+  readonly onReachEnd?: () => void;
 }
 
-/** What DiffView's row callbacks need beyond the row itself, passed once instead of per prop. */
-interface RowExtras {
-  readonly renderAnnotation?: DiffViewProps["renderAnnotation"];
-  readonly onLineNumberClick?: DiffViewProps["onLineNumberClick"];
-  readonly renderHeaderExtras?: DiffViewProps["renderHeaderExtras"];
+/** One annotation a caller draws itself (see `renderAnnotation`). */
+export interface DiffExternalAnnotation {
+  readonly key: string;
+  readonly side: "additions" | "deletions";
+  readonly lineNumber: number;
+}
+
+/** What a row does on gutter input; one stable object read through a ref. */
+interface RowInteraction {
+  readonly current: {
+    readonly comments: DiffComments;
+    /**
+     * The gutter and its "+" both claim the hover. Hover goes to the topmost element, so
+     * moving onto the button leaves the gutter; a leave only clears its own claim.
+     */
+    readonly hover: (key: string, side: "old" | "new", via: "gutter" | "button") => void;
+    readonly unhover: (key: string, via: "gutter" | "button") => void;
+    /** The gutter "+" when composer comments are off and the caller takes line presses. */
+    readonly lineClick: ((filePath: string, side: "additions" | "deletions", lineNumber: number) => void) | null;
+    readonly renderAnnotation: ((filePath: string, annotation: DiffExternalAnnotation) => ReactNode) | null;
+    readonly renderHeaderExtras: ((file: DiffFileModel) => ReactNode) | null;
+  };
+}
+
+// The gutter "+" sits inside the number column, which also takes presses for line
+// selection. gpuix hands a press to every handler under the pointer, so the button
+// marks it and the column skips a press the button already took.
+let consumedPress: { x: number; y: number; at: number } | null = null;
+function consumePress(event: EventPayload) {
+  consumedPress = { x: Number(event.x ?? 0), y: Number(event.y ?? 0), at: Date.now() };
+}
+function pressConsumed(event: EventPayload): boolean {
+  const consumed = consumedPress;
+  return consumed !== null && consumed.x === Number(event.x ?? 0) && consumed.y === Number(event.y ?? 0) && Date.now() - consumed.at < 500;
 }
 
 export function DiffView(props: DiffViewProps) {
@@ -118,35 +163,72 @@ export function DiffView(props: DiffViewProps) {
   const [tokens, setTokens] = useState<ReadonlyMap<DiffFileModel, FileTokens>>(new Map());
   const requested = useRef(new WeakSet<DiffFileModel>());
 
-  const rows = useMemo(
-    () => buildDiffRows(props.files, props.layout, props.collapsed, props.annotations),
-    [props.files, props.layout, props.collapsed, props.annotations],
-  );
-  const extras: RowExtras = {
-    ...(props.renderAnnotation ? { renderAnnotation: props.renderAnnotation } : {}),
-    ...(props.onLineNumberClick ? { onLineNumberClick: props.onLineNumberClick } : {}),
-    ...(props.renderHeaderExtras ? { renderHeaderExtras: props.renderHeaderExtras } : {}),
-  };
-  const onRows = props.onRows;
-  useEffect(() => {
-    onRows?.(rows);
-  }, [rows, onRows]);
   const renderer = useGpuixRequired();
-  const scrollNonce = props.scrollRequest?.nonce ?? null;
-  const pendingReveal = useRef(false);
-  useEffect(() => {
-    if (!props.scrollRequest) return;
-    pendingReveal.current = true;
-    reset(props.scrollRequest.index);
-    // oxlint-disable-next-line react/exhaustive-deps -- one jump per request
-  }, [scrollNonce]);
-  // The window now starts at the requested row; scroll the list to the window's first item.
+  const comments = useDiffComments(props.files, props.comments ?? null);
+  const [hovered, setHovered] = useState<{ key: string; side: "old" | "new"; via: "gutter" | "button" } | null>(null);
+  const hover = (key: string, side: "old" | "new", via: "gutter" | "button") =>
+    setHovered((current) =>
+      current?.key === key && current.side === side && current.via === via ? current : { key, side, via },
+    );
+  const unhover = (key: string, via: "gutter" | "button") =>
+    setHovered((current) => (current?.key === key && current.via === via ? null : current));
+  const lineClick = props.onLineNumberClick
+    ? (filePath: string, side: "additions" | "deletions", lineNumber: number) => {
+        const file = props.files.find((candidate) => candidate.path === filePath);
+        if (file) props.onLineNumberClick?.(file, side, lineNumber);
+      }
+    : null;
+  const renderAnnotation = props.renderAnnotation
+    ? (filePath: string, annotation: DiffExternalAnnotation) => {
+        const file = props.files.find((candidate) => candidate.path === filePath);
+        return file ? props.renderAnnotation?.(file, annotation) : null;
+      }
+    : null;
+  const renderHeaderExtras = props.renderHeaderExtras ?? null;
+  const interactionRef = useRef<RowInteraction["current"]>({ comments, hover, unhover, lineClick, renderAnnotation, renderHeaderExtras });
+  interactionRef.current = { comments, hover, unhover, lineClick, renderAnnotation, renderHeaderExtras };
+  const interaction = useMemo<RowInteraction>(
+    () => ({
+      get current() {
+        return interactionRef.current;
+      },
+    }),
+    [],
+  );
+  // The caller's annotations ride the same rows as composer comments, as entries of their own kind.
+  const annotations = useMemo(() => {
+    if (!props.annotations || props.annotations.size === 0) return comments.annotations;
+    const merged = new Map<string, DiffLineAnnotation[]>();
+    for (const [path, list] of comments.annotations ?? new Map<string, ReadonlyArray<DiffLineAnnotation>>()) merged.set(path, [...list]);
+    for (const [path, list] of props.annotations) {
+      const target = merged.get(path) ?? [];
+      for (const annotation of list) {
+        target.push({
+          side: annotation.side,
+          lineNumber: annotation.lineNumber,
+          entries: [{ id: annotation.key, kind: "external", rangeLabel: "", text: "" }],
+        });
+      }
+      merged.set(path, target);
+    }
+    return merged;
+  }, [comments.annotations, props.annotations]);
+  const rows = useMemo(
+    () => buildDiffRows(props.files, props.layout, props.collapsed, annotations),
+    [props.files, props.layout, props.collapsed, annotations],
+  );
+
+  // The file tree's reveal: put the file's header at the top of the list.
+  const handledReveal = useRef<number | null>(null);
   useLayoutEffect(() => {
-    if (!pendingReveal.current) return;
-    pendingReveal.current = false;
-    const id = listRef.current?.id;
-    if (id != null) renderer.scrollToItem?.(id, 0, 0);
-  }, [start, scrollNonce, renderer, listRef]);
+    const reveal = props.reveal;
+    if (!reveal || handledReveal.current === reveal.requestId || listRef.current === null) return;
+    const index = rows.findIndex((row) => row.type === "header" && row.file.path === reveal.path);
+    if (index < 0) return;
+    handledReveal.current = reveal.requestId;
+    reset(Math.max(0, index - Math.floor(WINDOW / 4)));
+    renderer.scrollToItem?.(listRef.current.id, index, 0);
+  }, [props.reveal?.requestId, props.reveal?.path, rows, renderer]);
 
   useEffect(() => {
     reset(0);
@@ -214,6 +296,7 @@ export function DiffView(props: DiffViewProps) {
         const next = Math.floor(Number(event.width ?? 0));
         if (next > 0 && next !== width) setWidth(next);
       }}
+      onMouseUp={() => comments.pointerUp()}
       onScroll={(event: EventPayload) => {
         if (props.wrap) return;
         const deltaX = Number(event.deltaX ?? 0);
@@ -246,7 +329,10 @@ export function DiffView(props: DiffViewProps) {
               palette={palette}
               onToggleFile={props.onToggleFile}
               onOpenFile={props.onOpenFile}
-              extras={extras}
+              hoveredSide={(comments.enabled || lineClick) && hovered?.key === row.key ? hovered.side : null}
+              selected={comments.selectedLines}
+              interaction={interaction}
+              draftText={row.type === "annotation" && row.annotation.entries.some((entry) => entry.kind === "draft") ? comments.draftText : ""}
             />
           ))}
         </div>
@@ -281,7 +367,10 @@ export function DiffView(props: DiffViewProps) {
               palette={palette}
               onToggleFile={props.onToggleFile}
               onOpenFile={props.onOpenFile}
-              extras={extras}
+              hoveredSide={(comments.enabled || lineClick) && hovered?.key === row.key ? hovered.side : null}
+              selected={comments.selectedLines}
+              interaction={interaction}
+              draftText={row.type === "annotation" && row.annotation.entries.some((entry) => entry.kind === "draft") ? comments.draftText : ""}
             />
           ))}
         </virtual-list>
@@ -313,11 +402,49 @@ const DiffRowView = memo(function DiffRowView(props: {
   palette: DiffPalette;
   onToggleFile: (path: string) => void;
   onOpenFile: (path: string) => void;
-  extras: RowExtras;
+  hoveredSide: "old" | "new" | null;
+  selected: ReadonlySet<DiffLine>;
+  interaction: RowInteraction;
+  draftText: string;
 }) {
   const { row, palette } = props;
+  const gutterProps = (side: "old" | "new", cellSide: "old" | "new" | "any", line: DiffLine) => ({
+    rowKey: row.key,
+    filePath: row.file.path,
+    cellSide,
+    utility: props.hoveredSide === side,
+    selected: props.selected.has(line),
+    interaction: props.interaction,
+  });
   switch (row.type) {
-    case "header":
+    case "annotation":
+      if (row.annotation.entries.every((entry) => entry.kind === "external")) {
+        const render = props.interaction.current.renderAnnotation;
+        return (
+          <div style={{ display: "flex", flexDirection: "column", width: props.width }}>
+            {render
+              ? row.annotation.entries.map((entry) => (
+                  <div key={entry.id} style={{ display: "flex", flexDirection: "column" }}>
+                    {render(row.file.path, { key: entry.id, side: row.annotation.side, lineNumber: row.annotation.lineNumber })}
+                  </div>
+                ))
+              : null}
+          </div>
+        );
+      }
+      return (
+        <AnnotationRowView
+          row={row}
+          width={props.width}
+          gutter={gutterWidth(row.file.numberDigits, props.ch)}
+          palette={palette}
+          interaction={props.interaction}
+          draftText={props.draftText}
+          selected={props.selected.size > 0}
+        />
+      );
+    case "header": {
+      const extras = props.interaction.current.renderHeaderExtras;
       return (
         <FileHeader
           file={row.file}
@@ -325,15 +452,10 @@ const DiffRowView = memo(function DiffRowView(props: {
           palette={palette}
           onToggleFile={props.onToggleFile}
           onOpenFile={props.onOpenFile}
-          {...(props.extras.renderHeaderExtras ? { extras: props.extras.renderHeaderExtras(row.file) } : {})}
+          {...(extras ? { extras: extras(row.file) } : {})}
         />
       );
-    case "annotation":
-      return (
-        <div style={{ display: "flex", flexDirection: "column", width: props.width }}>
-          {props.extras.renderAnnotation?.(row.file, row.annotation) ?? null}
-        </div>
-      );
+    }
     case "separator":
       return <SeparatorRow text={row.text} direction={row.direction} first={row.first} last={row.last} split={row.split} palette={palette} width={props.width} />;
     case "end":
@@ -359,9 +481,7 @@ const DiffRowView = memo(function DiffRowView(props: {
             tokens={props.tokens}
             palette={palette}
             rows={null}
-            {...(props.extras.onLineNumberClick
-              ? { onNumberClick: (side: "additions" | "deletions", line: number) => props.extras.onLineNumberClick?.(row.file, side, line) }
-              : {})}
+            interaction={gutterProps(row.cell.line.kind === "deletion" ? "old" : "new", "any", row.cell.line)}
           />
         </div>
       );
@@ -385,9 +505,7 @@ const DiffRowView = memo(function DiffRowView(props: {
             tokens={props.tokens}
             palette={palette}
             rows={rowCount}
-            {...(props.extras.onLineNumberClick
-              ? { onNumberClick: (side: "additions" | "deletions", line: number) => props.extras.onLineNumberClick?.(row.file, side, line) }
-              : {})}
+            interaction={gutterProps(which, which, cell.line)}
           />
         ) : (
           <EmptySide width={sideWidth} gutter={gutter} height={rowCount * CODE_LINE_HEIGHT} palette={palette} />
@@ -423,14 +541,17 @@ function LineCellView(props: {
   palette: DiffPalette;
   /** Split rows pass the taller side's row count so both halves match. */
   rows: number | null;
-  /** The number's side follows the cell: a deletion (or the old half of a split) is the old side. */
-  onNumberClick?: (side: "additions" | "deletions", line: number) => void;
+  interaction: GutterInteraction;
 }) {
   const { cell, palette } = props;
   const line = cell.line;
   const kind = line.kind;
-  const lineBg = kind === "addition" ? palette.additionLine : kind === "deletion" ? palette.deletionLine : palette.bg;
-  const gutterBg = kind === "addition" ? palette.additionGutter : kind === "deletion" ? palette.deletionGutter : palette.bg;
+  const selected = props.interaction.selected;
+  // StyledDiffCodeView: a selected line, change or not, is the code background with a
+  // 6% wash of the modified blue, and its number column gets the blue 4px bar.
+  const lineBg = selected ? palette.selectedLine : kind === "addition" ? palette.additionLine : kind === "deletion" ? palette.deletionLine : palette.bg;
+  const gutterBg = selected ? palette.selectedGutter : kind === "addition" ? palette.additionGutter : kind === "deletion" ? palette.deletionGutter : palette.bg;
+  const point = linePoint(line, props.interaction.cellSide);
   const numberColor = kind === "addition" ? palette.addition : kind === "deletion" ? palette.deletion : palette.number;
   const emphasisColor = kind === "addition" ? palette.additionEmphasis : kind === "deletion" ? palette.deletionEmphasis : undefined;
   const number = props.side === "old" ? (line.oldLine ?? line.newLine) : (line.newLine ?? line.oldLine);
@@ -441,35 +562,25 @@ function LineCellView(props: {
   const rowCount = Math.max(props.rows ?? 0, visual.length);
   const height = rowCount * CODE_LINE_HEIGHT;
   return (
-    <div style={{ display: "flex", flexDirection: "row", width: props.width, height, flexShrink: 0, backgroundColor: lineBg }}>
-      <div
-        {...(props.onNumberClick && number !== null
-          ? {
-              onClick: () =>
-                props.onNumberClick?.(kind === "deletion" || (props.side === "old" && kind !== "addition") ? "deletions" : "additions", number),
-            }
-          : {})}
-        style={{
-          position: "relative",
-          display: "flex",
-          flexDirection: "row",
-          justifyContent: "flex-end",
-          width: props.gutter,
-          height,
-          flexShrink: 0,
-          paddingRight: Math.round(props.ch),
-          backgroundColor: gutterBg,
-          userSelect: "none",
-          ...(props.onNumberClick ? { cursor: "pointer", hover: { backgroundColor: palette.separator } } : {}),
-        }}
+    <div style={{ position: "relative", display: "flex", flexDirection: "row", width: props.width, height, flexShrink: 0, backgroundColor: lineBg }}>
+      <GutterCell
+        interaction={props.interaction}
+        line={line}
+        width={props.gutter}
+        height={height}
+        ch={props.ch}
+        background={gutterBg}
+        palette={palette}
       >
-        {kind === "context" ? null : (
+        {selected ? (
+          <div style={{ position: "absolute", left: 0, top: 0, width: 4, height, backgroundColor: palette.modified, pointerEvents: "none" }} />
+        ) : kind === "context" ? null : (
           <ChangeBar kind={kind} height={height} color={kind === "addition" ? palette.addition : palette.deletion} stripeBase={palette.deletionStripeBase} />
         )}
-        <text style={{ color: numberColor, fontFamily: FONTS.mono, fontSize: 13, lineHeight: CODE_LINE_HEIGHT, whiteSpace: "nowrap" }}>
+        <text style={{ color: selected ? palette.selectedNumber : numberColor, fontFamily: FONTS.mono, fontSize: 13, lineHeight: CODE_LINE_HEIGHT, whiteSpace: "nowrap", pointerEvents: "none" }}>
           {number === null ? "" : String(number)}
         </text>
-      </div>
+      </GutterCell>
       <div style={{ width: 2, height, flexShrink: 0, backgroundColor: palette.bg }} />
       <div
         style={{
@@ -497,6 +608,193 @@ function LineCellView(props: {
           )}
         </div>
       </div>
+      {/* Last in the row so it paints over the spacer and code it overhangs. */}
+      {props.interaction.utility && point ? (
+        <GutterUtilityButton
+          left={props.gutter - Math.round(props.ch)}
+          palette={palette}
+          onHover={(hovered) => {
+            const current = props.interaction.interaction.current;
+            if (hovered) current.hover(props.interaction.rowKey, props.side, "button");
+            else current.unhover(props.interaction.rowKey, "button");
+          }}
+          onPress={() => {
+            const current = props.interaction.interaction.current;
+            if (!current.comments.enabled && current.lineClick) {
+              current.lineClick(props.interaction.filePath, point.side === "deletions" ? "deletions" : "additions", point.lineNumber);
+              return;
+            }
+            current.comments.utility(props.interaction.filePath, point);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+interface GutterInteraction {
+  readonly rowKey: string;
+  readonly filePath: string;
+  readonly cellSide: "old" | "new" | "any";
+  /** Show pierre's gutter utility ("+") on this cell. */
+  readonly utility: boolean;
+  readonly selected: boolean;
+  readonly interaction: RowInteraction;
+}
+
+/**
+ * pierre's [data-utility-button]: a 1lh square in the modified blue whose right margin
+ * is `-1lh + 1ch`, so it starts one character inside the number column and overhangs
+ * into the code.
+ */
+function GutterUtilityButton({
+  left,
+  palette,
+  onPress,
+  onHover,
+}: {
+  left: number;
+  palette: DiffPalette;
+  onPress: (event: EventPayload) => void;
+  onHover: (hovered: boolean) => void;
+}) {
+  return (
+    <div
+      testId="diff-gutter-utility"
+      onMouseDown={(event: EventPayload) => {
+        consumePress(event);
+        onPress(event);
+      }}
+      // Hover belongs to the topmost element: keep the button while the pointer is on it.
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
+      style={{
+        position: "absolute",
+        top: 0,
+        left,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: CODE_LINE_HEIGHT,
+        height: CODE_LINE_HEIGHT,
+        borderRadius: 4,
+        backgroundColor: palette.modified,
+        cursor: "pointer",
+      }}
+    >
+      <Icon name="plus" size={14} color={palette.bg} strokeWidth={2.5} />
+    </div>
+  );
+}
+
+function GutterCell(props: {
+  interaction: GutterInteraction;
+  line: DiffLine;
+  width: number;
+  height: number;
+  ch: number;
+  background: string;
+  palette: DiffPalette;
+  children: ReactNode;
+}) {
+  const { interaction, line } = props;
+  const point = linePoint(line, interaction.cellSide);
+  const hoverSide: "old" | "new" = interaction.cellSide === "any" ? (line.kind === "deletion" ? "old" : "new") : interaction.cellSide;
+  return (
+    <div
+      onMouseEnter={() => {
+        const current = interaction.interaction.current;
+        current.hover(interaction.rowKey, hoverSide, "gutter");
+        if (point) current.comments.numberEnter(interaction.filePath, point);
+      }}
+      onMouseLeave={() => interaction.interaction.current.unhover(interaction.rowKey, "gutter")}
+      onMouseDown={(event: EventPayload) => {
+        if (pressConsumed(event) || !point || (event.button ?? 0) !== 0) return;
+        interaction.interaction.current.comments.numberDown(interaction.filePath, point, event.modifiers?.shift === true);
+      }}
+      style={{
+        position: "relative",
+        display: "flex",
+        flexDirection: "row",
+        justifyContent: "flex-end",
+        width: props.width,
+        height: props.height,
+        flexShrink: 0,
+        paddingRight: Math.round(props.ch),
+        backgroundColor: props.background,
+        userSelect: "none",
+        cursor: "pointer",
+      }}
+    >
+      {props.children}
+    </div>
+  );
+}
+
+/** AnnotatableCodeView's renderAnnotation: comment entries under a line. */
+function AnnotationRowView(props: {
+  row: Extract<DiffRow, { type: "annotation" }>;
+  width: number;
+  gutter: number;
+  palette: DiffPalette;
+  interaction: RowInteraction;
+  draftText: string;
+  selected: boolean;
+}) {
+  const theme = useTheme();
+  const { row, palette } = props;
+  const hasDraft = row.annotation.entries.some((entry) => entry.kind === "draft");
+  // pierre keeps the commented range selected while its form is open, annotation included.
+  const selected = hasDraft && props.selected;
+  const half = Math.floor(props.width / 2);
+  const columnWidth = row.half === "full" ? props.width : row.half === "left" ? half : props.width - half;
+  const content = (
+    <div style={{ display: "flex", flexDirection: "row", width: columnWidth, flexShrink: 0, backgroundColor: selected ? palette.selectedLine : palette.bg }}>
+      <div style={{ position: "relative", width: props.gutter, flexShrink: 0, backgroundColor: selected ? palette.selectedGutter : palette.bg }}>
+        {selected ? <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, backgroundColor: palette.modified }} /> : null}
+      </div>
+      <div style={{ width: 2, flexShrink: 0, backgroundColor: palette.bg }} />
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          flexGrow: 1,
+          minWidth: 0,
+          ...(hasDraft
+            ? { paddingTop: 4, paddingBottom: 4 }
+            : { borderTopWidth: 1, borderBottomWidth: 1, borderColor: alpha(theme.border, 0.3) }),
+        }}
+      >
+        {row.annotation.entries.map((entry, index) => (
+          <div
+            key={entry.id}
+            style={{
+              display: "flex",
+              width: "100%",
+              ...(index > 0 && !hasDraft ? { borderTopWidth: 1, borderColor: alpha(theme.border, 0.3) } : {}),
+            }}
+          >
+            <DiffCommentAnnotation
+              testId={`diff-comment-${entry.kind}`}
+              kind={entry.kind === "draft" ? "draft" : "comment"}
+              rangeLabel={entry.rangeLabel}
+              text={entry.kind === "draft" ? props.draftText : entry.text}
+              onTextChange={(text) => props.interaction.current.comments.setDraftText(text)}
+              onCancel={() => props.interaction.current.comments.remove(entry.id)}
+              onComment={(text) => props.interaction.current.comments.submit(entry.id, text)}
+              onDelete={() => props.interaction.current.comments.remove(entry.id)}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+  if (row.half === "full") return content;
+  const blank = <div style={{ width: row.half === "left" ? props.width - half : half, flexShrink: 0, backgroundColor: palette.bg }} />;
+  return (
+    <div style={{ display: "flex", flexDirection: "row", width: props.width }}>
+      {row.half === "left" ? content : blank}
+      {row.half === "left" ? blank : content}
     </div>
   );
 }
@@ -581,10 +879,8 @@ function SeparatorRow(props: {
         display: "flex",
         flexDirection: "row",
         width: props.width,
-        // pierre: line-info separators take margin-block 8, except at the top and
-        // bottom of a file's code where they sit flush.
-        paddingTop: props.first || props.last ? 0 : BLOCK_GAP,
-        paddingBottom: props.first || props.last ? 0 : BLOCK_GAP,
+        // StyledDiffCodeView sets the separators' margin-block to 0 (the virtualizer
+        // places rows from hunkSeparatorHeight), so they sit flush between hunks.
         userSelect: "none",
       }}
     >

@@ -18,8 +18,8 @@ import type {
 import { useAtomValue } from "@effect/atom-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { parseDiffFiles, type DiffFileModel, type DiffLineAnnotation, type DiffRow } from "../panels/diff/diffModel.ts";
-import { DiffView } from "../panels/diff/DiffView.tsx";
+import { parseDiffFiles, type DiffFileModel } from "../panels/diff/diffModel.ts";
+import { DiffView, type DiffExternalAnnotation } from "../panels/diff/DiffView.tsx";
 import { FileEntryIcon } from "../panels/files/FileEntryIcon.tsx";
 import { diffLayoutPref, wordWrapPref } from "../state/codeView.ts";
 import { diffFilesCollapsedPref, diffFileTreeOpenPref } from "../state/git.ts";
@@ -159,8 +159,7 @@ export function PullRequestCodeTab({
   const [draft, setDraft] = useState<DraftAnchor | null>(null);
   const [threadPending, setThreadPending] = useState(false);
   const [orphansOpen, setOrphansOpen] = useState(false);
-  const [rows, setRows] = useState<ReadonlyArray<DiffRow>>([]);
-  const [scrollRequest, setScrollRequest] = useState<{ readonly index: number; readonly nonce: number } | null>(null);
+  const [reveal, setReveal] = useState<{ readonly path: string; readonly requestId: number } | null>(null);
   const reviewKey = pullRequestReviewKey(reference);
   const commit = selectedCommitOid;
   const scopeKey = JSON.stringify([environmentId, reviewKey, commit]);
@@ -305,7 +304,7 @@ export function PullRequestCodeTab({
     return byFile;
   }, [detail.reviewThreads, placedThreadIds, pendingComments, draft, commit]);
   const annotations = useMemo(() => {
-    const map = new Map<string, DiffLineAnnotation[]>();
+    const map = new Map<string, DiffExternalAnnotation[]>();
     for (const [path, fileGroups] of groups) {
       map.set(
         path,
@@ -349,8 +348,7 @@ export function PullRequestCodeTab({
   };
   const revealFile = (path: string) => {
     if (collapsedPaths.has(path)) toggleFile(path);
-    const index = rows.findIndex((row) => row.type === "header" && row.file.path === path);
-    if (index >= 0) setScrollRequest((previous) => ({ index, nonce: (previous?.nonce ?? 0) + 1 }));
+    setReveal((previous) => ({ path, requestId: (previous?.requestId ?? 0) + 1 }));
   };
   // A reveal for a file not loaded yet pages forward until it arrives.
   const answeredReveal = useRef<number | null>(null);
@@ -363,7 +361,7 @@ export function PullRequestCodeTab({
     answeredReveal.current = revealRequest.nonce;
     revealFile(revealRequest.path);
     // oxlint-disable-next-line react/exhaustive-deps -- re-checked as pages and rows arrive
-  }, [revealRequest, files, rows, canLoadNextSlice]);
+  }, [revealRequest, files, canLoadNextSlice]);
 
   const orderedCommits = detail.commits.toSorted(
     (left, right) => Date.parse(right.committedDate) - Date.parse(left.committedDate),
@@ -439,7 +437,7 @@ export function PullRequestCodeTab({
       onReacted={onRefresh}
     />
   );
-  const renderAnnotation = (file: DiffFileModel, annotation: DiffLineAnnotation) => {
+  const renderAnnotation = (file: DiffFileModel, annotation: DiffExternalAnnotation) => {
     const group = groups.get(file.path)?.get(`${annotation.side}:${annotation.lineNumber}`);
     if (!group) return null;
     return (
@@ -766,8 +764,7 @@ export function PullRequestCodeTab({
             renderAnnotation={renderAnnotation}
             {...(canSelectLines && draft === null ? { onLineNumberClick: beginComment } : {})}
             renderHeaderExtras={renderHeaderExtras}
-            onRows={setRows}
-            scrollRequest={scrollRequest}
+            reveal={reveal}
             onReachEnd={() => {
               if (canLoadNextSlice) loadNextSlice();
             }}

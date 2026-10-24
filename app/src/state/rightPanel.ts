@@ -165,6 +165,9 @@ export const rightPanelActions = {
   openFile(threadKey: string, relativePath: string, line?: number) {
     reveal(updateRightPanel(threadKey, (current) => Panel.openFile(current, relativePath, line)));
   },
+  openAttachment(threadKey: string, attachment: Parameters<typeof Panel.openAttachment>[1]) {
+    reveal(updateRightPanel(threadKey, (current) => Panel.openAttachment(current, attachment)));
+  },
   navigateFolder(threadKey: string, surfaceId: string, relativePath: string, folderTrail: string, keepSource?: boolean) {
     reveal(
       updateRightPanel(threadKey, (current) =>
