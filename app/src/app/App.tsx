@@ -17,6 +17,7 @@ import { MainView } from "./MainView.tsx";
 import { alpha, useTheme } from "../ui/theme.ts";
 import { AppThemeProvider } from "../state/clientSettings.ts";
 import { TooltipProvider } from "../ui/overlay.tsx";
+import { PullRequestGuideRunCoordinator } from "../pullRequests/guide/PullRequestGuideRunCoordinator.tsx";
 import { ToastHost } from "../ui/toast.tsx";
 import { ThreadNotificationCoordinator } from "../notifications/ThreadNotificationCoordinator.tsx";
 import { noteUserInput } from "../notifications/platform.ts";
@@ -44,6 +45,7 @@ export function App({ boot }: { boot: Boot }) {
               <DialogHost />
             </ConnectGate>
             <ThreadNotificationCoordinator />
+            <PullRequestGuideRunCoordinator />
             <ToastHost />
           </div>
         </TooltipProvider>

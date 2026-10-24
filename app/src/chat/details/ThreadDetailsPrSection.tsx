@@ -1,6 +1,7 @@
 // The pull request rows under the branch row in the thread details card, after
 // apps/web/src/components/chat/{ThreadDetailsPrRows.tsx,ThreadDetailsPrRow.tsx} and the
 // displayed-PR derivation in BranchToolbarBranchSelector.tsx.
+import { runPullRequestWrite } from "../../pullRequests/pullRequestWrites.ts";
 import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
@@ -130,7 +131,8 @@ function ThreadDetailsPrRow(props: PrRowProps) {
       return;
     }
     setActionPending(true);
-    const result = await runAtomCommand(appAtomRegistry, pullRequestEnvironment.runAction, {
+    // Through the pull request write gate, so a dry run stops this merge/ready too.
+    const result = await runPullRequestWrite(pullRequestEnvironment.runAction, {
       environmentId,
       input: { ...reference, action, ...(action === "merge" && mergeMethod ? { mergeMethod } : {}) },
     });

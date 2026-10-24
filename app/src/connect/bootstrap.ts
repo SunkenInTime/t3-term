@@ -23,6 +23,8 @@ export interface Args {
   /** Connect to the T3 server running on this machine. On unless --no-local. */
   readonly local: boolean;
   readonly help: boolean;
+  /** A T3 Code prompt link to open once connected (promptLinks/promptLinkTarget.ts). */
+  readonly open: string | undefined;
 }
 
 export function parseArgs(argv: ReadonlyArray<string>): Args {
@@ -31,6 +33,7 @@ export function parseArgs(argv: ReadonlyArray<string>): Args {
   let pair: string | undefined;
   let terminal: boolean | undefined;
   let help = false;
+  let open: string | undefined;
   let local = process.env.T3TERM_NO_LOCAL !== "1";
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -41,6 +44,7 @@ export function parseArgs(argv: ReadonlyArray<string>): Args {
     else if (arg === "--window") terminal = false;
     else if (arg === "--no-local") local = false;
     else if (arg === "--help" || arg === "-h") help = true;
+    else if (arg === "--open") open = argv[++i];
   }
   return {
     url,
@@ -49,6 +53,7 @@ export function parseArgs(argv: ReadonlyArray<string>): Args {
     terminal,
     local,
     help,
+    open,
   };
 }
 

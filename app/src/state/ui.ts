@@ -32,7 +32,9 @@ export type Route =
   | { readonly kind: "settings"; readonly page: SettingsPage }
   // Sidebar footer utility pages (web: /pull-requests, /usage).
   | { readonly kind: "pull-requests" }
-  | { readonly kind: "usage" };
+  | { readonly kind: "usage" }
+  // A prompt link's landing (web: /new, and thread URLs with ?prompt=); `t3-term --open <link>`.
+  | { readonly kind: "prompt-link"; readonly link: string; readonly key: number };
 
 // T3TERM_ROUTE opens a top-level page at launch, for screenshots and automation.
 function initialRoute(): Route {
