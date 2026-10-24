@@ -36,6 +36,20 @@ const PROJECT_EMOJIS: ReadonlyArray<{ emoji: string; label: string }> = [
 
 const LUCIDE_NAMES = Object.keys(LUCIDE);
 
+/** apps/web/src/projectIconOptions.ts firstEmoji: the first grapheme, if it is an emoji, flag or keycap. */
+function firstEmoji(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const segments = new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(trimmed);
+  const segment = segments[Symbol.iterator]().next().value?.segment;
+  const isFlag = /^\p{Regional_Indicator}{2}$/u.test(segment ?? "");
+  const isKeycap = /^[#*0-9]\uFE0F?\u20E3$/u.test(segment ?? "");
+  if (!segment || (!/\p{Extended_Pictographic}/u.test(segment) && !isFlag && !isKeycap)) {
+    return null;
+  }
+  return segment;
+}
+
 function filterProjectIconNames(query: string): ReadonlyArray<string> {
   const normalized = query.trim().toLowerCase().replaceAll(/\s+/g, "-");
   const names = normalized ? LUCIDE_NAMES.filter((name) => name.includes(normalized)).slice(0, 60) : POPULAR_PROJECT_ICONS;
@@ -69,12 +83,14 @@ export function ProjectIconPickerDialog({
   });
   const [state, setState] = useState(initial);
   const [query, setQuery] = useState("");
+  const [customEmoji, setCustomEmoji] = useState("");
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) {
       setState(initial());
       setQuery("");
+      setCustomEmoji("");
     }
   }
   const icons = filterProjectIconNames(query);
@@ -197,13 +213,32 @@ export function ProjectIconPickerDialog({
             </div>
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
-            {PROJECT_EMOJIS.map((option) =>
-              cell(option.emoji, state.emoji === option.emoji, () => setState({ ...state, emoji: option.emoji }), (
-                <text style={{ fontSize: 20, lineHeight: 24, color: theme.foreground }}>{option.emoji}</text>
-              )),
-            )}
-          </div>
+          <>
+            <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
+              {PROJECT_EMOJIS.map((option) =>
+                cell(option.emoji, state.emoji === option.emoji, () => setState({ ...state, emoji: option.emoji }), (
+                  <text style={{ fontSize: 20, lineHeight: 24, color: theme.foreground }}>{option.emoji}</text>
+                )),
+              )}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <Text size="xs" weight={500} color={theme.mutedForeground}>
+                Or paste any emoji
+              </Text>
+              <TextField
+                width="100%"
+                value={customEmoji}
+                placeholder="Paste an emoji"
+                testId="project-icon-custom-emoji"
+                onChange={(value) => {
+                  setCustomEmoji(value);
+                  // Only a real emoji replaces the selection; other text just sits in the field, as on web.
+                  const next = firstEmoji(value);
+                  if (next) setState((current) => ({ ...current, emoji: next }));
+                }}
+              />
+            </div>
+          </>
         )}
       </div>
     </Dialog>
