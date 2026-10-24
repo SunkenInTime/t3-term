@@ -693,15 +693,38 @@ const DiffRowView = memo(function DiffRowView(props: {
     case "annotation":
       if (row.annotation.entries.every((entry) => entry.kind === "external")) {
         const render = props.interaction.current.renderAnnotation;
+        const gutter = gutterWidth(row.file.numberDigits, props.ch);
+        // pierre's annotation slot sits in the code column; a range still selected for the draft
+        // under its last line keeps its bar down the gutter beside it.
+        const annotationSide = row.annotation.side;
+        const selected = [...props.selected].some((line) =>
+          annotationSide === "deletions" ? line.oldLine === row.annotation.lineNumber && line.kind !== "addition" : line.newLine === row.annotation.lineNumber && line.kind !== "deletion",
+        );
+        const half = Math.floor(props.width / 2);
+        const columnWidth = row.half === "full" ? props.width : row.half === "left" ? half : props.width - half;
+        const content = (
+          <div style={{ display: "flex", flexDirection: "row", width: columnWidth, flexShrink: 0, backgroundColor: palette.bg }}>
+            <div style={{ position: "relative", width: gutter, flexShrink: 0, backgroundColor: selected ? palette.selectedGutter : palette.bg }}>
+              {selected ? <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, backgroundColor: palette.modified, pointerEvents: "none" }} /> : null}
+            </div>
+            <div style={{ width: 2, flexShrink: 0, backgroundColor: palette.bg }} />
+            <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
+              {render
+                ? row.annotation.entries.map((entry) => (
+                    <div key={entry.id} style={{ display: "flex", flexDirection: "column" }}>
+                      {render(row.file.path, { key: entry.id, side: row.annotation.side, lineNumber: row.annotation.lineNumber })}
+                    </div>
+                  ))
+                : null}
+            </div>
+          </div>
+        );
+        if (row.half === "full") return content;
+        const blank = <div style={{ width: row.half === "left" ? props.width - half : half, flexShrink: 0, backgroundColor: palette.bg }} />;
         return (
-          <div style={{ display: "flex", flexDirection: "column", width: props.width }}>
-            {render
-              ? row.annotation.entries.map((entry) => (
-                  <div key={entry.id} style={{ display: "flex", flexDirection: "column" }}>
-                    {render(row.file.path, { key: entry.id, side: row.annotation.side, lineNumber: row.annotation.lineNumber })}
-                  </div>
-                ))
-              : null}
+          <div style={{ display: "flex", flexDirection: "row", width: props.width }}>
+            {row.half === "left" ? content : blank}
+            {row.half === "left" ? blank : content}
           </div>
         );
       }
