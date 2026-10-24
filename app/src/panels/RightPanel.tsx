@@ -17,7 +17,7 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { faviconUrlForOrigin } from "@t3tools/shared/favicon";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { DeviceServiceState, PreviewSessionSnapshot } from "@t3tools/contracts";
+import type { DeviceServiceState, PreviewSessionSnapshot, PullRequestState } from "@t3tools/contracts";
 
 import { environmentThreadShells } from "../state/environment.ts";
 import {
@@ -41,7 +41,7 @@ import { projectIndexAtom } from "../state/environment.ts";
 import { fileSavePendingAtom, fileSavePendingKey } from "../state/files.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { Icon, type IconName } from "../ui/Icon.tsx";
-import { Menu, MenuItem, MenuSeparator, Tooltip, surfaceStyle } from "../ui/overlay.tsx";
+import { Menu, MenuIconSlot, MenuItem, MenuSeparator, Tooltip, surfaceStyle } from "../ui/overlay.tsx";
 import { FloatingLayer } from "@gpuix/react/floating";
 import { useBrowserDefaults } from "../web/browser/browserDefaults.ts";
 import { IconButton, Kbd, Text } from "../ui/primitives.tsx";
@@ -54,6 +54,7 @@ import { FilesSurface } from "./files/FilesSurface.tsx";
 import { PullRequestSurface } from "./pr/PullRequestSurface.tsx";
 import { ThreadPullRequestsPanel } from "./pr/ThreadPullRequestsPanel.tsx";
 import { useThreadPullRequest } from "./pr/useThreadPullRequest.ts";
+import { resolvePullRequestState } from "./pr/pullRequestPresentation.tsx";
 import { addTerminalSurface, TerminalSurface } from "./terminal/TerminalSurface.tsx";
 import { FaviconImage } from "./browser/FaviconImage.tsx";
 import { PreviewView } from "./browser/PreviewView.tsx";
@@ -152,6 +153,34 @@ function previewFaviconUrl(surface: RightPanelSurface, sessions: Readonly<Record
   const snapshot = surface.kind === "preview" && surface.resourceId ? sessions[surface.resourceId] : null;
   const url = !snapshot || snapshot.navStatus._tag === "Idle" ? null : snapshot.navStatus.url;
   return faviconUrlForOrigin(url, 32);
+}
+
+/**
+ * RightPanelTabs PullRequestSurfaceIcon: a pull request tab shows its state
+ * icon in the state colour (violet merge, emerald open, ...) once the thread's
+ * linked snapshot knows it, and the muted pull request glyph until then.
+ * Web also asks the server for the detail when no thread links the PR; this
+ * reads the linked snapshots only.
+ */
+function PullRequestTabIcon({ surface }: { surface: Extract<RightPanelSurface, { kind: "pull-request" }> }) {
+  const theme = useTheme();
+  const threads = useAtomValue(environmentThreadShells.threadShellsAtom);
+  let newest: { state: PullRequestState; isDraft: boolean; syncedAt: string } | null = null;
+  for (const thread of threads) {
+    if (surface.environmentId !== undefined && thread.environmentId !== surface.environmentId) continue;
+    for (const link of visibleThreadPullRequests(thread.pullRequests)) {
+      if (link.number !== surface.number || link.repository !== surface.repository) continue;
+      if (surface.host !== undefined && link.host !== surface.host) continue;
+      const snapshot = link.snapshot;
+      if (snapshot === null) continue;
+      if (newest === null || (snapshot.syncedAt ?? "") > newest.syncedAt) {
+        newest = { state: snapshot.state, isDraft: snapshot.isDraft, syncedAt: snapshot.syncedAt ?? "" };
+      }
+    }
+  }
+  if (newest === null) return <Icon name="git-pull-request" size={12} color={theme.mutedForeground} />;
+  const presentation = resolvePullRequestState(theme, newest);
+  return <Icon name={presentation.icon} size={12} color={presentation.color} />;
 }
 
 function surfaceIcon(surface: RightPanelSurface): IconName {
@@ -315,7 +344,7 @@ export function RightPanel({
     {
       key: "browser",
       label: "Browser",
-      icon: "globe",
+      icon: "globe-2",
       shortcut: "B",
       // ChatView: isPreviewSupportedInRuntime() || useEnvironmentSupportsServerBrowser; t3-term has no desktop bridge.
       available: serverBrowser,
@@ -693,11 +722,13 @@ function AddSurfaceMenuItems({ actions, onClose }: { actions: readonly SurfaceAc
           <div key={action.label} style={{ display: "flex", flexDirection: "column" }} onMouseEnter={() => setBrowserSubmenuOpen(false)}>
           <MenuItem
             icon={action.icon}
+            compactIcon
             disabled={!action.available}
             onSelect={action.onClick}
             testId={`right-panel-add-${action.key}`}
             trailing={
-              <Text size="xs" color={alpha(theme.mutedForeground, 0.72)} style={{ marginLeft: 16 }}>
+              // MenuShortcut: `ms-auto font-medium text-secondary-label` (= muted), only the item's 8px gap before it.
+              <Text size="xs" weight={500} color={theme.mutedForeground}>
                 {action.shortcut}
               </Text>
             }
@@ -766,14 +797,14 @@ function BrowserProfileMenuItem({
           hover: { backgroundColor: theme.accent },
         }}
       >
-        <Icon name={action.icon} size={16} color={theme.mutedForeground} />
+        <MenuIconSlot name={action.icon} color={alpha(theme.mutedForeground, 0.8)} />
         <Text color={theme.foreground} style={{ flexGrow: 1, minWidth: 0 }}>
           {action.label}
         </Text>
-        <Text size="xs" color={alpha(theme.mutedForeground, 0.72)} style={{ marginLeft: 16 }}>
+        <Text size="xs" weight={500} color={theme.mutedForeground}>
           {action.shortcut}
         </Text>
-        <Icon name="chevron-right" size={16} color={theme.mutedForeground} />
+        <MenuIconSlot name="chevron-right" color={alpha(theme.mutedForeground, 0.8)} edge="end" />
       </div>
       {open ? (
         <FloatingLayer
@@ -918,6 +949,8 @@ function RightPanelTab(props: {
             </div>
           ) : props.surface.kind === "preview" ? (
             <FaviconImage url={props.faviconUrl} size={12} color={color} />
+          ) : props.surface.kind === "pull-request" ? (
+            <PullRequestTabIcon surface={props.surface} />
           ) : (
             <Icon name={surfaceIcon(props.surface)} size={12} color={color} />
           )

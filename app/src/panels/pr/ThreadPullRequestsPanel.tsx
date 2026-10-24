@@ -446,11 +446,13 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
           flexDirection: "column",
           flexGrow: 1,
           minHeight: 0,
-          padding: 6,
           overflowY: "scroll",
           scrollbarColor: theme.scrollbar,
         }}
       >
+        {/* The padding sits on a wrapper: on the scroller itself GPUI counted it
+            into the scroll extent, so a one-row list showed a full-length thumb. */}
+        <div style={{ display: "flex", flexDirection: "column", width: "100%", flexShrink: 0, padding: 6 }}>
         {lines.map((line) => (
           <LinkRow
             key={lineKey(line)}
@@ -466,6 +468,7 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
             onMenuAction={onMenuAction}
           />
         ))}
+        </div>
       </div>
       <div
         style={{

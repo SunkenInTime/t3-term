@@ -83,6 +83,11 @@ import {
   type SidebarSection,
 } from "../web/components/Sidebar.logic.ts";
 import type { SidebarRect } from "../web/components/Sidebar.drag.ts";
+import {
+  completeSidebarRouteReveal,
+  pendingSidebarRouteReveal,
+  type SidebarRouteReveal,
+} from "../web/components/sidebar/routeReveal.ts";
 import { resolveSnoozePresets, snoozeWakeLabel } from "../web/components/Sidebar.snooze.ts";
 import { ContextMenu } from "./ContextMenu.tsx";
 import { requestCustomSnooze } from "../dialogs/CustomSnoozeDialog.tsx";
@@ -117,6 +122,9 @@ import { shortcutLabelForCommand } from "./shortcutLabel.ts";
 import { openProjectSettings as openProjectSettingsPage } from "../settings/navigation.ts";
 
 const THREAD_SEARCH_DEBOUNCE_MS = 200;
+// Web keeps this in AppSidebarLayout so Settings and the narrow drawer, which
+// unmount the sidebar without a route change, do not re-request a reveal.
+const sidebarRouteReveal: SidebarRouteReveal = { observedKey: null, pendingKey: null };
 const EMPTY_PROVIDER_ENTRIES: ReadonlyMap<string, SidebarProviderEntry> = new Map();
 
 let paletteRequestNonce = 0;
@@ -310,6 +318,44 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
   });
   const dragFrom = dragView?.activeSection ?? null;
   const dragTargetSection = dragView?.targetSection ?? null;
+
+  // web Sidebar revealRouteRow: the palette, history and links can open a thread
+  // the list has scrolled away from. A route change, and each mount, scrolls the
+  // open row into view once (`scrollIntoView({ block: "nearest" })`). Row boxes
+  // come from the measured heights the drag uses; layout lands a frame after a
+  // route or list change, so wait until the row and the scroller are measured.
+  const mountRevealOwed = useRef(true);
+  useEffect(() => {
+    const pendingKey = pendingSidebarRouteReveal(sidebarRouteReveal, routeRowThreadKey);
+    // Search results replace the thread list; reveal once the list returns.
+    if (isSearchingThreads) return;
+    const revealKey = pendingKey ?? (mountRevealOwed.current ? routeRowThreadKey : null);
+    if (revealKey === null) return;
+    const index = sidebarListItems.findIndex((item) => item.kind === "thread" && item.key === revealKey);
+    if (index < 0) return;
+    const itemId = sidebarListItemId(sidebarListItems[index]!);
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const reveal = () => {
+      const metrics = scrollMetrics.current;
+      if (metrics.elementId === null || metrics.height <= 0 || !listHeights.current.has(itemId)) {
+        if (++attempts < 30) timer = setTimeout(reveal, 16);
+        return;
+      }
+      completeSidebarRouteReveal(sidebarRouteReveal);
+      mountRevealOwed.current = false;
+      const rect = measureListItems(sidebarListItems, listHeights.current, metrics.width)[index];
+      if (!rect) return;
+      const top = metrics.scrollTop;
+      const next =
+        rect.top < top ? rect.top : rect.bottom > top + metrics.height ? rect.bottom - metrics.height : top;
+      // GPUI scroll offsets grow negative as content moves up.
+      if (next !== top) renderer.scrollTo?.(metrics.elementId, 0, -next);
+    };
+    reveal();
+    return () => clearTimeout(timer);
+  }, [routeRowThreadKey, sidebarListItems, isSearchingThreads, renderer]);
+
   const jumpIndexByKey = new Map(list.orderedThreadKeys.map((key, index) => [key, index] as const));
 
   const renderThreadRow = (

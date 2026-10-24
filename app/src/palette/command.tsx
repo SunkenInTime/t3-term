@@ -12,7 +12,8 @@ import { memo, useEffect, useRef, useState, type ReactNode, type RefObject } fro
 
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { dialogGlassShadow } from "../ui/overlay.tsx";
-import { Text } from "../ui/primitives.tsx";
+import { ScrollFadeEdges, Text } from "../ui/primitives.tsx";
+import { ThreadSearchMatchExcerpt } from "../ui/ThreadSearchMatchExcerpt.tsx";
 import { FONTS, RADIUS, alpha, useTheme, type Palette } from "../ui/theme.ts";
 import { useSmallViewport } from "../ui/viewport.tsx";
 import type {
@@ -300,24 +301,68 @@ export function PaletteFooter({
  */
 export function PalettePanel({ children, fill, padding }: { children: ReactNode; fill?: boolean; padding?: { y: number; x: number } }) {
   const theme = useTheme();
+  const fades = useScrollFades();
   return (
-    <div
-      testId="command-palette-results"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        ...(padding ? { paddingTop: padding.y, paddingBottom: padding.y, paddingLeft: padding.x, paddingRight: padding.x } : {}),
-        flexGrow: fill ? 1 : 0,
-        flexShrink: 1,
-        minHeight: 0,
-        overflowY: "scroll",
-        scrollbarColor: theme.scrollbar,
-        scrollbarWidth: 6,
-      }}
-    >
-      {children}
+    <div style={{ position: "relative", display: "flex", flexDirection: "column", flexGrow: fill ? 1 : 0, flexShrink: 1, minHeight: 0 }}>
+      <div
+        testId="command-palette-results"
+        onLayout={(event) => fades.update({ viewport: event.height ?? 0 })}
+        onScrollChange={(event) => fades.update({ scrollTop: -(event.scrollY ?? 0) })}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          flexGrow: 1,
+          flexShrink: 1,
+          minHeight: 0,
+          overflowY: "scroll",
+          scrollbarColor: theme.scrollbar,
+          scrollbarWidth: 6,
+        }}
+      >
+        {/* Padding on the scroller itself counts into GPUI's scroll extent, so a
+            short list would scroll by it; it sits on the content instead. */}
+        <div
+          onLayout={(event) => fades.update({ content: event.height ?? 0 })}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            width: "100%",
+            flexShrink: 0,
+            ...(padding ? { paddingTop: padding.y, paddingBottom: padding.y, paddingLeft: padding.x } : {}),
+            // A native scrollbar takes its 6px out of the list's width once the
+            // list overflows; GPUI's thumb overlays, so the lane is padded.
+            paddingRight: (padding?.x ?? 0) + (fades.overflowing ? SCROLLBAR_LANE : 0),
+          }}
+        >
+          {children}
+        </div>
+      </div>
+      <ScrollFadeEdges top={fades.top} bottom={fades.bottom} color={paletteSurface(theme).background} insetRight={6} />
     </div>
   );
+}
+
+/**
+ * getVirtualizedScrollFadeClassName's inputs: content above (`scrollTop > 1`)
+ * and below (more than 1px left to scroll). State changes only when an edge
+ * flips, not on every scroll tick.
+ */
+function useScrollFades() {
+  const metrics = useRef({ viewport: 0, content: 0, scrollTop: 0 });
+  const [edges, setEdges] = useState({ top: false, bottom: false, overflowing: false });
+  const current = useRef(edges);
+  const update = (next: Partial<typeof metrics.current>) => {
+    Object.assign(metrics.current, next);
+    const { viewport, content, scrollTop } = metrics.current;
+    set(scrollTop > 1, viewport > 0 && content - viewport - scrollTop > 1, viewport > 0 && content - viewport > 1);
+  };
+  const set = (top: boolean, bottom: boolean, overflowing = top || bottom) => {
+    const now = current.current;
+    if (now.top === top && now.bottom === bottom && now.overflowing === overflowing) return;
+    current.current = { top, bottom, overflowing };
+    setEdges(current.current);
+  };
+  return { ...edges, update, set };
 }
 
 export function PaletteEmptyState({ message }: { message: string }) {
@@ -398,11 +443,7 @@ const PaletteRowView = memo(function PaletteRowView({
           {item.titleLeadingContent}
           {renderTitle(item.title, theme.foreground)}
         </div>
-        {item.threadContentMatch ? (
-          <Text size="xs" color={alpha(theme.mutedForeground, 0.9)} truncate>
-            {item.threadContentMatch.snippet}
-          </Text>
-        ) : null}
+        {item.threadContentMatch ? <ThreadSearchMatchExcerpt match={item.threadContentMatch} /> : null}
         {item.description !== undefined ? (
           typeof item.description === "string" ? (
             <Text size="xs" color={alpha(theme.mutedForeground, 0.7)} style={{ minWidth: 0 }}>
@@ -452,6 +493,9 @@ type PaletteRowsProps = {
   emptyMessage: string;
   limit?: number;
 };
+
+/** --app-scrollbar-width. */
+const SCROLLBAR_LANE = 6;
 
 // Lists up to this long render as plain rows and hug their content; longer ones
 // fill the popup's max height anyway, so they go on a windowed virtual list.
@@ -557,12 +601,19 @@ function VirtualPaletteRows(props: PaletteRowsProps) {
   const listRef = useRef<{ id: number } | null>(null);
   const visible = useRef({ start: 0, end: 0 });
   const [windowStart, setWindowStart] = useState(0);
+  const fades = useScrollFades();
   // Item 0 is the top spacer; row i is item i + 1.
   const itemCount = rows.length + 2;
+  const panelHeight = useRef<number | null>(null);
+  const estimatedHeight = rows.reduce((sum, row) => sum + estimatedRowHeight(row), 16);
+  // The panel shrank under the rows' estimated height: the list scrolls.
+  const panelOverflows = () => panelHeight.current !== null && panelHeight.current < estimatedHeight - 1;
   useEffect(() => {
     setWindowStart(0);
     const id = listRef.current?.id;
     if (id !== undefined) renderer.scrollToItem?.(id, 0, 0);
+    // A new result list starts at the top.
+    if (panelHeight.current !== null) fades.set(false, panelOverflows(), panelOverflows());
   }, [rows.length, rows[0]?.key, renderer]);
   useEffect(() => {
     if (highlightedValue === null) return;
@@ -588,7 +639,10 @@ function VirtualPaletteRows(props: PaletteRowsProps) {
     }
     const row = rows[index - 1]!;
     items.push(
-      <div key={row.key} style={{ display: "flex", flexDirection: "column", width: "100%", paddingLeft: 8, paddingRight: 8 }}>
+      <div
+        key={row.key}
+        style={{ display: "flex", flexDirection: "column", width: "100%", paddingLeft: 8, paddingRight: 8 + (fades.overflowing ? SCROLLBAR_LANE : 0) }}
+      >
         <PaletteRowContent
           row={row}
           highlightedValue={highlightedValue}
@@ -599,11 +653,16 @@ function VirtualPaletteRows(props: PaletteRowsProps) {
       </div>,
     );
   }
-  const estimatedHeight = rows.reduce((sum, row) => sum + estimatedRowHeight(row), 16);
   return (
     <div
       testId="command-palette-results"
-      style={{ display: "flex", flexDirection: "column", width: "100%", height: estimatedHeight, flexShrink: 1, minHeight: 0 }}
+      // Until the list scrolls (onVisibleRange), more below means the panel
+      // shrank under the rows' estimated height.
+      onLayout={(event) => {
+        panelHeight.current = event.height ?? estimatedHeight;
+        fades.set(false, panelOverflows(), panelOverflows());
+      }}
+      style={{ position: "relative", display: "flex", flexDirection: "column", width: "100%", height: estimatedHeight, flexShrink: 1, minHeight: 0 }}
     >
       <virtual-list
         ref={listRef as never}
@@ -613,12 +672,16 @@ function VirtualPaletteRows(props: PaletteRowsProps) {
         onVisibleRange={(event) => {
           const start = Math.floor(event.startIndex ?? 0);
           visible.current = { start, end: Math.ceil(event.endIndex ?? start) };
+          const id = listRef.current?.id;
+          const offset = id === undefined ? 0 : (renderer.getListScrollTop?.(id)?.[1] ?? 0);
+          fades.set(start > 0 || offset > 1, visible.current.end < itemCount, panelOverflows());
           if (start < windowStart || start + ROW_WINDOW / 2 > windowStart + ROW_WINDOW) setWindowStart(Math.max(0, start - ROW_WINDOW / 4));
         }}
         style={{ width: "100%", flexGrow: 1, minHeight: 0, scrollbarColor: theme.scrollbar, scrollbarWidth: 6 }}
       >
         {items}
       </virtual-list>
+      <ScrollFadeEdges top={fades.top} bottom={fades.bottom} color={paletteSurface(theme).background} insetRight={6} />
     </div>
   );
 }

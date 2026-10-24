@@ -15,6 +15,7 @@ import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
   type ReactElement,
   type ReactNode,
@@ -25,10 +26,19 @@ import { Kbd, Text, type Style } from "./primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme, type Palette } from "./theme.ts";
 import { useSmallViewport, viewportWidthAtom } from "./viewport.tsx";
 
+/**
+ * dropdown-glass in dark mode: popover (#111) at ~84% over the blurred page,
+ * which samples about 15 over the neutral-950 canvas. GPUI has no backdrop
+ * blur, so the composite is painted opaque.
+ */
+export const DROPDOWN_GLASS_DARK = "#0f0f0f";
+/** dialog-glass in dark mode: the canvas at 80% over the dimmed, blurred page samples 9-10. */
+export const DIALOG_GLASS_DARK = "#0a0a0a";
+
 /** dropdown-glass: popover at ~84% over a blurred backdrop. GPUI has no backdrop blur, so it is opaque. */
 export function surfaceStyle(theme: Palette): Style {
   return {
-    backgroundColor: theme.appearance === "dark" ? "#141414" : "#ffffff",
+    backgroundColor: theme.appearance === "dark" ? DROPDOWN_GLASS_DARK : "#ffffff",
     borderWidth: 1,
     borderColor: alpha(theme.foreground, 0.1),
     borderRadius: RADIUS.lg,
@@ -172,10 +182,17 @@ export function MenuItem({
   trailing,
   onSelect,
   keepOpen,
+  compactIcon,
   testId,
 }: {
   children: ReactNode;
   icon?: IconName;
+  /**
+   * menu.tsx `[&>svg]:-mx-0.5`: an icon that is the item's direct svg child
+   * gives back 2px each side, so the label starts 4px nearer, and paints at
+   * 80% opacity. Web menus that wrap their icons in a span get neither.
+   */
+  compactIcon?: boolean;
   shortcut?: string;
   checked?: boolean;
   destructive?: boolean;
@@ -220,7 +237,11 @@ export function MenuItem({
       }}
     >
       {icon ? (
-        <Icon name={icon} size={small ? 18 : 16} color={destructive ? theme.errorForeground : theme.mutedForeground} />
+        compactIcon ? (
+          <MenuIconSlot name={icon} size={small ? 18 : 16} color={destructive ? theme.errorForeground : alpha(theme.mutedForeground, 0.8)} />
+        ) : (
+          <Icon name={icon} size={small ? 18 : 16} color={destructive ? theme.errorForeground : theme.mutedForeground} />
+        )
       ) : null}
       <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
         <Text size={small ? "base" : "sm"} color={color} truncate>
@@ -239,6 +260,41 @@ export function MenuItem({
         </Text>
       ) : null}
       {checked ? <Icon name="check" size={16} color={theme.foreground} /> : null}
+    </div>
+  );
+}
+
+/**
+ * An icon laid out 4px narrower than it paints, like web's `-mx-0.5` (or
+ * `-me-0.5` with `edge: "end"`). Negative margins collapse content-sized
+ * floating menus in GPUI, so the icon overflows a narrower slot instead.
+ */
+export function MenuIconSlot({
+  name,
+  size = 16,
+  color,
+  edge = "both",
+}: {
+  name: IconName;
+  size?: number;
+  color: string;
+  edge?: "both" | "end";
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: edge === "end" ? "flex-start" : "center",
+        width: edge === "end" ? size - 2 : size - 4,
+        height: size,
+        flexShrink: 0,
+        pointerEvents: "none",
+      }}
+    >
+      <div style={{ display: "flex", width: size, height: size, flexShrink: 0 }}>
+        <Icon name={name} size={size} color={color} />
+      </div>
     </div>
   );
 }
@@ -453,7 +509,7 @@ export function Dialog({
               ? { width: "100%", borderRadius: 0, borderTopWidth: 1 }
               : { width: Math.min(width, Math.max(0, viewportWidth - 32)), borderRadius: RADIUS["2xl"], borderWidth: 1 }),
             borderColor: theme.appearance === "dark" ? alpha("#ffffff", 0.08) : alpha(theme.foreground, 0.1),
-            backgroundColor: theme.appearance === "dark" ? "#0f0f0f" : "#ffffff",
+            backgroundColor: theme.appearance === "dark" ? DIALOG_GLASS_DARK : "#ffffff",
             boxShadow: dialogGlassShadow(theme),
             overflow: "hidden",
             position: "relative",
@@ -517,11 +573,14 @@ export function Dialog({
 
 // ── Tooltip ─────────────────────────────────────────────────────────────
 
+/** How long after a press a focus-driven open is taken as the press's own focus. */
+const PRESS_FOCUS_WINDOW_MS = 600;
+
 export function TooltipProvider({ children }: { children: ReactNode }) {
   return <TooltipPrimitive.Provider delayDuration={500}>{children}</TooltipPrimitive.Provider>;
 }
 
-/** apps/web/src/components/ui/tooltip.tsx: radius 8, border, popover bg, 12px text. */
+/** apps/web/src/components/ui/tooltip.tsx: radius 8, border, opaque bg-popover (not glass), 12px text. */
 export function Tooltip({
   content,
   description,
@@ -540,9 +599,29 @@ export function Tooltip({
   rootStyle?: Style;
 }) {
   const theme = useTheme();
+  // Web's tooltips open on hover, or on keyboard focus. gpuix's trigger also
+  // opens on any focus, and a click focuses it, so the tooltip came back right
+  // after the press closed it and sat behind the menu the click opened. Opens
+  // just after a press are ignored; hover and Tab still open it.
+  const [open, setOpen] = useState(false);
+  const pressedAt = useRef(0);
   return (
-    <TooltipPrimitive.Root style={rootStyle}>
-      <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
+    <TooltipPrimitive.Root
+      style={rootStyle}
+      open={open}
+      onOpenChange={(next) => {
+        if (next && Date.now() - pressedAt.current < PRESS_FOCUS_WINDOW_MS) return;
+        setOpen(next);
+      }}
+    >
+      <TooltipPrimitive.Trigger
+        asChild
+        onMouseDown={() => {
+          pressedAt.current = Date.now();
+        }}
+      >
+        {children}
+      </TooltipPrimitive.Trigger>
       <TooltipPrimitive.Content
         side={side}
         sideOffset={6}
@@ -559,7 +638,7 @@ export function Tooltip({
           borderRadius: RADIUS.md,
           borderWidth: 1,
           borderColor: theme.border,
-          backgroundColor: theme.appearance === "dark" ? "#141414" : "#ffffff",
+          backgroundColor: theme.popover,
         }}
       >
         {description ? (
