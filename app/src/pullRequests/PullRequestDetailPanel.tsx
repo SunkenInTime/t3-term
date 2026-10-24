@@ -1057,9 +1057,10 @@ export function PullRequestDetailView({
   const openOnHostText =
     hostClient === UNKNOWN_SOURCE_CONTROL_CLIENT ? "Open on host" : `Open on ${hostClient.label}`;
   const repositoryUrl = detail === null ? null : changeRequestRepositoryUrl(detail.url);
+  const markdownCwd = detail?.workspaceRoot ?? null;
   const markdownContext = useMemo(
-    () => ({ repositoryUrl, threadRef, environmentId }),
-    [repositoryUrl, threadRef?.environmentId, threadRef?.threadId, environmentId],
+    () => ({ repositoryUrl, threadRef, environmentId, cwd: markdownCwd }),
+    [repositoryUrl, threadRef?.environmentId, threadRef?.threadId, environmentId, markdownCwd],
   );
   const checkoutCommand = handoffSummary
     ? pullRequestCheckoutCommand(

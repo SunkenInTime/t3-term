@@ -104,7 +104,9 @@ export function DiffCommentDraft({
   return (
     <div testId="pr-line-comment-draft" style={{ display: "flex", flexDirection: "column", paddingLeft: 12, paddingRight: 12, paddingTop: 8, paddingBottom: 8 }}>
       <PrTextarea
-        autoFocus
+        // Focused after layout: at once, its virtual-list row would jump to the top and hide the
+        // selected lines above it.
+        focusAfterLayout
         size="sm"
         value={text}
         minRows={2}

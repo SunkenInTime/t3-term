@@ -24,6 +24,8 @@ import { appAtomRegistry } from "../runtime/runtime.ts";
 import { copyTextToClipboard } from "../chat/header/osActions.ts";
 import { registerShortcutHandler } from "../keybindings/useGlobalKeybindings.ts";
 import { toast } from "../ui/toast.tsx";
+import { usePullRequestCloseSweep } from "./usePullRequestCloseSweep.ts";
+import { MarkdownOverlayHost } from "../chat/markdown/overlays.tsx";
 import {
   pullRequestEnvironment,
   pullRequestPanel,
@@ -588,6 +590,36 @@ export function PullRequestsPage() {
     return keys;
   })();
   const visibleKeysToken = [...visibleKeys].join("|");
+
+  // ── Close sweep ──
+  const [viewportTop, setViewportTop] = useState(0);
+  const closeSweepRows = displayGroups.flatMap((group) => group.entries.map((entry) => ({ entry, groupKey: group.key })));
+  const closeSweep = usePullRequestCloseSweep(
+    {
+      rows: closeSweepRows,
+      canClose: (entry) => hostActionsOf(entry).has("close"),
+      // web: the last row whose top is above the pointer, the pointer clamped to the viewport.
+      rowKeyAtY: (windowY) => {
+        const visibleY = Math.min(Math.max(windowY, viewportTop), viewportTop + viewportHeight - 1);
+        const contentY = visibleY - viewportTop + scrollY;
+        let y = listTop;
+        let key: string | null = null;
+        displayGroups.forEach((group, groupIndex) => {
+          if (groupIndex > 0) y += PULL_REQUEST_GROUP_GAP;
+          if (group.label) y += PULL_REQUEST_GROUP_HEADER_HEIGHT + PULL_REQUEST_ROW_GAP;
+          for (const entry of group.entries) {
+            if (key !== null && y > contentY) return;
+            key = pullRequestEntryKey(entry);
+            y += PULL_REQUEST_ROW_HEIGHT + PULL_REQUEST_ROW_GAP;
+          }
+        });
+        return key;
+      },
+    },
+    () => refreshListAndStats(),
+  );
+  // web: a new list under a sweep in progress ends it.
+  useEffect(() => closeSweep.cancel, [filterKey, search.q, sort]);
   useEffect(() => {
     setStatsTargetState((current) => {
       const batches = current.key === filterKey ? current.batches : [];
@@ -867,6 +899,7 @@ export function PullRequestsPage() {
           onSelect={selectEntry}
           hostActionsOf={hostActionsOf}
           onSpeedAction={() => refreshListAndStats()}
+          closeSweep={closeSweep}
         />
       )}
       {listQuery.error && shownCount > 0 ? <ListErrorBanner error={listQuery.error} onRetry={() => listQuery.refresh()} /> : null}
@@ -985,6 +1018,7 @@ export function PullRequestsPage() {
       listBody={listBody}
       onScrollY={setScrollY}
       onViewportHeight={setViewportHeight}
+      onViewportTop={setViewportTop}
       onContainerWidth={setContainerWidth}
     />
   );
@@ -992,6 +1026,8 @@ export function PullRequestsPage() {
   return (
     <div style={{ display: "flex", flexDirection: "row", flexGrow: 1, minHeight: 0, minWidth: 0, height: "100%" }}>
       {column}
+      {/* Markdown's menus and image viewer (the thread view's timeline mounts its own host). */}
+      <MarkdownOverlayHost />
       {panel.isOpen && activeSurface && panelEnvironmentId !== null ? (
         <PullRequestDetailPanel
           key={activeSurface.id}
@@ -1172,6 +1208,7 @@ function PullRequestsColumn({
   listBody,
   onScrollY,
   onViewportHeight,
+  onViewportTop,
   onContainerWidth,
 }: {
   condensed: boolean;
@@ -1194,6 +1231,8 @@ function PullRequestsColumn({
   listBody: ReactNode;
   onScrollY: (y: number) => void;
   onViewportHeight: (height: number) => void;
+  /** The list viewport's top in window coordinates, for the close sweep's pointer. */
+  onViewportTop: (top: number) => void;
   onContainerWidth: (width: number) => void;
 }) {
   const theme = useTheme();
@@ -1302,6 +1341,7 @@ function PullRequestsColumn({
         onScrollChange={(event) => onScrollY(Math.abs(event.scrollY ?? 0))}
         onLayout={(event) => {
           if (event.height) onViewportHeight(event.height);
+          onViewportTop(Number(event.y ?? 0));
         }}
         style={{
           display: "flex",

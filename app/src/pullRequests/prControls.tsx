@@ -2,7 +2,10 @@
 // apps/web/src/components/ui/{button,badge,textarea,input,toggle-group}.tsx as the
 // pullRequest components use them (xs buttons, control badges, segmented toggles).
 import type { EventPayload } from "@gpuix/native";
-import type { ReactNode } from "react";
+import { useGpuixRequired, type KeyEvent, type PublicInstance } from "@gpuix/react";
+import { useContext, useEffect, useRef, type ReactNode } from "react";
+
+import { DiffFocusKeeperContext } from "../panels/diff/DiffView.tsx";
 
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Tooltip } from "../ui/overlay.tsx";
@@ -66,6 +69,7 @@ export function PrButton({
   disabled,
   onClick,
   onMouseDownOutside,
+  pointer,
   testId,
   style,
   minWidth,
@@ -79,6 +83,17 @@ export function PrButton({
   disabled?: boolean;
   onClick?: (event: EventPayload) => void;
   onMouseDownOutside?: () => void;
+  /**
+   * Raw press, move and release, even while disabled (a drag that starts here). On the button
+   * itself: its fill hides it from its ancestors' pointer listeners.
+   */
+  pointer?: {
+    readonly onMouseDown: (event: EventPayload) => void;
+    readonly onMouseMove: (event: EventPayload) => void;
+    readonly onMouseUp: (event: EventPayload) => void;
+    /** Keys while the press holds focus here (a press focuses a focusable element). */
+    readonly onKeyDown?: (event: KeyEvent) => void;
+  };
   testId?: string;
   style?: Style;
   minWidth?: number;
@@ -91,6 +106,7 @@ export function PrButton({
       testId={testId}
       onClick={disabled ? undefined : onClick}
       {...(onMouseDownOutside ? { onMouseDownOutside } : {})}
+      {...(pointer ? { ...pointer, tabIndex: -1 } : {})}
       style={{
         display: "flex",
         flexDirection: "row",
@@ -287,6 +303,7 @@ export function PrTextarea({
   minRows = 3,
   maxRows = 12,
   autoFocus,
+  focusAfterLayout,
   testId,
   onKeyDown,
   size = "default",
@@ -298,11 +315,31 @@ export function PrTextarea({
   minRows?: number;
   maxRows?: number;
   autoFocus?: boolean;
+  /**
+   * Focus a moment after mounting, by request, keeping a surrounding diff's scroll: focus inside
+   * a virtual-list row scrolls that row to the top (see DiffFocusKeeperContext).
+   */
+  focusAfterLayout?: boolean;
   testId?: string;
   onKeyDown?: (event: EventPayload) => void;
   size?: "default" | "sm";
 }) {
   const theme = useTheme();
+  const renderer = useGpuixRequired();
+  const textareaRef = useRef<PublicInstance | null>(null);
+  const keepScroll = useContext(DiffFocusKeeperContext);
+  useEffect(() => {
+    if (!focusAfterLayout) return;
+    const timer = setTimeout(() => {
+      const focus = () => {
+        if (textareaRef.current) renderer.focusElement?.(textareaRef.current.id);
+      };
+      if (keepScroll) keepScroll(focus);
+      else focus();
+    }, 32);
+    return () => clearTimeout(timer);
+    // oxlint-disable-next-line react/exhaustive-deps -- once, after mounting
+  }, []);
   return (
     <div
       style={{
@@ -317,6 +354,7 @@ export function PrTextarea({
       }}
     >
       <textarea
+        ref={textareaRef}
         testId={testId}
         value={value}
         placeholder={placeholder}

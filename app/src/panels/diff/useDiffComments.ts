@@ -39,6 +39,19 @@ export interface DiffCommentsConfig {
   readonly draftKey: string;
 }
 
+/**
+ * Line selection owned by the caller (the pull request Code tab): presses and drags on line
+ * numbers select a range as they do for composer comments, and the range goes to the caller on
+ * release or on the gutter "+" (pierre's onLineSelectionEnd / onGutterUtilityClick). The caller
+ * then paints it through `selected` until it lets go.
+ */
+export interface DiffLineSelectionConfig {
+  /** False while the caller's own draft is open: pierre's enableLineSelection. */
+  readonly enabled: boolean;
+  readonly selected: { readonly path: string; readonly range: SelectedLineRange } | null;
+  readonly onSelectionEnd: (path: string, range: SelectedLineRange) => void;
+}
+
 export interface LinePoint {
   readonly lineNumber: number;
   readonly side: SelectionSide;
@@ -79,10 +92,21 @@ function appendEntry(
   );
 }
 
-export function useDiffComments(files: ReadonlyArray<DiffFileModel>, config: DiffCommentsConfig | null) {
+export function useDiffComments(
+  files: ReadonlyArray<DiffFileModel>,
+  config: DiffCommentsConfig | null,
+  external: DiffLineSelectionConfig | null = null,
+) {
   const draft = useAtomValue(composerDraftAtom(config?.draftKey ?? ""));
   const reviewComments = config ? (draft.reviewComments ?? EMPTY_COMMENTS) : EMPTY_COMMENTS;
   const [selection, setSelection] = useState<{ path: string; anchor: LinePoint; focus: LinePoint } | null>(null);
+  // Handlers read the selection through a ref: a press and its release can arrive before React
+  // renders the press's update.
+  const selectionRef = useRef(selection);
+  const updateSelection = (next: typeof selection) => {
+    selectionRef.current = next;
+    setSelection(next);
+  };
   const [draftState, setDraftState] = useState<DraftState | null>(null);
   const [draftText, setDraftText] = useState("");
   const selectingRef = useRef(false);
@@ -92,7 +116,7 @@ export function useDiffComments(files: ReadonlyArray<DiffFileModel>, config: Dif
   if (draftState !== null && !filesByPath.has(draftState.path)) {
     setDraftState(null);
     setDraftText("");
-    setSelection(null);
+    updateSelection(null);
   }
 
   const annotations = useMemo(() => {
@@ -128,7 +152,26 @@ export function useDiffComments(files: ReadonlyArray<DiffFileModel>, config: Dif
     return byPath;
   }, [config?.sectionId, reviewComments, filesByPath, draftState]);
 
+  // A drag in progress paints over the caller's selection; otherwise the caller's shows.
+  const externalSelected = external?.selected ?? null;
+  const shownSelection = useMemo(
+    () =>
+      selection ??
+      (externalSelected === null
+        ? null
+        : {
+            path: externalSelected.path,
+            anchor: { lineNumber: externalSelected.range.start, side: externalSelected.range.side ?? "additions" },
+            focus: {
+              lineNumber: externalSelected.range.end,
+              side: externalSelected.range.endSide ?? externalSelected.range.side ?? "additions",
+            },
+          }),
+    [selection, externalSelected],
+  );
+
   const selectedLines = useMemo(() => {
+    const selection = shownSelection;
     if (selection === null) return EMPTY_SELECTED;
     const file = filesByPath.get(selection.path);
     if (!file) return EMPTY_SELECTED;
@@ -138,10 +181,11 @@ export function useDiffComments(files: ReadonlyArray<DiffFileModel>, config: Dif
     if (from < 0 || to < 0) return EMPTY_SELECTED;
     const lines = diffFileLines(file);
     return new Set(lines.slice(Math.min(from, to), Math.max(from, to) + 1));
-  }, [selection, filesByPath]);
+  }, [shownSelection, filesByPath]);
 
   /** The selection as pierre reports it: top first, in patch order. */
   const selectedRange = (path: string): SelectedLineRange | null => {
+    const selection = selectionRef.current;
     if (selection === null || selection.path !== path) return null;
     const file = filesByPath.get(path);
     if (!file) return null;
@@ -170,7 +214,13 @@ export function useDiffComments(files: ReadonlyArray<DiffFileModel>, config: Dif
     setDraftState({ path, id, range, rangeLabel: comment.rangeLabel });
   };
 
-  const enabled = config !== null && draftState === null;
+  const enabled = external !== null ? external.enabled : config !== null && draftState === null;
+  /** Hands the finished selection to the caller, who paints it from here on. */
+  const finishExternal = (path: string, range: SelectedLineRange) => {
+    selectingRef.current = false;
+    updateSelection(null);
+    external?.onSelectionEnd(path, range);
+  };
 
   return {
     enabled,
@@ -181,9 +231,10 @@ export function useDiffComments(files: ReadonlyArray<DiffFileModel>, config: Dif
     /** pierre line-number press: select, shift-extend, or unselect a lone selected line. */
     numberDown(path: string, point: LinePoint, shift: boolean) {
       if (!enabled) return;
+      const selection = selectionRef.current;
       selectingRef.current = true;
       if (shift && selection !== null && selection.path === path) {
-        setSelection({ ...selection, focus: point });
+        updateSelection({ ...selection, focus: point });
         return;
       }
       const lone =
@@ -193,15 +244,22 @@ export function useDiffComments(files: ReadonlyArray<DiffFileModel>, config: Dif
         selection.anchor.side === selection.focus.side &&
         selection.anchor.lineNumber === point.lineNumber &&
         selection.anchor.side === point.side;
-      setSelection(lone ? null : { path, anchor: point, focus: point });
+      updateSelection(lone ? null : { path, anchor: point, focus: point });
     },
     numberEnter(path: string, point: LinePoint) {
+      const selection = selectionRef.current;
       if (!enabled || !selectingRef.current || selection === null || selection.path !== path) return;
       if (selection.focus.lineNumber === point.lineNumber && selection.focus.side === point.side) return;
-      setSelection({ ...selection, focus: point });
+      updateSelection({ ...selection, focus: point });
     },
     pointerUp() {
+      const wasSelecting = selectingRef.current;
+      const selection = selectionRef.current;
       selectingRef.current = false;
+      if (external === null || !wasSelecting || selection === null || !enabled) return;
+      const range = selectedRange(selection.path);
+      if (range === null) updateSelection(null);
+      else finishExternal(selection.path, range);
     },
     /** The gutter "+": comment on the selection when there is one in this file, else this line. */
     utility(path: string, point: LinePoint) {
@@ -213,8 +271,12 @@ export function useDiffComments(files: ReadonlyArray<DiffFileModel>, config: Dif
         end: point.lineNumber,
         endSide: point.side,
       };
+      if (external !== null) {
+        finishExternal(path, range);
+        return;
+      }
       // pierre's gutter selection leaves the range selected while the form is open.
-      setSelection({
+      updateSelection({
         path,
         anchor: { lineNumber: range.start, side: range.side ?? "additions" },
         focus: { lineNumber: range.end, side: range.endSide ?? range.side ?? "additions" },
@@ -235,12 +297,12 @@ export function useDiffComments(files: ReadonlyArray<DiffFileModel>, config: Dif
         text,
       });
       if (comment) addComposerReviewComment(config.draftKey, comment);
-      setSelection(null);
+      updateSelection(null);
       setDraftState(null);
       setDraftText("");
     },
     remove(entryId: string) {
-      setSelection(null);
+      updateSelection(null);
       if (draftState?.id === entryId) {
         setDraftState(null);
         setDraftText("");

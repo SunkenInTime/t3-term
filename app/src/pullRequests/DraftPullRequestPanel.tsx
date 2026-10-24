@@ -23,6 +23,7 @@ import { IconButton, Text } from "../ui/primitives.tsx";
 import { LAYOUT, RADIUS, useTheme } from "../ui/theme.ts";
 import { sidebarWidthAtom } from "../ui/viewport.tsx";
 import { PullRequestDetailView } from "./PullRequestDetailPanel.tsx";
+import { MarkdownOverlayHost } from "../chat/markdown/overlays.tsx";
 
 export function DraftPullRequestPanel({ draftKey }: { draftKey: string }) {
   const theme = useTheme();
@@ -137,6 +138,8 @@ export function DraftPullRequestPanel({ draftKey }: { draftKey: string }) {
           }}
         />
       )}
+      {/* A draft has no timeline, whose host would show markdown's menus and image viewer. */}
+      <MarkdownOverlayHost />
     </div>
   );
 }
