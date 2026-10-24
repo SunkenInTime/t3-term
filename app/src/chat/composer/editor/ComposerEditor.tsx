@@ -69,6 +69,7 @@ import {
   isCollapsed,
   markdownToPos,
   orderedRange,
+  paragraph,
   paragraphSource,
   parseDoc,
   parseInline,
@@ -109,6 +110,9 @@ import {
   useCodeBlockColors,
 } from "./ComposerCodeBlock.tsx";
 import { withInfoStringLanguage } from "../../../web/composer-code-languages.ts";
+import { type ComposerListEdit, listContinuationForEnter, listIndentForTab } from "../../../web/composer-list-continuation.ts";
+import { backspaceAtItemStart, listInputRule, splitOrLiftListItem, toggleTask } from "./lists.ts";
+import { ListMarkerView, TASK_LABEL_WIDTH } from "./ComposerListMarker.tsx";
 
 const IS_MAC = process.platform === "darwin";
 
@@ -227,6 +231,9 @@ const METRICS: EditorMetrics = {
   codePadTop: 4,
   codePadBottom: 8,
   codeMarginY: 10.4,
+  // web: 22.75px lines and a 0.65rem (10.4px) list margin, 33.15px from an item to the first
+  // line after its list. With this editor's 23px lines, 10 keeps those lines where web's land.
+  listMarginY: 10,
 };
 
 const RESTING_LINE_HEIGHT = 32;
@@ -456,8 +463,22 @@ export const ComposerEditor = memo(
     const insertMarkdown = (text: string, options: { literalLength?: number; kind: ChangeKind; at?: Selection }) => {
       const current = stateRef.current!;
       const removed = deleteSelection(current.doc, options.at ?? current.selection);
-      const fragment = parseDoc(text, { ...parseOptions(), literalLength: options.literalLength ?? 0 });
+      const target = removed.doc.blocks[removed.selection.head.block];
+      // web handlePaste `blocks: !nested`: inside a list item, Markdown stays inline.
+      const nested = target?.kind === "paragraph" && target.list !== undefined;
+      const fragment = parseDoc(text, { ...parseOptions(), literalLength: options.literalLength ?? 0, nested });
       apply(insertBlocks(removed.doc, removed.selection.head, fragment.blocks), options.kind);
+    };
+
+    /**
+     * web applyPromptReplacement: a list edit made on the prompt's Markdown (continuation,
+     * Tab indent); the document is rebuilt from the result, as web's setContent does.
+     */
+    const applyListEdit = (edit: ComposerListEdit) => {
+      const value = serializeDocCached(stateRef.current!.doc);
+      const next = value.slice(0, edit.start) + edit.replacement + value.slice(edit.end);
+      const doc = parseDoc(next, parseOptions());
+      apply({ doc, selection: caret(markdownToPos(doc, edit.cursorAfter)) }, "other");
     };
 
     /** web handlePaste. */
@@ -590,6 +611,14 @@ export const ComposerEditor = memo(
           return;
         }
       }
+      // The list input rules (rich text): `- x`, `* `, `1. `, `- [ ] ` start an item.
+      if (isCollapsed(selection) && propsRef.current.codeBlocks && !propsRef.current.literal && selection.head.offset < 24) {
+        const rule = listInputRule(doc, selection.head, char);
+        if (rule) {
+          apply(rule, "other");
+          return;
+        }
+      }
       const removed = isCollapsed(selection) ? current : deleteSelection(doc, selection);
       apply(insertInline(removed.doc, removed.selection.head, sanitizeText(char)), isCollapsed(selection) ? "insert" : "other");
     };
@@ -666,6 +695,18 @@ export const ComposerEditor = memo(
       };
       const [from, to] = orderedRange(selection);
       const collapsed = isCollapsed(selection);
+      const richLists = p.codeBlocks && !p.literal;
+
+      // web onComposerCommandKey: Tab on a list line indents it two spaces (both modes).
+      if (key === "tab" && !mods.shift && !primary && !mods.alt && !p.literal && !p.readOnly && collapsed) {
+        const snap = snapshot();
+        const edit = listIndentForTab(snap.value, snap.selectionStart, snap.selectionEnd);
+        if (edit) {
+          handled();
+          applyListEdit(edit);
+          return;
+        }
+      }
 
       switch (key) {
         case "left": {
@@ -702,6 +743,12 @@ export const ComposerEditor = memo(
         case "backspace": {
           handled();
           if (p.readOnly) return;
+          // web backspaceAcrossList: at an item's start, the item moves one level out.
+          const lifted = richLists && !wordMod && !(IS_MAC && mods.cmd) ? backspaceAtItemStart(doc, selection) : null;
+          if (lifted) {
+            apply(lifted, "other");
+            return;
+          }
           const result = deleteBackward(doc, selection, IS_MAC && mods.cmd ? "line" : wordMod ? "word" : "char");
           if (result) apply(result, collapsed ? "delete" : "other");
           return;
@@ -716,7 +763,26 @@ export const ComposerEditor = memo(
         case "enter": {
           handled();
           if (p.readOnly) return;
+          const headBlock = doc.blocks[from.block]!;
+          const inItem = richLists && headBlock.kind === "paragraph" && headBlock.list !== undefined;
+          // web onComposerCommandKey: off a list item, a Markdown list line continues as text.
+          if (!inItem && !p.literal && collapsed) {
+            const snap = snapshot();
+            const edit = listContinuationForEnter(snap.value, snap.cursor);
+            if (edit) {
+              applyListEdit(edit);
+              return;
+            }
+          }
           const removed = collapsed ? current : deleteSelection(doc, selection);
+          if (inItem) {
+            // web splitOrLiftListItem; with no list to lift into, web's fallback split has no
+            // room in the item either, so nothing changes.
+            const result = splitOrLiftListItem(removed.doc, removed.selection.head);
+            if (result) apply(result, "other");
+            else if (!collapsed) apply(removed, "other");
+            return;
+          }
           apply(splitParagraph(removed.doc, removed.selection.head), "other");
           return;
         }
@@ -777,18 +843,39 @@ export const ComposerEditor = memo(
 
     // ── Mouse ──
     const dragRef = useRef<{ anchor: Pos; unit: "char" | "word" | "block"; origin: [Pos, Pos] } | null>(null);
-    const pointToPos = (event: EventPayload): Pos | null => {
+    const pointToDoc = (event: EventPayload): { x: number; y: number } | null => {
       const id = viewportIdRef.current?.id;
       if (id === undefined) return null;
       const bounds = gpuix.getElementBounds?.(id);
       if (!bounds) return null;
-      const x = Number(event.x ?? 0) - bounds.x;
-      const y = Number(event.y ?? 0) - bounds.y + scrollTopRef.current;
-      return posAtPoint(layoutRef.current, x, y);
+      return { x: Number(event.x ?? 0) - bounds.x, y: Number(event.y ?? 0) - bounds.y + scrollTopRef.current };
+    };
+    const pointToPos = (event: EventPayload): Pos | null => {
+      const point = pointToDoc(event);
+      return point ? posAtPoint(layoutRef.current, point.x, point.y) : null;
+    };
+    /** The task item whose checkbox label (one line tall) is under the point. */
+    const checkboxAt = (event: EventPayload): number | null => {
+      const point = pointToDoc(event);
+      if (!point) return null;
+      const index = layoutRef.current.blocks.findIndex((block) => {
+        const marker = block.marker;
+        if (marker?.kind !== "checkbox") return false;
+        const top = block.y + block.textY;
+        return point.x >= marker.x && point.x < marker.x + TASK_LABEL_WIDTH && point.y >= top && point.y < top + METRICS.lineHeight;
+      });
+      return index >= 0 ? index : null;
     };
     const onMouseDown = (event: EventPayload) => {
       if ((event.button ?? 0) !== 0) return;
       focusEditor();
+      // Tiptap's TaskItem: the checkbox toggles the item and the caret stays where it was.
+      const task = checkboxAt(event);
+      if (task !== null) {
+        const toggled = propsRef.current.readOnly ? null : toggleTask(stateRef.current!.doc, task);
+        if (toggled) apply({ doc: toggled, selection: stateRef.current!.selection }, "other");
+        return;
+      }
       const pos = pointToPos(event);
       if (!pos) return;
       const current = stateRef.current!;
@@ -962,7 +1049,8 @@ export const ComposerEditor = memo(
     const [from, to] = orderedRange(state.selection);
     const rects = isCollapsed(state.selection) ? [] : selectionRects(layout, from, to);
     const caretBox = focused && isCollapsed(state.selection) && !props.readOnly ? caretRect(layout, state.selection.head) : null;
-    const empty = state.doc.blocks.length === 1 && state.doc.blocks[0]!.text.length === 0 && state.doc.blocks[0]!.kind === "paragraph";
+    const firstBlock = state.doc.blocks[0]!;
+    const empty = state.doc.blocks.length === 1 && firstBlock.text.length === 0 && firstBlock.kind === "paragraph" && !firstBlock.list;
     // Chrome's own selection colour (web styles no ::selection in the composer).
     const selectionColor = theme.appearance === "dark" ? NATIVE_SELECTION : "#accef7";
     const offsetY = props.resting ? (RESTING_LINE_HEIGHT - METRICS.lineHeight) / 2 : 0;
@@ -1130,6 +1218,7 @@ const EditorBlock = memo(function EditorBlock({
   }
   return (
     <>
+      {layout.marker ? <ListMarkerView marker={layout.marker} top={layout.y + layout.textY + offsetY} textStyle={textStyle} /> : null}
       {layout.lines.map((line, index) => (
         <ParagraphLine
           key={index}
@@ -1339,7 +1428,7 @@ function reconcileSkills(doc: Doc, skillMeta: (name: string) => SkillMeta | null
       out += ATOM_CHAR;
     }
     changed = true;
-    return { kind: "paragraph" as const, text: out, atoms: kept };
+    return paragraph(out, kept, block.list);
   });
   return changed ? { blocks } : doc;
 }
