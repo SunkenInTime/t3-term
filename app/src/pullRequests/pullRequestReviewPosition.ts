@@ -1,12 +1,11 @@
 // Where a line comment lands, worked out on t3-term's own diff model (panels/diff/diffModel.ts)
 // rather than pierre's FileDiffMetadata: the parts of apps/web/src/reviewCommentContext.ts
-// (`resolveDiffReviewPosition`, `buildDiffReviewComment`) and
+// (`resolveDiffReviewPosition`) and
 // apps/web/src/components/pullRequest/PullRequestReviewAnnotation.tsx (`getReviewPositionAnchor`,
 // `toViewerSide`) that the Code tab and the guide's excerpts need.
 import type { PullRequestDiffSide, PullRequestReviewPosition } from "@t3tools/contracts";
 
 import type { DiffFileModel, DiffLine } from "../panels/diff/diffModel.ts";
-import type { ReviewCommentContext } from "../web/components/pullRequest/pullRequestDetail.deps.ts";
 
 export function toViewerSide(side: PullRequestDiffSide) {
   return side === "left" ? ("deletions" as const) : ("additions" as const);
@@ -58,40 +57,4 @@ export function reviewPositionForLine(line: DiffLine, side: "additions" | "delet
         ? null
         : { kind: "context", oldLine: line.oldLine, newLine: line.newLine, side: side === "deletions" ? "left" : "right" };
   }
-}
-
-function marker(kind: DiffLine["kind"]): string {
-  return kind === "addition" ? "+" : kind === "deletion" ? "-" : " ";
-}
-
-/** One selected line as agent context (web: `buildDiffReviewComment` for a single-line range). */
-export function buildLineReviewComment(input: {
-  readonly id: string;
-  readonly sectionId: string;
-  readonly sectionTitle: string;
-  readonly filePath: string;
-  readonly line: DiffLine;
-  readonly index: number;
-  readonly side: "additions" | "deletions";
-  readonly text: string;
-}): ReviewCommentContext {
-  const { line } = input;
-  const number = line.newLine ?? line.oldLine;
-  const sign = marker(line.kind).trim();
-  return {
-    id: input.id,
-    sectionId: input.sectionId,
-    sectionTitle: input.sectionTitle,
-    filePath: input.filePath,
-    startIndex: input.index,
-    endIndex: input.index,
-    rangeLabel: number === null ? "line" : `${sign}${number}`,
-    text: input.text.trim(),
-    diff: [
-      `@@ -${line.oldLine ?? 0},${line.oldLine === null ? 0 : 1} +${line.newLine ?? 0},${line.newLine === null ? 0 : 1} @@`,
-      `${marker(line.kind)}${line.text}`,
-    ].join("\n"),
-    fenceLanguage: "diff",
-    selection: { start: number ?? 0, side: input.side, end: number ?? 0, endSide: input.side },
-  };
 }

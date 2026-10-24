@@ -2,7 +2,8 @@
 // apps/web/src/components/ui/{button,badge,textarea,input,toggle-group}.tsx as the
 // pullRequest components use them (xs buttons, control badges, segmented toggles).
 import type { EventPayload } from "@gpuix/native";
-import type { ReactNode } from "react";
+import { useGpuixRequired, type PublicInstance } from "@gpuix/react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Tooltip } from "../ui/overlay.tsx";
@@ -287,6 +288,7 @@ export function PrTextarea({
   minRows = 3,
   maxRows = 12,
   autoFocus,
+  focusAfterLayout,
   testId,
   onKeyDown,
   size = "default",
@@ -298,11 +300,26 @@ export function PrTextarea({
   minRows?: number;
   maxRows?: number;
   autoFocus?: boolean;
+  /**
+   * Focus a moment after mounting instead of at once: a textarea focused in the frame its
+   * virtual-list row first appears makes the list jump that row to the top.
+   */
+  focusAfterLayout?: boolean;
   testId?: string;
   onKeyDown?: (event: EventPayload) => void;
   size?: "default" | "sm";
 }) {
   const theme = useTheme();
+  const renderer = useGpuixRequired();
+  const textareaRef = useRef<PublicInstance | null>(null);
+  useEffect(() => {
+    if (!focusAfterLayout) return;
+    const timer = setTimeout(() => {
+      if (textareaRef.current) renderer.focusElement?.(textareaRef.current.id);
+    }, 32);
+    return () => clearTimeout(timer);
+    // oxlint-disable-next-line react/exhaustive-deps -- once, after mounting
+  }, []);
   return (
     <div
       style={{
@@ -317,6 +334,7 @@ export function PrTextarea({
       }}
     >
       <textarea
+        ref={textareaRef}
         testId={testId}
         value={value}
         placeholder={placeholder}

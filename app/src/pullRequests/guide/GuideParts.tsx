@@ -11,7 +11,8 @@ import type {
 } from "@t3tools/contracts";
 import { useMemo, useState } from "react";
 
-import { parseDiffFiles, type DiffFileModel } from "../../panels/diff/diffModel.ts";
+import { diffReviewLines, parseDiffFiles, type DiffFileModel } from "../../panels/diff/diffModel.ts";
+import { buildDiffReviewComment, type SelectedLineRange } from "../../web/reviewCommentContext.ts";
 import { DiffView, type DiffExternalAnnotation } from "../../panels/diff/DiffView.tsx";
 import type { PendingReviewComment } from "../../state/pullRequests.ts";
 import { Icon } from "../../ui/Icon.tsx";
@@ -22,7 +23,6 @@ import type { ReviewCommentContext } from "../../web/components/pullRequest/pull
 import { PrButton } from "../prControls.tsx";
 import { DiffCommentDraft, PendingReviewCommentCard } from "../PullRequestReviewAnnotation.tsx";
 import {
-  buildLineReviewComment,
   findDiffLine,
   getReviewPositionAnchor,
   reviewPositionForLine,
@@ -210,7 +210,8 @@ interface ExcerptDraft {
   readonly side: "additions" | "deletions";
   readonly line: number;
   readonly position: PullRequestReviewPosition;
-  readonly comment: ReviewCommentContext;
+  /** The selected lines: the host comment lands on the last, the agent gets them all. */
+  readonly range: SelectedLineRange;
 }
 
 function excerptSlice(file: DiffFileModel | null, excerpt: PullRequestReviewGuideExcerpt) {
@@ -287,30 +288,30 @@ export function GuideExcerpt({
   const onAskAgent = commenting?.onAskAgent ?? null;
   const askAgent = (request: string) => {
     if (draft === null || onAskAgent === null) return;
-    const comment = { ...draft.comment, text: request };
+    const source = file ?? slice?.model ?? null;
+    const comment =
+      source === null
+        ? null
+        : buildDiffReviewComment({
+            id: `pull-request-guide:${excerpt.path}:${draft.range.start}:${draft.range.end}`,
+            sectionId: `pull-request-guide:${excerpt.path}`,
+            sectionTitle: "Review guide",
+            filePath: excerpt.path,
+            lines: diffReviewLines(source),
+            range: draft.range,
+            text: request,
+          });
     setDraft(null);
-    onAskAgent(comment, request);
+    if (comment !== null) onAskAgent(comment, request);
   };
-  const beginComment = (model: DiffFileModel, side: "additions" | "deletions", line: number) => {
-    const found = findDiffLine(model, side, line);
+  // web GuideExcerpt beginComment: a range anchors the host comment on its last line.
+  const beginComment = (model: DiffFileModel, range: SelectedLineRange) => {
+    const side = (range.endSide ?? range.side) === "deletions" ? "deletions" : "additions";
+    const found = findDiffLine(model, side, range.end);
     if (found === null) return;
     const position = reviewPositionForLine(found.line, side);
     if (position === null) return;
-    setDraft({
-      side: found.line.kind === "deletion" ? "deletions" : side,
-      line,
-      position,
-      comment: buildLineReviewComment({
-        id: `pull-request-guide:${excerpt.path}:${side}:${line}`,
-        sectionId: `pull-request-guide:${excerpt.path}`,
-        sectionTitle: "Review guide",
-        filePath: excerpt.path,
-        line: found.line,
-        index: found.index,
-        side,
-        text: "",
-      }),
-    });
+    setDraft({ side: found.line.kind === "deletion" ? "deletions" : side, line: range.end, position, range });
   };
 
   return (
@@ -373,7 +374,15 @@ export function GuideExcerpt({
                 </div>
               );
             }}
-            {...(commenting !== null && draft === null ? { onLineNumberClick: beginComment } : {})}
+            {...(commenting !== null
+              ? {
+                  lineSelection: {
+                    enabled: draft === null,
+                    selected: draft === null ? null : { path: slice.model.path, range: draft.range },
+                    onSelectionEnd: beginComment,
+                  },
+                }
+              : {})}
             renderHeaderExtras={() => (
               <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
                 <Text size="xs" color={theme.mutedForeground}>

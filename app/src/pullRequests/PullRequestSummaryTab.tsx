@@ -1,8 +1,8 @@
 // Port of apps/web/src/components/pullRequest/PullRequestSummaryTab.tsx (and PullRequestMarkdown /
 // PullRequestCommentBody for the bodies): reviewers and labels with their pickers, the editable
 // description, checks with "Fix", and the conversation with editing, reactions and "Fix in a
-// thread". Section headings do not stick to the top while scrolling (gpuix has no sticky
-// positioning).
+// thread". gpuix has no sticky positioning, so the heading of the section crossing the top edge
+// is painted again over the scroller (web: `sticky top-0` headings), pushed up by the next one.
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
@@ -11,7 +11,8 @@ import type {
   PullRequestReviewThread,
 } from "@t3tools/contracts";
 import type * as Cause from "effect/Cause";
-import { useContext, useState, type ReactNode } from "react";
+import { useGpuixRequired, type PublicInstance } from "@gpuix/react";
+import { useContext, useRef, useState, type ReactNode } from "react";
 import { splitPullRequestBody } from "@t3tools/client-runtime/pull-request-markdown";
 
 import { pullRequestEnvironment, pullRequestStorage } from "../state/pullRequests.ts";
@@ -59,6 +60,7 @@ import { PullRequestDryRunError, runPullRequestWrite } from "./pullRequestWrites
 import { openPullRequestLink } from "./openPullRequestLink.ts";
 import { autolinkPullRequestMarkdown } from "./pullRequestMarkdownAutolinks.ts";
 import { PullRequestMarkdownContext } from "./pullRequestMarkdownContext.ts";
+import { sectionCollapseAnchorScrollTop } from "../web/components/pullRequest/pullRequestSummaryScroll.logic.ts";
 
 const COMMENT_PAGE = 10;
 const COMMENT_FILTER_STORAGE_KEY = "t3code:pull-request-comment-filter:v1";
@@ -207,52 +209,83 @@ function MetaRow({ icon, label, children }: { icon: "users" | "tag"; label: stri
   );
 }
 
-function Section({
+const SECTION_KEYS = ["description", "checks", "comments"] as const;
+type SectionKey = (typeof SECTION_KEYS)[number];
+const SECTION_DEFAULT_OPEN: Record<SectionKey, boolean> = { description: true, checks: false, comments: true };
+
+/** py-3 around a 16px xs line. */
+const SECTION_HEADING_HEIGHT = 40;
+
+function SectionHeading({
   title,
-  defaultOpen = true,
+  open,
+  onToggle,
   actions,
-  children,
   testId,
 }: {
   title: string;
-  defaultOpen?: boolean;
+  open: boolean;
+  onToggle: () => void;
   actions?: ReactNode;
-  children: ReactNode;
   testId?: string;
 }) {
   const theme = useTheme();
-  const [open, setOpen] = useState(defaultOpen);
   const [hovered, setHovered] = useState(false);
   return (
-    <div style={{ display: "flex", flexDirection: "column", flexShrink: 0 }}>
-      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", paddingRight: 16, backgroundColor: theme.background }}>
-        <div
-          testId={testId}
-          onClick={() => setOpen(!open)}
-          onMouseEnter={() => setHovered(true)}
-          onMouseLeave={() => setHovered(false)}
-          style={{
-            display: "flex",
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 6,
-            flexGrow: 1,
-            minWidth: 0,
-            paddingLeft: 16,
-            paddingRight: 16,
-            paddingTop: 12,
-            paddingBottom: 12,
-            cursor: "pointer",
-          }}
-        >
-          <Text size="xs" weight={500} color={hovered ? theme.foreground : theme.mutedForeground}>
-            {title}
-          </Text>
-          <Icon name={open ? "chevron-down" : "chevron-right"} size={14} color={alpha(theme.mutedForeground, 0.6)} />
-        </div>
-        {actions}
+    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", height: SECTION_HEADING_HEIGHT, flexShrink: 0, paddingRight: 16, backgroundColor: theme.background }}>
+      <div
+        testId={testId}
+        onClick={onToggle}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 6,
+          flexGrow: 1,
+          minWidth: 0,
+          height: "100%",
+          paddingLeft: 16,
+          paddingRight: 16,
+          cursor: "pointer",
+        }}
+      >
+        <Text size="xs" weight={500} color={hovered ? theme.foreground : theme.mutedForeground}>
+          {title}
+        </Text>
+        <Icon name={open ? "chevron-down" : "chevron-right"} size={14} color={alpha(theme.mutedForeground, 0.6)} />
       </div>
-      {open ? <div style={{ display: "flex", flexDirection: "column", paddingLeft: 16, paddingRight: 16, paddingBottom: 16 }}>{children}</div> : null}
+      {actions}
+    </div>
+  );
+}
+
+interface SectionProps {
+  readonly title: string;
+  readonly open: boolean;
+  readonly onToggle: () => void;
+  readonly actions?: ReactNode;
+  readonly testId?: string;
+}
+
+function Section({
+  heading,
+  onHeight,
+  children,
+}: {
+  heading: SectionProps;
+  /** The section's height, for placing the pinned heading. */
+  onHeight: (height: number) => void;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      onLayout={(event) => onHeight(Number(event.height ?? 0))}
+      style={{ display: "flex", flexDirection: "column", width: "100%", flexShrink: 0 }}
+    >
+      <SectionHeading {...heading} />
+      {heading.open ? <div style={{ display: "flex", flexDirection: "column", paddingLeft: 16, paddingRight: 16, paddingBottom: 16 }}>{children}</div> : null}
     </div>
   );
 }
@@ -733,6 +766,72 @@ export function PullRequestSummaryTab({
   onScrollTop: (top: number) => void;
 }) {
   const theme = useTheme();
+  const renderer = useGpuixRequired();
+  // ── Pinned section headings ──
+  // Content offsets come from measured heights (layout reports carry size changes only), and
+  // the heading over the top edge is drawn again above the scroller.
+  const scrollerRef = useRef<PublicInstance | null>(null);
+  const scrollTopRef = useRef(0);
+  const metaHeightRef = useRef(0);
+  const sectionHeightsRef = useRef(new Map<SectionKey, number>());
+  const [pinned, setPinned] = useState<{ readonly key: SectionKey; readonly top: number } | null>(null);
+  const [openSections, setOpenSections] = useState<Readonly<Record<string, boolean>>>({});
+  // Keyed by pull request: another one opens with web's defaults.
+  const isOpen = (key: SectionKey) => openSections[`${detail.url}:${key}`] ?? SECTION_DEFAULT_OPEN[key];
+  const sectionTop = (key: SectionKey) => {
+    let top = metaHeightRef.current;
+    for (const candidate of SECTION_KEYS) {
+      if (candidate === key) return top;
+      top += sectionHeightsRef.current.get(candidate) ?? 0;
+    }
+    return top;
+  };
+  const updatePinned = () => {
+    const scrollTop = scrollTopRef.current;
+    let next: { key: SectionKey; top: number } | null = null;
+    for (const key of SECTION_KEYS) {
+      const top = sectionTop(key);
+      const height = sectionHeightsRef.current.get(key) ?? 0;
+      if (scrollTop > top + 0.5 && scrollTop < top + height) {
+        // CSS sticky: the heading stays inside its section, so the section's end pushes it up.
+        next = { key, top: Math.min(0, top + height - SECTION_HEADING_HEIGHT - scrollTop) };
+        break;
+      }
+    }
+    setPinned((current) =>
+      current === null && next === null
+        ? current
+        : current !== null && next !== null && current.key === next.key && current.top === next.top
+          ? current
+          : next,
+    );
+  };
+  const toggleSection = (key: SectionKey) => {
+    const open = isOpen(key);
+    if (open) {
+      // web setOpenWithScrollAnchor: collapsing a section whose heading is pinned keeps that
+      // heading where it was pressed instead of jumping to whatever slides under it.
+      const scrollTop = scrollTopRef.current;
+      const top = sectionTop(key);
+      const target = sectionCollapseAnchorScrollTop({
+        scrollTop,
+        viewportTop: 0,
+        sectionTop: top - scrollTop,
+        headingTop: pinned?.key === key ? pinned.top : top - scrollTop,
+      });
+      const scroller = scrollerRef.current;
+      if (target !== null && scroller) {
+        renderer.scrollTo?.(scroller.id, 0, -target);
+        scrollTopRef.current = target;
+      }
+    }
+    setOpenSections((current) => ({ ...current, [`${detail.url}:${key}`]: !open }));
+  };
+  const measureSection = (key: SectionKey) => (height: number) => {
+    if (sectionHeightsRef.current.get(key) === height) return;
+    sectionHeightsRef.current.set(key, height);
+    updatePinned();
+  };
   const [shown, setShown] = useState({ url: detail.url, count: COMMENT_PAGE });
   const shownConversations = shown.url === detail.url ? shown.count : COMMENT_PAGE;
   const [commentFilter, setCommentFilterState] = useState(readCommentFilter);
@@ -877,13 +976,65 @@ export function PullRequestSummaryTab({
     );
   };
 
+  const sectionHeadings: Record<SectionKey, SectionProps> = {
+    description: { title: "Description", open: isOpen("description"), onToggle: () => toggleSection("description"), testId: "pr-section-description" },
+    checks: { title: "Checks", open: isOpen("checks"), onToggle: () => toggleSection("checks"), testId: "pr-section-checks" },
+    comments: {
+      title: `Comments (${detail.commentCount})`,
+      open: isOpen("comments"),
+      onToggle: () => toggleSection("comments"),
+      testId: "pr-section-comments",
+      actions: (
+        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>
+          <Menu
+            align="end"
+            trigger={({ toggle }) => (
+              <SmallGhostButton icon="list-filter" onClick={toggle}>
+                {filteredOutCount > 0 ? `${filteredOutCount} hidden` : "Filter"}
+              </SmallGhostButton>
+            )}
+          >
+            <MenuLabel>Show</MenuLabel>
+            <MenuItem keepOpen checked={commentFilter.bots} onSelect={() => setCommentFilter({ ...commentFilter, bots: !commentFilter.bots })}>
+              Bot comments
+            </MenuItem>
+            <MenuItem
+              keepOpen
+              checked={commentFilter.resolved}
+              onSelect={() => setCommentFilter({ ...commentFilter, resolved: !commentFilter.resolved })}
+            >
+              Resolved or dismissed
+            </MenuItem>
+          </Menu>
+          <SmallGhostButton icon="arrow-down-up" onClick={() => setCommentOrder(commentOrder === "newest" ? "oldest" : "newest")}>
+            {commentOrder === "newest" ? "Newest first" : "Oldest first"}
+          </SmallGhostButton>
+        </div>
+      ),
+    },
+  };
+  const pinnedHeading = pinned === null ? null : sectionHeadings[pinned.key];
+
   return (
+    <div style={{ position: "relative", display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
     <div
+      ref={scrollerRef}
       testId="pr-summary-scroll"
-      onScrollChange={(event) => onScrollTop(Math.abs(event.scrollY ?? 0))}
+      onScrollChange={(event) => {
+        const top = Math.abs(event.scrollY ?? 0);
+        scrollTopRef.current = top;
+        updatePinned();
+        onScrollTop(top);
+      }}
       style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, overflowY: "scroll", scrollbarColor: theme.scrollbar }}
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingLeft: 16, paddingRight: 16, paddingTop: 10, paddingBottom: 4, flexShrink: 0 }}>
+      <div
+        onLayout={(event) => {
+          metaHeightRef.current = Number(event.height ?? 0);
+          updatePinned();
+        }}
+        style={{ display: "flex", flexDirection: "column", gap: 8, paddingLeft: 16, paddingRight: 16, paddingTop: 10, paddingBottom: 4, flexShrink: 0 }}
+      >
         <MetaRow icon="users" label="Reviewers">
           {reviewerEntries.length === 0 ? (
             <Text size="xs" color={theme.mutedForeground}>
@@ -952,7 +1103,7 @@ export function PullRequestSummaryTab({
         ) : null}
       </div>
 
-      <Section key={`description:${detail.url}`} title="Description" testId="pr-section-description">
+      <Section heading={sectionHeadings.description} onHeight={measureSection("description")}>
         {bodyScope === detail.url ? (
           <PullRequestMarkdownEditor
             allowEmpty
@@ -983,7 +1134,7 @@ export function PullRequestSummaryTab({
         )}
       </Section>
 
-      <Section key={`checks:${detail.url}`} title="Checks" defaultOpen={false} testId="pr-section-checks">
+      <Section heading={sectionHeadings.checks} onHeight={measureSection("checks")}>
         {checksStale ? (
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Text size="xs" color={theme.mutedForeground}>
@@ -1059,37 +1210,7 @@ export function PullRequestSummaryTab({
         )}
       </Section>
 
-      <Section
-        title={`Comments (${detail.commentCount})`}
-        testId="pr-section-comments"
-        actions={
-          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>
-            <Menu
-              align="end"
-              trigger={({ toggle }) => (
-                <SmallGhostButton icon="list-filter" onClick={toggle}>
-                  {filteredOutCount > 0 ? `${filteredOutCount} hidden` : "Filter"}
-                </SmallGhostButton>
-              )}
-            >
-              <MenuLabel>Show</MenuLabel>
-              <MenuItem keepOpen checked={commentFilter.bots} onSelect={() => setCommentFilter({ ...commentFilter, bots: !commentFilter.bots })}>
-                Bot comments
-              </MenuItem>
-              <MenuItem
-                keepOpen
-                checked={commentFilter.resolved}
-                onSelect={() => setCommentFilter({ ...commentFilter, resolved: !commentFilter.resolved })}
-              >
-                Resolved or dismissed
-              </MenuItem>
-            </Menu>
-            <SmallGhostButton icon="arrow-down-up" onClick={() => setCommentOrder(commentOrder === "newest" ? "oldest" : "newest")}>
-              {commentOrder === "newest" ? "Newest first" : "Oldest first"}
-            </SmallGhostButton>
-          </div>
-        }
-      >
+      <Section heading={sectionHeadings.comments} onHeight={measureSection("comments")}      >
         {activityPending ? (
           <ConversationGhost />
         ) : activityError ? (
@@ -1166,6 +1287,13 @@ export function PullRequestSummaryTab({
       </Section>
       {/* Room for the composer button that floats over the bottom-right corner. */}
       <div style={{ height: 56, flexShrink: 0 }} />
+    </div>
+      {pinnedHeading ? (
+        // Clear of the scrollbar, which stays usable beside the pinned heading.
+        <div testId="pr-summary-pinned-heading" style={{ position: "absolute", top: pinned?.top ?? 0, left: 0, right: 10, height: SECTION_HEADING_HEIGHT }}>
+          <SectionHeading {...pinnedHeading} {...(pinnedHeading.testId ? { testId: `${pinnedHeading.testId}-pinned` } : {})} />
+        </div>
+      ) : null}
     </div>
   );
 }
