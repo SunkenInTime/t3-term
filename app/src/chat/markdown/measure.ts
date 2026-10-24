@@ -272,6 +272,26 @@ export function setMeasureHostUpdater(update: (() => void) | null) {
   if (update && pending.size > 0) scheduleHostUpdate();
 }
 
+// Several hosts can be mounted at once (the timeline's, the composer's on a draft with no
+// timeline). The newest one paints the probes; when it unmounts the previous takes over.
+const hostStack: Array<() => void> = [];
+
+export function registerMeasureHost(update: () => void): () => void {
+  hostStack.push(update);
+  setMeasureHostUpdater(update);
+  return () => {
+    const index = hostStack.lastIndexOf(update);
+    if (index >= 0) hostStack.splice(index, 1);
+    const top = hostStack.at(-1) ?? null;
+    setMeasureHostUpdater(top);
+    top?.();
+  };
+}
+
+export function isActiveMeasureHost(update: () => void): boolean {
+  return hostStack.at(-1) === update;
+}
+
 export const MEASURE_FONT_SIZE = MEASURE_SIZE;
 
 /** Known advances for a face (em), for renderers that lay text out elsewhere (diagram worker). */

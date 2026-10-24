@@ -7,6 +7,7 @@ import * as NodePath from "node:path";
 
 import {
   DEFAULT_SERVER_SETTINGS,
+  type ThreadContextRecord,
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
@@ -24,12 +25,15 @@ import { Atom } from "effect/reactivity";
 import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
 import {
   appendInlineContextReference,
+  collectInlineContextIds,
+  formatInlineContextReference,
   removeInlineContextReference,
 } from "../web/lib/composerContextReferences.ts";
 import {
   reviewCommentContextId,
   reviewCommentContextReference,
   terminalContextReference,
+  threadContextReference,
 } from "../web/lib/composerContextRecords.ts";
 import type { TerminalContextDraft } from "../web/lib/terminalContext.ts";
 import type { ReviewCommentContext } from "../web/reviewCommentContext.ts";
@@ -99,6 +103,8 @@ export interface ComposerDraft {
    * Shown as chips; each goes out as an inline reference in the message text plus a context record.
    */
   readonly terminalContexts?: ReadonlyArray<TerminalContextDraft>;
+  /** Threads dropped on the composer (web ComposerThreadDraftState.threadContexts). */
+  readonly threadContexts?: ReadonlyArray<ThreadContextRecord>;
   readonly updatedAt?: string;
 }
 
@@ -270,9 +276,10 @@ export function clearComposerContent(key: string): void {
     draft.prompt === "" &&
     draft.attachments.length === 0 &&
     (draft.reviewComments?.length ?? 0) === 0 &&
-    (draft.terminalContexts?.length ?? 0) === 0
+    (draft.terminalContexts?.length ?? 0) === 0 &&
+    (draft.threadContexts?.length ?? 0) === 0
       ? draft
-      : { ...draft, prompt: "", attachments: [], reviewComments: [], terminalContexts: [] },
+      : { ...draft, prompt: "", attachments: [], reviewComments: [], terminalContexts: [], threadContexts: [] },
   );
 }
 
@@ -305,31 +312,94 @@ export function restoreComposerContent(
   }));
 }
 
+// ── Inline context references ──────────────────────────────────────────
+
 /**
- * web ChatComposer addTerminalContext. Web drops an inline chip at the caret; this plain text
- * field cannot read its caret and an inline reference breaks the moment text is typed into
- * it, so the selection lives in the list (shown as chips) and its reference is added to the
- * message text at send (terminalContextReferencesText).
+ * The mounted composer's "insert at the caret" (web composerDraftStore
+ * setContextInsertionHandler), by draft key. Producers outside the composer (the terminal's
+ * "Add to chat") hand it a reference; with no composer mounted the reference goes on the end.
+ */
+const insertionHandlers = new Map<string, (text: string) => boolean>();
+
+export function registerComposerInsertionHandler(key: string, handler: (text: string) => boolean): () => void {
+  insertionHandlers.set(key, handler);
+  return () => {
+    if (insertionHandlers.get(key) === handler) insertionHandlers.delete(key);
+  };
+}
+
+/** Inserts an inline reference at the composer's caret, or at the end when none is mounted. */
+export function insertComposerReference(key: string, reference: string): void {
+  const handler = insertionHandlers.get(key);
+  if (handler?.(`${reference} `)) return;
+  updateComposerDraft(key, (draft) => ({
+    ...draft,
+    prompt:
+      draft.prompt.length === 0 || /\s$/.test(draft.prompt) ? `${draft.prompt}${reference} ` : `${draft.prompt} ${reference} `,
+  }));
+}
+
+/**
+ * web requestCitationComment: after "Cite" inserts a citation, its chip opens the comment
+ * editor; Cancel there removes the citation again.
+ */
+export const citationCommentRequestAtom = Atom.make<{ readonly key: string; readonly source: string; readonly nonce: number } | null>(
+  null,
+).pipe(Atom.keepAlive);
+
+/** web ChatComposer cite: the citation lands at the caret and asks for a comment. */
+export function citeInComposer(key: string, reference: string): void {
+  const source = reference.trim();
+  insertComposerReference(key, source);
+  const previous = appAtomRegistry.get(citationCommentRequestAtom);
+  appAtomRegistry.set(citationCommentRequestAtom, { key, source, nonce: (previous?.nonce ?? 0) + 1 });
+}
+
+/**
+ * web ChatComposer addTerminalContext: the selection's chip lands at the caret, and the
+ * excerpt is kept as a record for the send to attach.
  */
 export function addComposerTerminalContext(key: string, context: TerminalContextDraft): void {
   updateComposerDraft(key, (draft) => ({
     ...draft,
     terminalContexts: [...(draft.terminalContexts ?? []), context],
   }));
+  insertComposerReference(key, formatInlineContextReference(terminalContextReference(context)));
 }
 
-/** Drops a terminal selection (web removes it with its chip). */
-export function removeComposerTerminalContext(key: string, contextId: string): void {
+/** Terminal excerpts whose chip is still in the prompt; deleting the chip leaves its record out. */
+export function referencedTerminalContexts(draft: ComposerDraft, prompt = draft.prompt): ReadonlyArray<TerminalContextDraft> {
+  const contexts = draft.terminalContexts ?? [];
+  if (contexts.length === 0) return contexts;
+  const ids = new Set(collectInlineContextIds(prompt));
+  return contexts.filter((context) => ids.has(terminalContextReference(context).contextId));
+}
+
+/**
+ * web composerDraftStore.addThreadContexts: a thread dropped on the composer. Its chip goes on
+ * the end of the prompt (once), its record into the draft.
+ */
+export function addComposerThreadContext(
+  key: string,
+  record: ThreadContextRecord,
+  options?: { readonly appendReference?: boolean },
+): void {
   updateComposerDraft(key, (draft) => {
-    const existing = draft.terminalContexts ?? [];
-    if (!existing.some((entry) => entry.id === contextId)) return draft;
-    return { ...draft, terminalContexts: existing.filter((entry) => entry.id !== contextId) };
+    const present = options?.appendReference === false || collectInlineContextIds(draft.prompt).includes(record.contextId);
+    return {
+      ...draft,
+      prompt: present ? draft.prompt : appendInlineContextReference(draft.prompt, threadContextReference(record)),
+      threadContexts: [...(draft.threadContexts ?? []).filter((entry) => entry.contextId !== record.contextId), record],
+    };
   });
+  focusComposer();
 }
 
-/** The inline references web's message text carries for its terminal chips, one per selection. */
-export function terminalContextReferencesText(contexts: ReadonlyArray<TerminalContextDraft>): string {
-  return contexts.map((context) => appendInlineContextReference("", terminalContextReference(context)).trim()).join(" ");
+export function referencedThreadContexts(draft: ComposerDraft, prompt = draft.prompt): ReadonlyArray<ThreadContextRecord> {
+  const contexts = draft.threadContexts ?? [];
+  if (contexts.length === 0) return contexts;
+  const ids = new Set(collectInlineContextIds(prompt));
+  return contexts.filter((context) => ids.has(context.contextId));
 }
 
 /**
