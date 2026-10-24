@@ -15,6 +15,7 @@ import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
   type ReactElement,
   type ReactNode,
@@ -572,6 +573,9 @@ export function Dialog({
 
 // ── Tooltip ─────────────────────────────────────────────────────────────
 
+/** How long after a press a focus-driven open is taken as the press's own focus. */
+const PRESS_FOCUS_WINDOW_MS = 600;
+
 export function TooltipProvider({ children }: { children: ReactNode }) {
   return <TooltipPrimitive.Provider delayDuration={500}>{children}</TooltipPrimitive.Provider>;
 }
@@ -595,9 +599,29 @@ export function Tooltip({
   rootStyle?: Style;
 }) {
   const theme = useTheme();
+  // Web's tooltips open on hover, or on keyboard focus. gpuix's trigger also
+  // opens on any focus, and a click focuses it, so the tooltip came back right
+  // after the press closed it and sat behind the menu the click opened. Opens
+  // just after a press are ignored; hover and Tab still open it.
+  const [open, setOpen] = useState(false);
+  const pressedAt = useRef(0);
   return (
-    <TooltipPrimitive.Root style={rootStyle}>
-      <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
+    <TooltipPrimitive.Root
+      style={rootStyle}
+      open={open}
+      onOpenChange={(next) => {
+        if (next && Date.now() - pressedAt.current < PRESS_FOCUS_WINDOW_MS) return;
+        setOpen(next);
+      }}
+    >
+      <TooltipPrimitive.Trigger
+        asChild
+        onMouseDown={() => {
+          pressedAt.current = Date.now();
+        }}
+      >
+        {children}
+      </TooltipPrimitive.Trigger>
       <TooltipPrimitive.Content
         side={side}
         sideOffset={6}
