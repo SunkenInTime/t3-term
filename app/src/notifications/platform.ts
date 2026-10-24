@@ -10,6 +10,7 @@ import { isTerminal } from "@gpuix/react";
 import type { Subprocess } from "bun";
 
 import { isAppFocused, noteInput } from "./focus.ts";
+import { showMacNotification } from "./macNotifier.ts";
 import { showWindowsToast } from "./windowsToast.ts";
 import completionSound from "./assets/notification-completion.mp3" with { type: "file" };
 import inputSound from "./assets/notification-input.mp3" with { type: "file" };
@@ -67,7 +68,8 @@ function terminalNotification(title: string, body: string): DesktopNotificationH
       // Clicking it focuses the kitty window (kitty's default a=focus). Telling t3-term which
       // thread to open would need `a=report`, but kitty answers on stdin with an OSC 99 reply
       // and gpuix 0.11.0 consumes every OSC reply without handing it to JS
-      // (packages/gpui-terminal/src/tty.rs:604-619), so the click cannot navigate.
+      // (packages/gpui-terminal/src/tty.rs:604-619), so the click cannot navigate. That is why
+      // a local session prefers a notifier on this machine (localTerminalNotification).
       const id = nextKittyId++;
       if (!writeTty(`\x1b]99;i=${id}:d=0:p=title;${sanitize(title)}\x07\x1b]99;i=${id}:d=1:p=body;${sanitize(body)}\x07`)) return null;
       // kitty 0.36+ closes it on request; older kitty ignores the unknown payload type.
@@ -152,16 +154,73 @@ function linuxNotification(title: string, body: string, options: DesktopNotifica
   };
 }
 
+/** Over SSH a notifier here would show on the remote machine, so only the terminal can reach the user. */
+function isRemoteSession(): boolean {
+  return Boolean(process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY);
+}
+
+/**
+ * The terminal app's window, brought forward after a click on a notification
+ * that came from a notifier rather than the terminal. kitty's remote control
+ * socket, when one is configured (never the tty, which gpuix reads), or
+ * xdotool with the X11 window id kitty and xterm-likes export.
+ */
+function focusTerminalWindow(): void {
+  const kittySocket = process.env.KITTY_LISTEN_ON;
+  const kittyWindow = process.env.KITTY_WINDOW_ID;
+  if (kittySocket && kittyWindow && Bun.which("kitten") !== null) {
+    spawnQuiet(["kitten", "@", "--to", kittySocket, "focus-window", "--match", `id:${kittyWindow}`]);
+    return;
+  }
+  const x11Window = process.env.WINDOWID;
+  if (x11Window && process.env.DISPLAY) spawnQuiet(["xdotool", "windowactivate", x11Window]);
+}
+
+/**
+ * Terminal mode on this machine: a desktop notifier reports the click, which
+ * the terminal's own notification cannot (see terminalNotification), so the
+ * click can open the thread. macOS uses terminal-notifier, which also brings
+ * the terminal app forward (__CFBundleIdentifier names the app that launched
+ * this process); Linux uses notify-send --wait. Null when neither applies, and
+ * the terminal shows the notification instead.
+ */
+function localTerminalNotification(title: string, body: string, options: DesktopNotificationOptions): DesktopNotificationHandle | null {
+  if (isRemoteSession()) return null;
+  if (process.platform === "darwin") {
+    return showMacNotification({
+      title,
+      body,
+      tag: options.tag,
+      activateBundleId: process.env.__CFBundleIdentifier?.trim() || undefined,
+      onActivate: options.onActivate,
+    });
+  }
+  if (process.platform === "linux" && (process.env.DISPLAY || process.env.WAYLAND_DISPLAY)) {
+    if (Bun.which("notify-send") === null || !notifySendSupportsActions()) return null;
+    return linuxNotification(title, body, {
+      ...options,
+      onActivate: () => {
+        focusTerminalWindow();
+        options.onActivate();
+      },
+    });
+  }
+  return null;
+}
+
 function nativeNotification(title: string, body: string, options: DesktopNotificationOptions): DesktopNotificationHandle | null {
   switch (process.platform) {
-    case "darwin":
-      // osascript's `display notification` has no click callback and no handle to close it.
+    case "darwin": {
+      const handle = showMacNotification({ title, body, tag: options.tag, onActivate: options.onActivate });
+      if (handle) return handle;
+      // Without terminal-notifier: osascript's `display notification` has no click callback and no handle to close it.
       spawnQuiet([
         "osascript",
         "-e",
         `display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)}`,
       ]);
       return UNTRACKED;
+    }
     case "win32":
       return showWindowsToast({ title, body, tag: options.tag, onActivate: options.onActivate, onGone: options.onGone });
     default:
@@ -176,7 +235,7 @@ function nativeNotification(title: string, body: string, options: DesktopNotific
  */
 export function showDesktopNotification(title: string, body: string, options: DesktopNotificationOptions): DesktopNotificationHandle | null {
   if (isTerminal()) {
-    const handle = terminalNotification(title, body);
+    const handle = localTerminalNotification(title, body, options) ?? terminalNotification(title, body);
     if (handle) return handle;
   }
   return nativeNotification(title, body, options);
