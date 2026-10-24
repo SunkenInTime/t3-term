@@ -145,7 +145,12 @@ import {
   startNewThread,
   startScratchThread,
 } from "./actions.ts";
-import { composerPromptLink, copyPromptLink, promptLinkRepositoryOf } from "./copyPromptLink.ts";
+import {
+  composerPromptLink,
+  copyPromptLink,
+  promptLinkRepositoryOf,
+  readDraftResolvedModelSelection,
+} from "./copyPromptLink.ts";
 import { composerTargetKey } from "../state/composer.ts";
 import {
   ItemIcon,
@@ -1006,14 +1011,23 @@ function CommandModePalette({
             ...(route.draftId ? { draftId: route.draftId } : {}),
           })
         : null;
+  const promptLinkProviders = readServerConfig(currentProjectEnvironmentId)?.providers ?? [];
   const promptLinkInput =
     promptLinkDraftKey === null
       ? null
       : {
           draftKey: promptLinkDraftKey,
           project: currentProject ?? undefined,
-          providers: readServerConfig(currentProjectEnvironmentId)?.providers ?? [],
-          threadModelSelection: activeThread?.modelSelection ?? null,
+          providers: promptLinkProviders,
+          threadModelSelection:
+            route.kind === "thread"
+              ? (activeThread?.modelSelection ?? null)
+              : readDraftResolvedModelSelection({
+                  environmentId: currentProjectEnvironmentId,
+                  draftKey: promptLinkDraftKey,
+                  project: currentProject ?? undefined,
+                  providers: promptLinkProviders,
+                }),
         };
   const plainPromptLink = promptLinkInput ? composerPromptLink({ ...promptLinkInput, withContext: false }) : null;
   if (promptLinkInput !== null && plainPromptLink !== null) {

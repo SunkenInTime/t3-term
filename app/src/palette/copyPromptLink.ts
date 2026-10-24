@@ -2,7 +2,8 @@
 // apps/web/src/components/promptLinks/copyPromptLink.ts. The draft comes from the
 // composer draft atoms instead of web's zustand store.
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
-import { type ModelSelection, repositoryGroupingKeyOf, type ServerProvider } from "@t3tools/contracts";
+import { type EnvironmentId, type ModelSelection, repositoryGroupingKeyOf, type ServerProvider } from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
 import { DEFAULT_HOSTED_APP_URL } from "@t3tools/shared/connectAuth";
 import {
   buildNewThreadLink,
@@ -11,8 +12,11 @@ import {
   type PromptLinkRepository,
 } from "@t3tools/shared/promptLinks";
 
-import { readComposerDraft } from "../state/composer.ts";
+import { resolveComposerProviderModel } from "../chat/composer/useComposerProviderModel.ts";
+import { appAtomRegistry } from "../runtime/runtime.ts";
+import { composerSettingsAtom, readComposerDraft, stickyModelAtom } from "../state/composer.ts";
 import { toast } from "../ui/toast.tsx";
+import { getComposerPromptInjectionState } from "../web/components/chat/composerProviderState.ts";
 import { writeTextToClipboard } from "./clipboard.ts";
 
 /**
@@ -44,6 +48,42 @@ export function promptLinkRepositoryOf(
   if (identity == null) return null;
   const key = repositoryGroupingKeyOf(identity);
   return key.startsWith("github.com/") ? parsePromptLinkRepository(key.slice("github.com/".length)) : null;
+}
+
+/**
+ * The model a draft without its own pick sends with, resolved the way its composer does
+ * (Composer.tsx: sticky last-used model, else the default model setting, then the
+ * provider resolution). Web copies the sticky model into every new draft
+ * (applyStickyState), so its draft already holds this selection.
+ */
+export function readDraftResolvedModelSelection(input: {
+  readonly environmentId: EnvironmentId | null;
+  readonly draftKey: string;
+  readonly project: EnvironmentProject | undefined;
+  readonly providers: ReadonlyArray<ServerProvider>;
+}): ModelSelection | null {
+  const settings = appAtomRegistry.get(composerSettingsAtom(input.environmentId));
+  const draft = readComposerDraft(input.draftKey);
+  const sticky = appAtomRegistry.get(stickyModelAtom);
+  const draftThreadModelSelection =
+    (sticky.activeProvider ? (sticky.modelSelectionByProvider[sticky.activeProvider] ?? null) : null) ??
+    settings.defaultModelSelection ??
+    null;
+  const projectModelSelection = input.project?.defaultModelSelection ?? null;
+  const resolved = resolveComposerProviderModel({
+    providerStatuses: input.providers,
+    settings,
+    activeProjectId: input.project?.id ?? null,
+    draft,
+    threadModelSelection: draftThreadModelSelection,
+    projectModelSelection,
+    promptInjectionState: getComposerPromptInjectionState(draft.prompt),
+    candidateInstanceIds: [draft.activeProvider, draftThreadModelSelection?.instanceId, projectModelSelection?.instanceId],
+    lockedProvider: null,
+    lockedInstanceId: undefined,
+  });
+  if (resolved.selectedProviderEntry === undefined) return null;
+  return createModelSelection(resolved.selectedInstanceId, resolved.selectedModel);
 }
 
 export function composerPromptLink(input: {
