@@ -225,6 +225,7 @@ import { usePendingThreadRequests } from "./usePendingThreadRequests.ts";
 import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
 import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
+import { useComposerTypingGuard } from "../../web/components/chat/useComposerTypingGuard.ts";
 import { filterTerminalContextsWithText, type TerminalContextDraft } from "../../web/lib/terminalContext.ts";
 import {
   ComposerEditor,
@@ -278,6 +279,7 @@ const SM_BREAKPOINT = 640;
 
 const NO_TERMINAL_CONTEXTS: ReadonlyArray<TerminalContextDraft> = [];
 const NO_CHAT_ATTACHMENTS: ReadonlyArray<ChatAttachment> = [];
+const NO_PENDING_USER_INPUTS: ReturnType<typeof usePendingThreadRequests>["pendingUserInputs"] = [];
 const NO_THREAD_SHELL_ATOM = Atom.make<EnvironmentThreadShell | null>(null);
 const NO_THREAD_STATUS_ATOM = Atom.make<EnvironmentThreadStatus>("live");
 const NO_THREAD_STATE_ATOM = Atom.make(
@@ -662,7 +664,30 @@ function ComposerBody({
     : (compatibleRuntimeModeOptions[0]?.mode ?? requestedRuntimeMode);
 
   // ── Pending requests and plan follow-up ──────────────────────────────
-  const requests = usePendingThreadRequests({ environmentId, threadId });
+  const incomingRequests = usePendingThreadRequests({ environmentId, threadId });
+  // web ChatComposer useComposerTypingGuard: an approval or question that arrives while the
+  // user is typing waits until they pause (1.5 s), send or leave the editor, so it cannot
+  // take over the editor mid-word.
+  const typingGuard = useComposerTypingGuard(draftKey, [
+    ...incomingRequests.pendingApprovals.map((request) => request.requestId),
+    ...incomingRequests.pendingUserInputs.map((request) => request.requestId),
+  ]);
+  const holdingUserInput = incomingRequests.pendingUserInputs[0]
+    ? typingGuard.heldRequestIds.has(incomingRequests.pendingUserInputs[0].requestId)
+    : false;
+  const requests = {
+    ...incomingRequests,
+    activePendingApproval:
+      incomingRequests.activePendingApproval &&
+      !typingGuard.heldRequestIds.has(incomingRequests.activePendingApproval.requestId)
+        ? incomingRequests.activePendingApproval
+        : null,
+    pendingUserInputs: holdingUserInput ? NO_PENDING_USER_INPUTS : incomingRequests.pendingUserInputs,
+    activePendingUserInput: holdingUserInput ? null : incomingRequests.activePendingUserInput,
+    activePendingProgress: holdingUserInput ? null : incomingRequests.activePendingProgress,
+    activePendingResolvedAnswers: holdingUserInput ? null : incomingRequests.activePendingResolvedAnswers,
+    activePendingIsResponding: !holdingUserInput && incomingRequests.activePendingIsResponding,
+  };
   const activePendingProgress = requests.activePendingProgress;
   const isComposerApprovalState = requests.activePendingApproval !== null;
   const latestProposedPlan = projection ? findLatestProposedPlan(projection, shell?.latestRun?.runId ?? null) : null;
@@ -829,7 +854,10 @@ function ComposerBody({
     const valueChanged = nextValue !== valueRef.current;
     valueRef.current = nextValue;
     caretRef.current = caret;
-    if (valueChanged) setSubmissionError(null);
+    if (valueChanged) {
+      setSubmissionError(null);
+      typingGuard.onDraftChange();
+    }
     if (isChoiceOnlyPendingQuestion) return;
     if (valueChanged && !activePendingProgress && promptHistoryPositionRef.current?.position.recalled !== nextValue) {
       promptHistoryPositionRef.current = null;
@@ -1310,6 +1338,7 @@ function ComposerBody({
           startFromOrigin: draft.startFromOrigin ?? false,
         };
     setTriggerState(null);
+    typingGuard.onSend();
     const approvalsToDecline = requests.pendingApprovals.filter(
       (approval) => !requests.respondingRequestIds.includes(approval.requestId),
     );
@@ -1964,10 +1993,12 @@ function ComposerBody({
 
   const isPathQueryActive = () => trigger?.kind === "path";
   const onEditorFocus = () => {
+    typingGuard.onFocus();
     setFocused(true);
     appAtomRegistry.set(composerFocusAtom, true);
   };
   const onEditorBlur = () => {
+    typingGuard.onBlur();
     setFocused(false);
     setMobileExpanded(false);
     appAtomRegistry.set(composerFocusAtom, false);
