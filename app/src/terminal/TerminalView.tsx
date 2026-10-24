@@ -42,6 +42,9 @@ import {
 } from "../web/components/preview/openTerminalLinkInPreview.ts";
 import { openExternalUrl, readClipboardText, writeClipboardText } from "./clipboard.ts";
 import { TerminalEmulator, type CellRun, type TerminalFrame, type TerminalTheme } from "./vt/emulator.ts";
+import { locateSelectionLines } from "./selectionLines.ts";
+import { addTerminalContextToThreadComposer } from "../chat/composer/terminalContextIntake.ts";
+import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import { encodeKey } from "./vt/keys.ts";
 
 /** apps/web/src/terminal/ghostty/surface.ts */
@@ -326,6 +329,20 @@ function TerminalSessionView({
     return true;
   };
 
+  const addSelectionToChat = () => {
+    const text = renderer.getSelectedText?.();
+    if (!text) return;
+    const { lineStart, lineEnd } = locateSelectionLines(emulator, text);
+    addTerminalContextToThreadComposer(environmentId, threadId, {
+      terminalId,
+      terminalLabel: getTerminalLabel(terminalId),
+      lineStart,
+      lineEnd,
+      text,
+    });
+    renderer.clearSelection?.();
+  };
+
   const paste = () => {
     void readClipboardText()
       .then((text) => {
@@ -558,6 +575,10 @@ function TerminalSessionView({
           testId="terminal-context-menu"
           trigger={() => <div />}
         >
+          {/* web terminalSelectionMenuItems: "Add to chat" puts the selection in this thread's composer. */}
+          <MenuItem disabled={!contextMenu.hasSelection} onSelect={addSelectionToChat} testId="terminal-add-to-chat">
+            Add to chat
+          </MenuItem>
           <MenuItem disabled={!contextMenu.hasSelection} onSelect={() => void copySelection()}>
             Copy
           </MenuItem>

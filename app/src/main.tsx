@@ -41,10 +41,10 @@ render(<App boot={boot} />, {
   keyboardFocusDim: false,
   // T3TERM_DEBUG_FRAMES=minimal|full paints GPUI draw times into the window.
   ...(process.env.T3TERM_DEBUG_FRAMES ? { debugFrameOverlay: process.env.T3TERM_DEBUG_FRAMES as "minimal" | "full" } : {}),
-  onKeyDown: (event) => {
+  onKeyDown: (event, renderer) => {
     // Copying chat markdown joins its runs back into lines (chat/markdown/copy.ts).
     if (handleMarkdownCopy(event)) return;
-    handleGlobalKeyDown(event);
+    handleGlobalKeyDown(event, renderer);
   },
   onEvent: (event) => {
     if (perfProbeEnabled) perfOnEvent(event);

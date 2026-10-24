@@ -125,6 +125,10 @@ export interface ModelPickerContentProps {
   readonly onOpenProviderSetup?: ((instanceId: ProviderInstanceId) => void) | undefined;
   readonly getModelDisabledReason?: ((instanceId: ProviderInstanceId, model: string) => string | null) | undefined;
   readonly onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
+  /** Multiple-model mode (drafts): the models chosen so far; checks mark each. */
+  readonly selectedModels?: ReadonlyArray<{ readonly instanceId: ProviderInstanceId; readonly model: string }>;
+  /** Present when multiple models can be chosen: shift-click or shift-Enter toggles one. */
+  readonly onToggleModel?: (instanceId: ProviderInstanceId, model: string) => void;
 }
 
 export const ModelPickerContent = memo(function ModelPickerContent(props: ModelPickerContentProps) {
@@ -160,6 +164,18 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: ModelP
   });
   const activeModelSlug = activeModel?.slug ?? (props.model === ANTIGRAVITY_DEFAULT_MODEL ? "" : props.model);
   const activeModelKey = activeModelSlug ? modelPickerModelKey(props.activeInstanceId, activeModelSlug) : null;
+  // web selectedModelKeySet: the chosen models in multiple-model mode, else the active one.
+  const selectedModelKeys = props.selectedModels?.map((selection) => {
+    const entry = instanceEntries.find((candidate) => candidate.instanceId === selection.instanceId);
+    const model = resolveModelPickerSelectedModel({
+      driverKind: entry?.driverKind,
+      model: selection.model,
+      options: modelOptionsByInstance.get(selection.instanceId) ?? [],
+    });
+    return modelPickerModelKey(selection.instanceId, model?.slug ?? selection.model);
+  });
+  const selectedModelKeySet = new Set(selectedModelKeys ?? (activeModelKey ? [activeModelKey] : []));
+  const multiSelect = props.onToggleModel !== undefined;
   const activeInstanceHasSelectableUnavailableModel =
     activeEntry !== undefined &&
     (modelOptionsByInstance.get(props.activeInstanceId) ?? []).some((option) =>
@@ -210,14 +226,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: ModelP
     });
   };
 
-  const handleModelSelect = (modelSlug: string, instanceId: ProviderInstanceId) => {
+  const handleModelSelect = (modelSlug: string, instanceId: ProviderInstanceId, additive = false) => {
     if (getModelDisabledReason?.(instanceId, modelSlug)) return;
     const options = modelOptionsByInstance.get(instanceId);
     if (!options) return;
     const entry = instanceEntries.find((candidate) => candidate.instanceId === instanceId);
     if (!entry) return;
     const resolvedModel = resolveSelectableModel(entry.driverKind, modelSlug, options);
-    if (resolvedModel) onInstanceModelChange(instanceId, resolvedModel);
+    if (!resolvedModel) return;
+    if (additive && props.onToggleModel) props.onToggleModel(instanceId, resolvedModel);
+    else onInstanceModelChange(instanceId, resolvedModel);
   };
 
   const lockedProvider = props.lockedProvider;
@@ -381,7 +399,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: ModelP
     setHighlightedIndex(isSearching && itemKeys.length > 0 ? 0 : -1);
   }
 
-  const activateKey = (key: string | undefined) => {
+  const activateKey = (key: string | undefined, additive = false) => {
     if (!key) return;
     const legacyInstanceId = parseModelPickerLegacySectionKey(key);
     if (legacyInstanceId) {
@@ -389,7 +407,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: ModelP
       return;
     }
     const model = parseModelPickerModelKey(key);
-    if (model) handleModelSelect(model.slug, model.instanceId);
+    if (model) handleModelSelect(model.slug, model.instanceId, additive);
   };
 
   const moveHighlight = (direction: 1 | -1) => {
@@ -441,6 +459,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: ModelP
         return;
       }
     }
+    // web: shift-Enter toggles the highlighted model into a multiple-model send.
+    if (event.key === "enter" && event.modifiers?.shift && props.onToggleModel) {
+      event.preventDefault();
+      event.stopPropagation();
+      activateKey(highlightedIndex >= 0 ? itemKeys[highlightedIndex] : undefined, true);
+      return;
+    }
     if (event.key === "down" || event.key === "up") {
       event.preventDefault();
       event.stopPropagation();
@@ -453,7 +478,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: ModelP
   const activateKeyRef = useRef(activateKey);
   activateKeyRef.current = activateKey;
   const onRowSelect = useCallback(
-    (instanceId: ProviderInstanceId, slug: string) => activateKeyRef.current(modelPickerModelKey(instanceId, slug)),
+    (instanceId: ProviderInstanceId, slug: string, additive: boolean) =>
+      activateKeyRef.current(modelPickerModelKey(instanceId, slug), additive),
     [],
   );
 
@@ -610,7 +636,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: ModelP
                     providerDisplayName={model.instanceDisplayName}
                     providerAccentColor={model.instanceAccentColor}
                     isFavorite={favoritesSet.has(providerModelKey(model.instanceId, model.slug))}
-                    isSelected={key === activeModelKey}
+                    isSelected={multiSelect ? selectedModelKeySet.has(key) : key === activeModelKey}
+                    showSelection={selectedModelKeys !== undefined}
                     isHighlighted={isHighlighted}
                     showProvider
                     preferShortName={!isLocked}

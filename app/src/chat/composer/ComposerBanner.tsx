@@ -24,6 +24,15 @@ import { ComposerBannerStack, type ComposerBannerStackEntry } from "./ComposerBa
 import { ComposerPendingApprovalActions, ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel.tsx";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel.tsx";
 import type { PendingThreadRequestsState } from "./usePendingThreadRequests.ts";
+import {
+  ComposerActivityRow,
+  ComposerTasksBadge,
+  ComposerTasksContent,
+  ComposerTasksDrawer,
+  type ComposerTaskStep,
+  type ComposerTasksProgress,
+  type ThreadSyncPhase,
+} from "./ComposerTasksBadge.tsx";
 
 export type { ComposerBannerStackEntry } from "./ComposerBannerStack.tsx";
 
@@ -44,6 +53,14 @@ export interface ComposerTopBannersProps {
   readonly bannerItems?: ReadonlyArray<ComposerBannerStackEntry>;
   /** web ComposerBanner.Dock's shoulder tab after the column (the stash badge), bottom-aligned on the right. */
   readonly trailing?: ReactNode;
+  /** The agent's todo list (web activeTasksProgress / activeTaskSteps). */
+  readonly tasks?: { readonly progress: ComposerTasksProgress; readonly steps: readonly ComposerTaskStep[] } | null;
+  /** "Loading/Syncing messages..." after web's useDelayedStatus. */
+  readonly syncPhase?: ThreadSyncPhase | null;
+  /** The composer surface width, for the tasks segment bar (`@min-[560px]`). */
+  readonly surfaceWidth?: number | null;
+  /** web isComposerCollapsedMobile: tasks ride inline instead of as a tab. */
+  readonly collapsedMobile?: boolean;
 }
 
 const NO_BANNER_ITEMS: ReadonlyArray<ComposerBannerStackEntry> = [];
@@ -56,6 +73,10 @@ export function ComposerTopBanners({
   attachedAbove,
   bannerItems = NO_BANNER_ITEMS,
   trailing,
+  tasks = null,
+  syncPhase = null,
+  surfaceWidth = null,
+  collapsedMobile = false,
 }: ComposerTopBannersProps) {
   const {
     activePendingApproval,
@@ -77,8 +98,54 @@ export function ComposerTopBanners({
   const chain = useMemo(() => ({ registerAttachment }), [registerAttachment]);
 
   const showTopDrawer = activePendingApproval !== null || pendingUserInputs.length > 0 || showPlanFollowUp;
-  const hasFrontNotice = bannerItems.length > 0;
-  const drawerJoinedAbove = externalAttachments > 0 || hasFrontNotice;
+
+  // ── Tasks and sync activity (web ChatComposer ~2322-2625) ─────────────
+  const [isTasksDrawerOpen, setIsTasksDrawerOpen] = useState(false);
+  const toggleTasksDrawer = () => setIsTasksDrawerOpen((open) => !open);
+  const hasBannerItems = bannerItems.length > 0;
+  const hasBlockingTopDrawer = activePendingApproval !== null || pendingUserInputs.length > 0;
+  const showInlineTasksBadge =
+    tasks !== null && !isTasksDrawerOpen && !hasBlockingTopDrawer && (hasBannerItems || showTopDrawer || collapsedMobile);
+  const inlineTasksBadge =
+    showInlineTasksBadge && tasks ? (
+      <ComposerTasksBadge
+        expanded={false}
+        onToggle={toggleTasksDrawer}
+        placement="inline"
+        progress={tasks.progress}
+        steps={tasks.steps}
+        surfaceWidth={surfaceWidth}
+      />
+    ) : null;
+  const showTasksTab =
+    !hasBannerItems &&
+    !showTopDrawer &&
+    !isTasksDrawerOpen &&
+    !collapsedMobile &&
+    tasks !== null &&
+    tasks.progress.totalSteps > 0;
+  // With notices on screen, the activity joins the stack instead of docking on its own.
+  const activityStackContent = hasBannerItems ? (
+    syncPhase ? (
+      <ComposerActivityRow phase={syncPhase} />
+    ) : !hasBlockingTopDrawer && tasks ? (
+      <ComposerTasksContent
+        expanded={isTasksDrawerOpen}
+        onToggle={toggleTasksDrawer}
+        progress={tasks.progress}
+        steps={tasks.steps}
+        surfaceWidth={surfaceWidth}
+      />
+    ) : null
+  ) : null;
+  const stackItems: ReadonlyArray<ComposerBannerStackEntry> = activityStackContent
+    ? [...bannerItems, { id: "composer-activity", variant: "default", priority: "activity", content: activityStackContent }]
+    : bannerItems;
+  const showActivityStrip = activityStackContent === null && (syncPhase !== null || inlineTasksBadge !== null);
+  const hasFrontNotice = stackItems.length > 0;
+  const stripJoinedAbove = externalAttachments > 0 || hasFrontNotice;
+  const drawerJoinedAbove = stripJoinedAbove || showActivityStrip;
+  const showTasksDrawer = activityStackContent === null && isTasksDrawerOpen && !hasBlockingTopDrawer && tasks !== null;
 
   const userInputRespondingIds =
     activePendingIsResponding && activePendingUserInput
@@ -110,11 +177,20 @@ export function ComposerTopBanners({
         }}
       >
         <ComposerBannerStack
-          items={bannerItems}
+          items={stackItems}
+          // The banners are the composer's width minus the 22px insets.
+          hideDescriptions={surfaceWidth !== null && surfaceWidth - 2 * COMPOSER_DRAWER_INSET <= 400}
           attachedAbove={attachedAbove}
           frontJoinedAbove={externalAttachments > 0}
         />
-        {showTopDrawer ? (
+        {showActivityStrip ? (
+          <BannerAttachment testId="composer-activity-strip">
+            <BannerRoot joinedAbove={stripJoinedAbove}>
+              {syncPhase ? <ComposerActivityRow phase={syncPhase} /> : inlineTasksBadge}
+            </BannerRoot>
+          </BannerAttachment>
+        ) : null}
+        {showTopDrawer && (!isTasksDrawerOpen || hasBlockingTopDrawer) ? (
           <BannerAttachment testId="composer-top-drawer">
             {activePendingApproval ? (
               <BannerRoot
@@ -161,6 +237,26 @@ export function ComposerTopBanners({
                 <ComposerPlanFollowUpBanner planTitle={planFollowUpTitle} />
               </BannerRoot>
             )}
+          </BannerAttachment>
+        ) : null}
+        {showTasksDrawer && tasks ? (
+          <ComposerTasksDrawer
+            onCollapse={toggleTasksDrawer}
+            joinedAbove={drawerJoinedAbove}
+            progress={tasks.progress}
+            steps={tasks.steps}
+            surfaceWidth={surfaceWidth}
+          />
+        ) : null}
+        {showTasksTab && tasks ? (
+          <BannerAttachment>
+            <ComposerTasksBadge
+              expanded={false}
+              onToggle={toggleTasksDrawer}
+              progress={tasks.progress}
+              steps={tasks.steps}
+              surfaceWidth={surfaceWidth}
+            />
           </BannerAttachment>
         ) : null}
       </div>

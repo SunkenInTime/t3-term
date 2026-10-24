@@ -50,7 +50,10 @@ export const ModelPickerListRow = memo(function ModelPickerListRow(props: {
   unavailable?: boolean;
   jumpLabel?: string | null;
   disabledReason?: string | null;
-  onSelect: (instanceId: ProviderInstanceId, slug: string) => void;
+  /** `additive`: shift was held (web toggles the model into a multiple-model send). */
+  onSelect: (instanceId: ProviderInstanceId, slug: string, additive: boolean) => void;
+  /** web `showSelection`: multi-select marks every chosen model with a check. */
+  showSelection?: boolean;
   onHighlight: (index: number) => void;
   onToggleFavorite: (instanceId: ProviderInstanceId, slug: string) => void;
 }) {
@@ -99,7 +102,11 @@ export const ModelPickerListRow = memo(function ModelPickerListRow(props: {
   const row = (
     <div
       testId={`model-picker-row-${props.slug}`}
-      onClick={disabled ? undefined : () => props.onSelect(props.instanceId, props.slug)}
+      onClick={
+        disabled
+          ? undefined
+          : (event) => props.onSelect(props.instanceId, props.slug, (event as { modifiers?: { shift?: boolean } }).modifiers?.shift === true)
+      }
       onMouseEnter={() => props.onHighlight(props.index)}
       style={{
         display: "flex",
@@ -167,6 +174,7 @@ export const ModelPickerListRow = memo(function ModelPickerListRow(props: {
         ) : null}
       </div>
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 }}>
+        {props.showSelection && props.isSelected ? <Icon name="check" size={14} color={theme.foreground} /> : null}
         {props.jumpLabel ? <JumpKbd>{props.jumpLabel}</JumpKbd> : null}
         {/* The tooltip root measures as zero width in a flex row, so the slot carries the size. */}
         <div style={{ display: "flex", width: 24, height: 24, flexShrink: 0 }}>

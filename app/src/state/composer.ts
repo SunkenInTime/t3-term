@@ -29,7 +29,9 @@ import {
 import {
   reviewCommentContextId,
   reviewCommentContextReference,
+  terminalContextReference,
 } from "../web/lib/composerContextRecords.ts";
+import type { TerminalContextDraft } from "../web/lib/terminalContext.ts";
 import type { ReviewCommentContext } from "../web/reviewCommentContext.ts";
 import { clientSettingsAtom } from "./clientSettings.ts";
 import { termHome } from "../runtime/paths.ts";
@@ -92,6 +94,11 @@ export interface ComposerDraft {
    * an inline `t3-context://` reference in the prompt and goes out as a message context record.
    */
   readonly reviewComments?: ReadonlyArray<ReviewCommentContext>;
+  /**
+   * Terminal selections added with "Add to chat" (web ComposerThreadDraftState.terminalContexts).
+   * Shown as chips; each goes out as an inline reference in the message text plus a context record.
+   */
+  readonly terminalContexts?: ReadonlyArray<TerminalContextDraft>;
   readonly updatedAt?: string;
 }
 
@@ -109,7 +116,8 @@ export function composerDraftHasUserContent(draft: ComposerDraft | null | undefi
     draft &&
       (draft.prompt.trim().length > 0 ||
         draft.attachments.length > 0 ||
-        (draft.reviewComments?.length ?? 0) > 0),
+        (draft.reviewComments?.length ?? 0) > 0 ||
+        (draft.terminalContexts?.length ?? 0) > 0),
   );
 }
 
@@ -259,9 +267,12 @@ export function removeComposerAttachment(key: string, attachmentId: string): voi
 /** Clears what a send dispatched; model, mode and workspace choices stay. */
 export function clearComposerContent(key: string): void {
   updateComposerDraft(key, (draft) =>
-    draft.prompt === "" && draft.attachments.length === 0 && (draft.reviewComments?.length ?? 0) === 0
+    draft.prompt === "" &&
+    draft.attachments.length === 0 &&
+    (draft.reviewComments?.length ?? 0) === 0 &&
+    (draft.terminalContexts?.length ?? 0) === 0
       ? draft
-      : { ...draft, prompt: "", attachments: [], reviewComments: [] },
+      : { ...draft, prompt: "", attachments: [], reviewComments: [], terminalContexts: [] },
   );
 }
 
@@ -272,6 +283,7 @@ export function restoreComposerContent(
     prompt: string;
     attachments: ReadonlyArray<ComposerAttachmentDraft>;
     reviewComments?: ReadonlyArray<ReviewCommentContext>;
+    terminalContexts?: ReadonlyArray<TerminalContextDraft>;
   },
 ): void {
   updateComposerDraft(key, (draft) => ({
@@ -284,7 +296,40 @@ export function restoreComposerContent(
         (comment) => !content.reviewComments?.some((restored) => restored.id === comment.id),
       ),
     ],
+    terminalContexts: [
+      ...(content.terminalContexts ?? []),
+      ...(draft.terminalContexts ?? []).filter(
+        (context) => !content.terminalContexts?.some((restored) => restored.id === context.id),
+      ),
+    ],
   }));
+}
+
+/**
+ * web ChatComposer addTerminalContext. Web drops an inline chip at the caret; this plain text
+ * field cannot read its caret and an inline reference breaks the moment text is typed into
+ * it, so the selection lives in the list (shown as chips) and its reference is added to the
+ * message text at send (terminalContextReferencesText).
+ */
+export function addComposerTerminalContext(key: string, context: TerminalContextDraft): void {
+  updateComposerDraft(key, (draft) => ({
+    ...draft,
+    terminalContexts: [...(draft.terminalContexts ?? []), context],
+  }));
+}
+
+/** Drops a terminal selection (web removes it with its chip). */
+export function removeComposerTerminalContext(key: string, contextId: string): void {
+  updateComposerDraft(key, (draft) => {
+    const existing = draft.terminalContexts ?? [];
+    if (!existing.some((entry) => entry.id === contextId)) return draft;
+    return { ...draft, terminalContexts: existing.filter((entry) => entry.id !== contextId) };
+  });
+}
+
+/** The inline references web's message text carries for its terminal chips, one per selection. */
+export function terminalContextReferencesText(contexts: ReadonlyArray<TerminalContextDraft>): string {
+  return contexts.map((context) => appendInlineContextReference("", terminalContextReference(context)).trim()).join(" ");
 }
 
 /**

@@ -1,5 +1,5 @@
 // Ported from apps/web/src/components/chat/ProviderStatusBanner.tsx (the pure helpers
-// only; the banner view is not part of this file).
+// only; the banner view is chat/ChatBannerLane.tsx).
 import type { ServerProvider } from "@t3tools/contracts";
 
 import { formatProviderDriverKindLabel } from "../../providerModels";
@@ -38,4 +38,48 @@ export function getProviderStatusMessage(status: ServerProvider): string {
     : status.status === "error"
       ? `${providerName} provider is unavailable.`
       : `${providerName} provider has limited availability.`;
+}
+
+export function getIncompatibleVersion(status: ServerProvider) {
+  const compatibility = status.compatibilityAdvisory;
+  if (status.status === "error" && status.auth.status === "unauthenticated") return null;
+  return compatibility?.status === "broken" ||
+    (status.status === "ready" && compatibility?.status === "unsupported")
+    ? compatibility
+    : null;
+}
+
+export function getProviderStatusBannerKey(status: ServerProvider | null): string | null {
+  if (!status || status.status === "disabled") return null;
+  const incompatible = getIncompatibleVersion(status);
+  if (incompatible) {
+    return [
+      status.instanceId,
+      incompatible.status,
+      status.version ?? "",
+      incompatible.message ?? "",
+    ].join("\u0000");
+  }
+  if (status.status === "ready") return null;
+  // Antigravity checks saved credentials when a session starts. Its local
+  // health check leaves auth unknown after a restart, which is not a failure.
+  if (
+    status.driver === "antigravity" &&
+    status.installed &&
+    status.status === "warning" &&
+    status.auth.status === "unknown"
+  ) {
+    return null;
+  }
+  return [status.instanceId, status.status, status.auth.status, status.message ?? ""].join(
+    "\u0000",
+  );
+}
+
+export function shouldShowProviderStatusBanner(
+  status: ServerProvider | null,
+  dismissedBannerKey: string | null,
+): boolean {
+  const bannerKey = getProviderStatusBannerKey(status);
+  return bannerKey !== null && bannerKey !== dismissedBannerKey;
 }

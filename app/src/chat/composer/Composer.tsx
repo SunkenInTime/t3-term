@@ -32,7 +32,10 @@ import {
 } from "@t3tools/client-runtime/state/composer-dispatch";
 import { resolveProviderSkillsForCwd, resolveProviderSlashCommandsForCwd } from "@t3tools/client-runtime/providerSkills";
 import {
+  deriveProviderSubagentStatus,
   deriveReportedModelSelection,
+  deriveThreadActivityRun,
+  formatModelSelectionEffort,
   deriveThreadStructureRuntime,
   threadRuntimeHasInterruptibleRun,
 } from "@t3tools/client-runtime/state/thread-execution";
@@ -40,6 +43,8 @@ import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thr
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
   type EnvironmentId,
+  isProviderNativeSubagentThread,
+  MessageId,
   type ModelSelection,
   type ProjectId,
   type ProviderInstanceId,
@@ -72,6 +77,8 @@ import {
   composerTargetKey,
   readComposerDraft,
   referencedReviewComments,
+  removeComposerTerminalContext,
+  terminalContextReferencesText,
   removeComposerAttachment,
   setComposerInteractionMode,
   setComposerModelOptions,
@@ -83,6 +90,7 @@ import {
 } from "../../state/composer.ts";
 import {
   environmentSession,
+  environmentThreadDetails,
   environmentThreadShells,
   environmentThreads,
   projectIndexAtom,
@@ -138,7 +146,17 @@ import { type AppModelOption, getAppModelOptionsForInstance, resolveAppModelSele
 import { shortcutLabelForCommand } from "../../web/keybindings.ts";
 import { getProviderModelCapabilities } from "../../web/providerModels.ts";
 import { resolvePlanFollowUpSubmission } from "../../web/proposedPlan.ts";
-import { derivePhase, findLatestProposedPlan, hasActionableProposedPlan } from "../../web/session-logic.ts";
+import {
+  deriveActivePlanState,
+  derivePhase,
+  findLatestProposedPlan,
+  hasActionableProposedPlan,
+  isLatestRunSettled,
+  selectComposerTasksPlan,
+} from "../../web/session-logic.ts";
+import { resolveThreadSyncPhase } from "../../web/threadSync.ts";
+import { useDelayedStatus } from "../../web/hooks/useDelayedStatus.ts";
+import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import { BranchToolbar } from "./BranchToolbar.tsx";
 import {
   ComposerAttachButton,
@@ -163,8 +181,14 @@ import { attachmentsFromPaths } from "./composerAttachmentPaths.ts";
 import { ContextWindowMeter } from "./ContextWindowMeter.tsx";
 import { MODEL_PICKER_TRIGGER_MIN_WIDTH, ProviderModelPicker } from "./ProviderModelPicker.tsx";
 import { QueuedRunsControl } from "./QueuedRunsControl.tsx";
-import { registerShortcutHandler, resolveKeyEventCommand } from "../../keybindings/useGlobalKeybindings.ts";
-import { composerFocusAtom } from "../../state/keybindings.ts";
+import {
+  registerShortcutHandler,
+  registerTypeToFocusHandler,
+  resolveKeyEventCommand,
+} from "../../keybindings/useGlobalKeybindings.ts";
+import { isConfirmDialogActive } from "../../dialogs/confirmDialog.ts";
+import { readClipboardText } from "../../terminal/clipboard.ts";
+import { composerFocusAtom, terminalFocusAtom } from "../../state/keybindings.ts";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
 import type { KeybindingCommand } from "@t3tools/contracts";
 import { TraitsMenuContent, TraitsPicker } from "./TraitsPicker.tsx";
@@ -177,6 +201,30 @@ import { sendQueuedRunNow } from "./QueuedRunsControl.tsx";
 import { usePendingThreadRequests } from "./usePendingThreadRequests.ts";
 import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
+import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
+import { ComposerPendingTerminalContexts } from "./ComposerPendingTerminalContexts.tsx";
+import { filterTerminalContextsWithText, type TerminalContextDraft } from "../../web/lib/terminalContext.ts";
+import {
+  draftFanoutSelectionsAtom,
+  type MultipleModelTarget,
+  multipleModelSendBlock,
+  resolveMultipleModelTargets,
+  sendToMultipleModels,
+} from "./multipleModelSend.ts";
+import { resolveModelPickerSelectedModel } from "../../web/components/chat/ModelPickerContent.logic.ts";
+import { useEnvironmentQuery } from "../../palette/hooks.ts";
+import { vcsEnvironment } from "../../state/git.ts";
+import { ProviderSubagentBar } from "./ProviderSubagentBar.tsx";
+import { formatModelSlugName, resolveSelectableModel } from "@t3tools/shared/model";
+import { getTriggerDisplayModelName } from "../../web/components/chat/providerIconUtils.ts";
+import { shouldShowInstanceBadge } from "../../web/providerInstances.ts";
+import { useProjectCloneBanner } from "./useProjectCloneBanner.tsx";
+import { composerProviderStatusAtom } from "./composerProviderStatus.ts";
+import { DEV_TERMINAL_CONTEXT, devComposerTasks, withDevProviderStatus } from "./devComposerBanners.ts";
+import { addTerminalContextToThreadComposer } from "./terminalContextIntake.ts";
+import { feedbackUploadsInFlight, upsertFeedbackSubmission } from "./ComposerFeedback.tsx";
+import { parseCodexFeedbackCommand, submitCodexFeedback } from "@t3tools/client-runtime/state/threads";
+import { isUsageLimitsCommand, USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
 import { mentionDragOverAtom, reportComposerDropZone } from "../../panels/files/fileTreeActions.ts";
 
 export type { ComposerTarget } from "../../state/composer.ts";
@@ -189,7 +237,9 @@ const RESTING_PICKER_LABEL_MAX_SURFACE_PX = 640;
 /** Tailwind `sm`: web's footer drops its gap from this viewport width up. */
 const SM_BREAKPOINT = 640;
 
+const NO_TERMINAL_CONTEXTS: ReadonlyArray<TerminalContextDraft> = [];
 const NO_THREAD_SHELL_ATOM = Atom.make<EnvironmentThreadShell | null>(null);
+const NO_THREAD_STATUS_ATOM = Atom.make<EnvironmentThreadStatus>("live");
 const NO_THREAD_STATE_ATOM = Atom.make(
   AsyncResult.initial() as ReturnType<typeof environmentThreads.stateAtom> extends Atom.Atom<infer T> ? T : never,
 );
@@ -728,6 +778,15 @@ function ComposerBody({
       return;
     }
     if (item.type === "provider-slash-command") {
+      // web ChatComposer onSelectComposerItem: choosing /usage-limits opens the panel
+      // right away (only when nothing but the prompt is staged, like web's gate).
+      if (item.command.name === USAGE_LIMITS_COMMAND.name && banners.usageLimitsOffered && draft.attachments.length === 0) {
+        applyPromptReplacement(active.rangeStart, active.rangeEnd, "");
+        setTriggerState(null);
+        setHighlightedItemId(null);
+        banners.openUsageLimits();
+        return;
+      }
       const replacement = `/${item.command.name} `;
       const end = extendReplacementRangeForTrailingSpace(current, active.rangeEnd, replacement);
       applyPromptReplacement(active.rangeStart, end, replacement);
@@ -750,20 +809,149 @@ function ComposerBody({
     setHighlightedSearchKey(menuSearchKey);
   };
 
+  // ── Tasks and sync activity (web ChatView ~1018-1042, 496) ────────────
+  const activeActivityRun = projection ? deriveThreadActivityRun(projection) : null;
+  const activeActivityRunSettled = isLatestRunSettled(activeActivityRun, runtime);
+  const composerTasksPlan = selectComposerTasksPlan(
+    projection,
+    deriveActivePlanState(projection, activeActivityRun?.runId),
+    activeActivityRun?.runId ?? null,
+    activeActivityRunSettled,
+  );
+  const composerTasks = devComposerTasks(threadId, (() => {
+    if (!composerTasksPlan || composerTasksPlan.steps.length === 0) return null;
+    const steps = composerTasksPlan.steps;
+    return {
+      progress: {
+        step:
+          steps.find((candidate) => candidate.status === "inProgress")?.step ??
+          steps.find((candidate) => candidate.status === "pending")?.step ??
+          steps.at(-1)!.step,
+        completedSteps: steps.filter((step) => step.status === "completed").length,
+        totalSteps: steps.length,
+        live: !activeActivityRunSettled && composerTasksPlan.runId === activeActivityRun?.runId,
+      },
+      steps,
+    };
+  })());
+  const threadStatus = useAtomValue(
+    threadId ? environmentThreadDetails.statusAtom({ environmentId, threadId }) : NO_THREAD_STATUS_ATOM,
+  );
+  const threadSyncPhase = resolveThreadSyncPhase({
+    detailExists: projection !== null,
+    shellExists: shell !== null,
+    status: threadStatus,
+  });
+  const shownSyncPhase = useDelayedStatus(draftKey, environmentUnavailable ? null : threadSyncPhase);
+
+  // ── Notices ───────────────────────────────────────────────────────────
+  // The banner lane above the timeline shows this provider's status (web ChatBannerLane).
+  const publishedProviderStatus = useMemo(
+    () => (showProviderUnavailable ? null : withDevProviderStatus(selectedProviderStatus)),
+    [showProviderUnavailable, selectedProviderStatus],
+  );
+  useEffect(() => {
+    const atom = composerProviderStatusAtom(draftKey);
+    if (appAtomRegistry.get(atom) !== publishedProviderStatus) appAtomRegistry.set(atom, publishedProviderStatus);
+  }, [draftKey, publishedProviderStatus]);
+  const projectClone = useProjectCloneBanner(projectId ? { environmentId, projectId } : null);
+  const banners = useComposerBannerItems({
+    projectCloneBannerItem: projectClone.projectCloneBannerItem,
+    environmentId,
+    threadId,
+    draftKey,
+    shell,
+    projection,
+    runtime,
+    projectCwd: project?.workspaceRoot ?? null,
+    isWorking: isRunning || sending,
+    activePendingRequestId:
+      requests.activePendingApproval?.requestId ?? requests.activePendingUserInput?.requestId ?? null,
+    composerHasDraftContent: prompt.trim().length > 0 || draft.attachments.length > 0,
+    providerInstanceId: noProviderAvailable ? null : selectedInstanceId,
+    providerDriver: selectedProviderStatus?.driver ?? null,
+    providers: providerStatuses,
+    usageLimitSources: serverConfig?.usageLimitSources,
+    getSendContext: () => ({
+      providerAvailable: !noProviderAvailable,
+      modelSelection: selectedModelSelection,
+      runtimeMode,
+      interactionMode,
+    }),
+  });
+  const bannerItems = banners.items;
+
   // ── Send ──────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!DEV_TERMINAL_CONTEXT || threadId === null) return;
+    if ((readComposerDraft(draftKey).terminalContexts?.length ?? 0) > 0) return;
+    addTerminalContextToThreadComposer(environmentId, threadId, DEV_TERMINAL_CONTEXT);
+  }, [environmentId, threadId, draftKey]);
+  // Terminal selections whose reference is still in the prompt (web composerDraft.terminalContexts).
+  const composerTerminalContexts = promptDraft.terminalContexts ?? NO_TERMINAL_CONTEXTS;
   const composerSendState = deriveComposerSendState({
     prompt,
     imageCount: draft.attachments.length,
-    terminalContexts: [],
+    terminalContexts: composerTerminalContexts,
     elementContextCount: referencedReviewComments(draft, prompt).length,
   });
   const providerSendBlockReason = getAntigravitySendBlockReason(selectedProviderStatus, selectedModel);
-  const sendDisabledReason = providerSendBlockReason;
+  // ── Multiple models (web useMultipleModelSend; drafts only) ──────────
+  const fanoutSelections = useAtomValue(draftFanoutSelectionsAtom(draftKey));
+  const multipleModelSelections = target.kind === "draft" ? fanoutSelections : null;
+  const supportsMultipleModels = serverConfig?.environment.capabilities.requiredWorktreeBootstrap === true;
+  const draftGitStatus = useEnvironmentQuery(
+    target.kind === "draft" && project ? vcsEnvironment.status({ environmentId, input: { cwd: project.workspaceRoot } }) : null,
+  );
+  const draftIsGitRepo = (draftGitStatus.data as { isRepo?: boolean } | null)?.isRepo ?? true;
+  const setMultipleModelSelections = (selections: ReadonlyArray<ModelSelection> | null) =>
+    appAtomRegistry.set(draftFanoutSelectionsAtom(draftKey), selections);
+  // web ComposerModelPicker.toggleModel: two or more models switch to a multiple-model send.
+  const toggleModel = (instanceId: ProviderInstanceId, model: string) => {
+    const current = multipleModelSelections ?? [selectedModelSelection];
+    const matchesModel = (selection: ModelSelection) => {
+      if (selection.instanceId !== instanceId) return false;
+      const entry = providerInstanceEntries.find((candidate) => candidate.instanceId === selection.instanceId);
+      const resolvedModel = resolveModelPickerSelectedModel({
+        driverKind: entry?.driverKind,
+        model: selection.model,
+        options: modelOptionsByInstance.get(selection.instanceId) ?? [],
+      });
+      return (resolvedModel?.slug ?? selection.model) === model;
+    };
+    const exists = current.some(matchesModel);
+    const next = exists ? current.filter((selection) => !matchesModel(selection)) : [...current, createModelSelection(instanceId, model)];
+    if (next.length > 1) {
+      setMultipleModelSelections(next);
+    } else {
+      setMultipleModelSelections(null);
+      const remaining = next[0] ?? selectedModelSelection;
+      onProviderModelSelect(remaining.instanceId, remaining.model);
+    }
+  };
+  const sendDisabledReason =
+    (multipleModelSelections?.length === 0 ? "Select at least one model." : null) ??
+    (banners.feedbackUploading ? "Sending feedback" : projectClone.projectCloneSendBlockReason) ??
+    (multipleModelSelections === null ? providerSendBlockReason : null);
   const followUpBehavior: "queue" | "steer" =
     requests.pendingApprovals.length > 0 ? "steer" : settings.followUpBehavior;
   const isCompacting = false;
 
   const submit = (dispatchMode?: ComposerDispatchMode, submissionIntent: ComposerSubmissionIntent = "foreground") => {
+    // web useComposerSend: /usage-limits is answered locally from the Limits snapshot.
+    if (
+      banners.usageLimitsOffered &&
+      draft.attachments.length === 0 &&
+      !queuedEdit.isEditing &&
+      isUsageLimitsCommand(readComposerDraft(promptKey).prompt)
+    ) {
+      if (banners.openUsageLimits()) {
+        valueRef.current = "";
+        caretRef.current = 0;
+        setComposerPrompt(promptKey, "");
+      }
+      return;
+    }
     if (activePendingProgress) {
       requests.onAdvanceActivePendingUserInput();
       return;
@@ -801,12 +989,23 @@ function ComposerBody({
       return;
     }
     if (!composerSendState.hasSendableContent && attachments.length === 0) return;
+    // web useComposerSend: /feedback in a Codex thread uploads the session to OpenAI.
+    const feedbackCommand =
+      selectedProvider === "codex" && attachments.length === 0 && !queuedEdit.isEditing ? parseCodexFeedbackCommand(trimmed) : null;
+    if (feedbackCommand && multipleModelSelections === null) {
+      void submitFeedbackCommand(trimmed, feedbackCommand);
+      return;
+    }
     const validation = getComposerSubmissionValidationMessage({
       prompt: promptAtSend,
       submissionTarget: "provider-turn",
     });
     if (validation) {
       setSubmissionError(validation);
+      return;
+    }
+    if (multipleModelSelections !== null && project) {
+      void submitMultipleModels(promptAtSend, attachments);
       return;
     }
     void dispatchSend({
@@ -826,6 +1025,85 @@ function ComposerBody({
     });
   };
 
+  const submitMultipleModels = async (promptAtSend: string, attachments: ReadonlyArray<ComposerAttachmentDraft>) => {
+    if (!project || multipleModelSelections === null) return;
+    const block = multipleModelSendBlock({
+      selectionCount: multipleModelSelections.length,
+      serverSupportsWorktreeBootstrap: supportsMultipleModels,
+      isLocalDraftThread: target.kind === "draft",
+      isGitRepo: draftIsGitRepo,
+      branch: draft.branch ?? null,
+    });
+    if (block === "server-outdated") {
+      appAtomRegistry.set(composerSendErrorAtom(draftKey), "Update this server before starting multiple models.");
+      return;
+    }
+    if (block === "needs-new-git-thread") {
+      toast({
+        type: "warning",
+        title: "Choose models and a base branch",
+        description: "Multiple models need a new thread in a Git project. Each gets its own worktree.",
+      });
+      return;
+    }
+    const targets: MultipleModelTarget[] = [];
+    for (const resolved of resolveMultipleModelTargets({
+      selections: multipleModelSelections,
+      providerInstanceEntries,
+      messageText: promptAtSend.trim(),
+      planModeEnabled: settings.planModeEnabled,
+      interactionMode,
+    })) {
+      if ("error" in resolved) {
+        appAtomRegistry.set(composerSendErrorAtom(draftKey), resolved.error);
+        return;
+      }
+      targets.push(resolved);
+    }
+    setTriggerState(null);
+    valueRef.current = "";
+    caretRef.current = 0;
+    await sendToMultipleModels({
+      environmentId,
+      draftKey,
+      projectId: project.id,
+      projectCwd: project.workspaceRoot,
+      branch: draft.branch!,
+      startFromOrigin: draft.startFromOrigin ?? false,
+      prompt: promptAtSend,
+      attachments,
+      selections: multipleModelSelections,
+      targets,
+      runtimeMode,
+    });
+  };
+
+  const submitFeedbackCommand = async (command: string, feedback: { readonly reason?: string }) => {
+    const threadKey = banners.routeThreadKey;
+    if (!threadId || !projection?.thread.activeProviderThreadId) {
+      toast({ type: "warning", title: "Start a Codex thread first", description: "Send a message before you submit feedback." });
+      return;
+    }
+    if (feedbackUploadsInFlight.has(threadKey)) return;
+    feedbackUploadsInFlight.add(threadKey);
+    await submitCodexFeedback({
+      submission: { id: MessageId.make(globalThis.crypto.randomUUID()), command, createdAt: new Date().toISOString() },
+      clearDraft: () => {
+        valueRef.current = "";
+        caretRef.current = 0;
+        setComposerPrompt(promptKey, "");
+      },
+      onUpdate: (submission) => upsertFeedbackSubmission(threadKey, submission),
+      upload: () =>
+        runAtomCommand(
+          appAtomRegistry,
+          threadEnvironment.uploadFeedback,
+          { environmentId, input: { threadId, ...feedback } } as never,
+          { reportFailure: false },
+        ) as never,
+    }).finally(() => feedbackUploadsInFlight.delete(threadKey));
+  };
+
   const dispatchSend = async (input: {
     prompt: string;
     text: string;
@@ -839,12 +1117,16 @@ function ComposerBody({
       toast({ type: "warning", title: "Choose a project first" });
       return;
     }
+    // Terminal excerpts go out as inline references in the text plus context records, as on web.
+    const sendTerminalContexts = filterTerminalContextsWithText(readComposerDraft(promptKey).terminalContexts ?? []);
+    const terminalReferences = terminalContextReferencesText(sendTerminalContexts);
+    const messageText = [input.text, terminalReferences].filter((part) => part.length > 0).join(" ");
     const outgoingText = formatOutgoingPrompt({
       provider: selectedProvider,
       model: selectedModel,
       models: selectedProviderModels,
       effort: composerProviderState.promptEffort,
-      text: input.text || "[User attached one or more files without additional text. Respond using the conversation context and the attached files.]",
+      text: messageText || "[User attached one or more files without additional text. Respond using the conversation context and the attached files.]",
     });
     const sendTarget: ComposerSendTarget = threadId
       ? {
@@ -874,6 +1156,7 @@ function ComposerBody({
       outgoingText,
       attachments: input.attachments,
       reviewComments: referencedReviewComments(readComposerDraft(draftKey), input.prompt),
+      terminalContexts: sendTerminalContexts,
       modelSelection: selectedModelSelection,
       runtimeMode,
       interactionMode: input.interactionMode,
@@ -1335,6 +1618,49 @@ function ComposerBody({
       return true;
     },
   };
+  // ── Type-to-focus (web composerFocusRedirect + usePasteToFocusComposer) ──
+  // A printable key or a paste with nothing editable focused goes to the end of the prompt.
+  const appendToEditor = (text: string) => {
+    if (isChoiceOnlyPendingQuestion || requests.activePendingIsResponding) return false;
+    const next = `${valueRef.current}${text}`;
+    valueRef.current = next;
+    caretRef.current = next.length;
+    writeEditorValue(next);
+    if (restingRequested) appAtomRegistry.set(composerRestingAtom(draftKey), false);
+    setTrigger(detectComposerTrigger(next, next.length));
+    focusEditor();
+    return true;
+  };
+  const typeToFocus = (event: KeyEvent, eventRenderer: unknown) => {
+    const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
+    const focusedId = (eventRenderer as { getFocusedElementId?: () => number | null } | undefined)?.getFocusedElementId?.();
+    // Anything focused (a field, the terminal, this editor) keeps its own keys.
+    if (focusedId !== null && focusedId !== undefined) return false;
+    if (
+      appAtomRegistry.get(terminalFocusAtom) ||
+      appAtomRegistry.get(modelPickerOpenAtom) ||
+      appAtomRegistry.get(composerMenuOpenAtom) !== null ||
+      stash.menuOpen ||
+      isConfirmDialogActive()
+    ) {
+      return false;
+    }
+    const isPaste = (mods.ctrl || mods.cmd) && !mods.alt && !mods.shift && event.key === "v";
+    if (isPaste) {
+      void readClipboardText().then((text) => {
+        if (text.length > 0) appendToEditor(text);
+      });
+      return true;
+    }
+    if (mods.ctrl || mods.cmd || mods.alt || event.isHeld) return false;
+    const char = event.keyChar && [...event.keyChar].length === 1 ? event.keyChar : null;
+    if (char === null || char < " ") return false;
+    return appendToEditor(char);
+  };
+  const typeToFocusRef = useRef(typeToFocus);
+  typeToFocusRef.current = typeToFocus;
+  useEffect(() => registerTypeToFocusHandler((event, eventRenderer) => typeToFocusRef.current(event, eventRenderer)), []);
+
   const shortcutCommandsRef = useRef(shortcutCommands);
   shortcutCommandsRef.current = shortcutCommands;
   useEffect(() => {
@@ -1474,7 +1800,16 @@ function ComposerBody({
           onOpenChange={setModelPickerOpen}
           getModelDisabledReason={getModelDisabledReason}
           onOpenProviderSetup={() => appAtomRegistry.set(routeAtom, { kind: "settings", page: "providers" })}
-          onInstanceModelChange={onProviderModelSelect}
+          onInstanceModelChange={(instanceId, model) => {
+            setMultipleModelSelections(null);
+            onProviderModelSelect(instanceId, model);
+          }}
+          {...(target.kind === "draft" && supportsMultipleModels
+            ? {
+                ...(multipleModelSelections !== null ? { selectedModels: multipleModelSelections } : {}),
+                onToggleModel: toggleModel,
+              }
+            : {})}
           measure={activeControls.measure.picker}
           collapseLabel={controlsCollapsed && restingPickerLabelCollapsed}
         />
@@ -1557,6 +1892,48 @@ function ComposerBody({
     color: theme.foreground,
   };
 
+  // web ChatView showProviderSubagentBar: a provider-native subagent can't take messages,
+  // so the composer gives way to a bar with its model, live status and "Open parent".
+  if (shell && isProviderNativeSubagentThread(shell.source)) {
+    const subagentModels = selectedProviderEntry?.models ?? [];
+    const subagentModelSlug = selectedProviderEntry
+      ? resolveSelectableModel(selectedProviderEntry.driverKind, shell.modelSelection.model, subagentModels)
+      : null;
+    const subagentCatalogModel = subagentModels.find((model) => model.slug === subagentModelSlug);
+    const parentThreadId = shell.lineage.parentThreadId;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", width: "100%", maxWidth: LAYOUT.chatMaxWidth, pointerEvents: "auto" }}>
+        <div
+          style={surfaceBase}
+          onLayout={(event) => {
+            const width = (event as { width?: number }).width;
+            if (typeof width === "number" && width !== surfaceWidth) setSurfaceWidth(width);
+          }}
+        >
+          <ProviderSubagentBar
+            provider={selectedProviderEntry ?? null}
+            showInstanceBadge={
+              selectedProviderEntry !== undefined && shouldShowInstanceBadge(selectedProviderEntry, providerInstanceEntries)
+            }
+            modelLabel={
+              subagentCatalogModel
+                ? getTriggerDisplayModelName(subagentCatalogModel)
+                : formatModelSlugName(shell.modelSelection.model)
+            }
+            effortLabel={formatModelSelectionEffort(shell.modelSelection, subagentModels, reportedModelSelection)}
+            status={projection ? deriveProviderSubagentStatus(projection) : null}
+            onOpenParent={
+              parentThreadId
+                ? () => appAtomRegistry.set(routeAtom, { kind: "thread", environmentId, threadId: parentThreadId })
+                : null
+            }
+            width={surfaceWidth}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
@@ -1577,8 +1954,13 @@ function ComposerBody({
           />
         }
         requests={requests}
+        bannerItems={bannerItems}
+        tasks={composerTasks}
+        syncPhase={shownSyncPhase}
+        surfaceWidth={surfaceWidth}
         canOperateThread={true}
-        showPlanFollowUp={showPlanFollowUpPrompt && latestProposedPlan !== null}
+        showPlanFollowUp={!isCollapsedMobile && showPlanFollowUpPrompt && latestProposedPlan !== null}
+        collapsedMobile={isCollapsedMobile}
         planFollowUpTitle={
           showPlanFollowUpPrompt && latestProposedPlan ? (proposedPlanTitle(latestProposedPlan.planMarkdown) ?? null) : null
         }
@@ -1716,6 +2098,12 @@ function ComposerBody({
         >
           {!isResting ? <ComposerAttachmentMediaRow images={images} onRemove={(id) => removeComposerAttachment(draftKey, id)} /> : null}
           {!isResting ? <ComposerAttachmentFileList files={files} onRemove={(id) => removeComposerAttachment(draftKey, id)} /> : null}
+          {!isResting ? (
+            <ComposerPendingTerminalContexts
+              contexts={composerTerminalContexts}
+              onRemove={(contextId) => removeComposerTerminalContext(promptKey, contextId)}
+            />
+          ) : null}
           <div style={{ position: "relative", flexGrow: 1, minWidth: 0 }}>
             {editorValue.length === 0 ? (
               <text

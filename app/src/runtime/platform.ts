@@ -17,6 +17,8 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import * as ConnectionStorage from "./storage.ts";
+// Imports runtime.ts back through requestLatencyState; safe, it only reads the registry inside functions.
+import { layerRpcRequestObserver } from "../coordinators/rpcRequestObserver.ts";
 
 export const APP_VERSION = "0.1.0";
 
@@ -120,4 +122,6 @@ export const layer = Layer.mergeAll(
   layerCapabilities,
   layerPlatformConnectionSource,
   layerEnvironmentCache,
+  // Tracks unanswered RPCs for the slow-request toast (coordinators/SlowRpcRequestToastCoordinator).
+  layerRpcRequestObserver,
 );

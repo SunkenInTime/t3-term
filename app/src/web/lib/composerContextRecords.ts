@@ -6,6 +6,7 @@ import {
   type ComposerContextId,
   type OrchestrationMessageContext,
   type ReviewCommentContextRecord,
+  type TerminalContextRecord,
 } from "@t3tools/contracts";
 import {
   sanitizeComposerContextLabel,
@@ -14,6 +15,11 @@ import {
 
 import type { ComposerContextReference } from "./composerContextReferences.ts";
 import type { ReviewCommentContext } from "../reviewCommentContext.ts";
+import {
+  formatTerminalContextLabel,
+  normalizeTerminalContextText,
+  type TerminalContextDraft,
+} from "./terminalContext.ts";
 
 /**
  * A review selection can be arbitrarily large, but the wire schema bounds `text` and `diff`.
@@ -101,4 +107,40 @@ export function buildReviewCommentMessageContext(
 ): OrchestrationMessageContext | undefined {
   if (reviewComments.length === 0) return undefined;
   return { version: 1, records: reviewComments.map(reviewCommentContextRecord) } as OrchestrationMessageContext;
+}
+
+// ── Terminal contexts (web composerContextRecords.ts terminalContextReference / Record) ──
+
+export function terminalContextReference(context: TerminalContextDraft): ComposerContextReference {
+  return {
+    kind: "terminal",
+    contextId: toKindScopedComposerContextId("terminal", context.id),
+    label: formatTerminalContextLabel(context),
+  };
+}
+
+export function terminalContextRecord(context: TerminalContextDraft): TerminalContextRecord {
+  return {
+    version: 1,
+    contextId: toKindScopedComposerContextId("terminal", context.id),
+    kind: "terminal",
+    label: sanitizeComposerContextLabel(formatTerminalContextLabel(context), "terminal"),
+    terminalId: context.terminalId,
+    terminalLabel: context.terminalLabel,
+    lineStart: context.lineStart,
+    lineEnd: context.lineEnd,
+    text: normalizeTerminalContextText(context.text),
+  } as TerminalContextRecord;
+}
+
+/** web buildMessageContext for the records this composer sends: terminal excerpts, then review comments. */
+export function buildComposerMessageContext(input: {
+  readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
+  readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
+}): OrchestrationMessageContext | undefined {
+  const records = [
+    ...input.terminalContexts.map(terminalContextRecord),
+    ...input.reviewComments.map(reviewCommentContextRecord),
+  ];
+  return records.length === 0 ? undefined : ({ version: 1, records } as OrchestrationMessageContext);
 }

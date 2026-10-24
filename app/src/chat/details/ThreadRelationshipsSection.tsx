@@ -39,7 +39,7 @@ import {
 import { deriveSubagentElapsedMs } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
 import { Atom } from "effect/reactivity";
-import { useState, type ReactNode } from "react";
+import { useState, type ReactElement, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
 import {
@@ -55,6 +55,7 @@ import { toast } from "../../ui/toast.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { useNowEverySecond } from "../timeline/parts.tsx";
 import { GrowTooltip } from "./detailsTooltip.tsx";
+import { SubagentRowHoverCard } from "../subagents/SubagentTooltipContent.tsx";
 import {
   DetailsIconAction,
   DetailsSection,
@@ -190,19 +191,21 @@ function RowButton({
   testId,
   split,
   onHoverChange,
+  hoverCard,
 }: {
   children: ReactNode;
   onClick?: () => void;
   disabled?: boolean;
   tooltip: string;
+  /** Wraps the row in a rich hover card (subagents) instead of the plain tooltip. */
+  hoverCard?: (row: ReactElement) => ReactElement;
   testId?: string;
   split?: boolean;
   onHoverChange?: (hovered: boolean) => void;
 }) {
   const { hover } = useDetailsTokens();
   const interactive = !disabled && onClick !== undefined;
-  return (
-    <GrowTooltip content={tooltip} side="left">
+  const row = (
       <div
         testId={testId}
         onClick={interactive ? onClick : undefined}
@@ -228,6 +231,11 @@ function RowButton({
       >
         {children}
       </div>
+  );
+  if (hoverCard) return hoverCard(row);
+  return (
+    <GrowTooltip content={tooltip} side="left">
+      {row}
     </GrowTooltip>
   );
 }
@@ -812,6 +820,32 @@ export function ThreadRelationshipsSection({
                   split={Boolean(workflowGroup) || isMergeTarget}
                   onClick={() => openThread(rowThreadId)}
                   onHoverChange={(value) => setHoveredRow(value ? rowThreadId : null)}
+                  {...(agent && !node?.missing
+                    ? {
+                        // web ThreadRelationshipsControl: subagent rows show SubagentTooltipContent.
+                        hoverCard: (row: ReactElement) => (
+                          <SubagentRowHoverCard
+                            environmentId={environmentId}
+                            parentThreadId={threadId}
+                            childThreadId={rowThreadId}
+                            title={threadTitle}
+                            model={agent.model}
+                            providerInstanceId={agent.providerInstanceId}
+                            origin={agent.origin}
+                            modelSelection={agent.modelSelection}
+                            driver={agent.driver}
+                            elapsed={<AgentElapsed agent={agent} />}
+                            status={agent.status as never}
+                            result={agent.result}
+                            progress={agent.progress}
+                            rootStyle={{ flexGrow: 1, flexShrink: 1, minWidth: 0 }}
+                            side="left"
+                          >
+                            {row}
+                          </SubagentRowHoverCard>
+                        ),
+                      }
+                    : {})}
                 >
                   {content}
                 </RowButton>

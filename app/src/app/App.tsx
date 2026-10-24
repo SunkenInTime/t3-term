@@ -22,6 +22,7 @@ import { TooltipProvider } from "../ui/overlay.tsx";
 import { PullRequestGuideRunCoordinator } from "../pullRequests/guide/PullRequestGuideRunCoordinator.tsx";
 import { ToastHost } from "../ui/toast.tsx";
 import { ThreadNotificationCoordinator } from "../notifications/ThreadNotificationCoordinator.tsx";
+import { AppCoordinators } from "../coordinators/AppCoordinators.tsx";
 import { noteUserInput } from "../notifications/platform.ts";
 import { PerfRegion } from "../dev/PerfRegion.tsx";
 
@@ -50,6 +51,7 @@ export function App({ boot }: { boot: Boot }) {
             </ConnectGate>
             <ThreadNotificationCoordinator />
             <PullRequestGuideRunCoordinator />
+            <AppCoordinators />
             <ToastHost />
           </div>
         </TooltipProvider>

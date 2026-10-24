@@ -49,7 +49,8 @@ import {
   composerAttachmentEnvironment,
   restoreComposerContent,
 } from "../../state/composer.ts";
-import { buildReviewCommentMessageContext } from "../../web/lib/composerContextRecords.ts";
+import { buildComposerMessageContext } from "../../web/lib/composerContextRecords.ts";
+import type { TerminalContextDraft } from "../../web/lib/terminalContext.ts";
 import type { ReviewCommentContext } from "../../web/reviewCommentContext.ts";
 import {
   environmentServerConfigsAtom,
@@ -247,6 +248,8 @@ export interface ComposerSendInput {
   readonly attachments: ReadonlyArray<ComposerAttachmentDraft>;
   /** Diff and file comments the prompt references; they go out as message context records. */
   readonly reviewComments?: ReadonlyArray<ReviewCommentContext>;
+  /** Terminal selections the prompt references; they go out as message context records too. */
+  readonly terminalContexts?: ReadonlyArray<TerminalContextDraft>;
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
@@ -273,8 +276,12 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
     prompt: input.prompt,
     attachments: input.attachments,
     reviewComments: input.reviewComments ?? [],
+    terminalContexts: input.terminalContexts ?? [],
   };
-  const messageContext = buildReviewCommentMessageContext(input.reviewComments ?? []);
+  const messageContext = buildComposerMessageContext({
+    terminalContexts: input.terminalContexts ?? [],
+    reviewComments: input.reviewComments ?? [],
+  });
   // Clear first, like web: the prompt leaves the composer the moment the user sends.
   clearComposerContent(input.draftKey);
   const createdAt = new Date().toISOString();

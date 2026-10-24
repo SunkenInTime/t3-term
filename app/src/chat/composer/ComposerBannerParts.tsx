@@ -4,10 +4,11 @@
 // Web draws the surface on a ::before layer with a backdrop blur and masks it where
 // the composer overlaps. GPUI has neither, so the surface is the composer's own
 // near-opaque card color, and the composer (painted later) covers the 17px overlap.
-import { createContext, useContext, useEffect, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
 import { Icon as LucideIcon, type IconName } from "../../ui/Icon.tsx";
 import type { Style } from "../../ui/primitives.tsx";
+import { useSmallViewport } from "../../ui/viewport.tsx";
 import { FONTS, RADIUS, TEXT, alpha, useTheme, type Palette } from "../../ui/theme.ts";
 
 export type ComposerBannerVariant = "default" | "error" | "info" | "success" | "warning";
@@ -18,8 +19,14 @@ export type ComposerBannerPlacement = "attached" | "floating";
 export const COMPOSER_DRAWER_INSET = 22;
 /** --chat-composer-attachment-overlap: 1rem + 1px tucked under the next surface. */
 export const COMPOSER_ATTACHMENT_OVERLAP = 17;
-/** --composer-banner-icon-column at sm: (24px). */
+/** --composer-banner-icon-column at sm: (24px); below sm it is 28px (--spacing(7)). */
 export const BANNER_ICON_COLUMN = 24;
+const BANNER_ICON_COLUMN_SMALL = 28;
+
+/** The icon column for the current viewport (web `[--composer-banner-icon-column:--spacing(7)] sm:…(6)`). */
+export function useBannerIconColumn(): number {
+  return useSmallViewport() ? BANNER_ICON_COLUMN_SMALL : BANNER_ICON_COLUMN;
+}
 
 const PADDING_BLOCK: Record<ComposerBannerDensity, number> = { default: 4, comfortable: 5, spacious: 12 };
 
@@ -177,11 +184,17 @@ export function BannerRow({
   style,
 }: {
   children?: ReactNode;
-  layout?: "inline" | "approval";
+  /**
+   * `wrap-actions` (web notices): when the title and actions don't fit on one line, the
+   * actions wrap to their own line, right-aligned. Pair with `<BannerContent wrap>` and
+   * `<BannerActions wrap>`.
+   */
+  layout?: "inline" | "approval" | "wrap-actions";
   onClick?: () => void;
   testId?: string;
   style?: Style;
 }) {
+  const iconColumn = useBannerIconColumn();
   return (
     <div
       testId={testId}
@@ -191,7 +204,8 @@ export function BannerRow({
         flexDirection: "row",
         alignItems: layout === "approval" ? "flex-start" : "center",
         columnGap: layout === "approval" ? 8 : 4,
-        minHeight: BANNER_ICON_COLUMN,
+        ...(layout === "wrap-actions" ? { flexWrap: "wrap" } : {}),
+        minHeight: iconColumn,
         width: "100%",
         minWidth: 0,
         borderRadius: RADIUS.sm,
@@ -219,14 +233,15 @@ export function BannerIcon({
   style?: Style;
 }) {
   const theme = useTheme();
+  const iconColumn = useBannerIconColumn();
   return (
     <div
       style={{
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        width: BANNER_ICON_COLUMN,
-        minHeight: approval ? undefined : BANNER_ICON_COLUMN,
+        width: iconColumn,
+        minHeight: approval ? undefined : iconColumn,
         flexShrink: 0,
         ...(approval ? { paddingTop: 2 } : {}),
         ...style,
@@ -245,7 +260,7 @@ export function BannerIcon({
 }
 
 /** ComposerBanner.Content */
-export function BannerContent({ children, style }: { children?: ReactNode; style?: Style }) {
+export function BannerContent({ children, style, wrap = false }: { children?: ReactNode; style?: Style; wrap?: boolean }) {
   return (
     <div
       style={{
@@ -255,7 +270,8 @@ export function BannerContent({ children, style }: { children?: ReactNode; style
         gap: 4,
         flexGrow: 1,
         flexShrink: 1,
-        flexBasis: 0,
+        // In a wrapping row the content keeps its own width, so the actions break to a new line.
+        ...(wrap ? {} : { flexBasis: 0 }),
         minWidth: 0,
         ...style,
       }}
@@ -266,7 +282,7 @@ export function BannerContent({ children, style }: { children?: ReactNode; style
 }
 
 /** ComposerBanner.Actions */
-export function BannerActions({ children, approval }: { children?: ReactNode; approval?: boolean }) {
+export function BannerActions({ children, approval, wrap = false }: { children?: ReactNode; approval?: boolean; wrap?: boolean }) {
   return (
     <div
       style={{
@@ -277,6 +293,8 @@ export function BannerActions({ children, approval }: { children?: ReactNode; ap
         justifyContent: "flex-end",
         gap: approval ? 6 : 4,
         flexShrink: 0,
+        // web `ms-auto`: wrapped onto its own line, the actions sit at the right.
+        ...(wrap ? { flexGrow: 1 } : {}),
         ...(approval ? { alignSelf: "center" } : {}),
       }}
     >
@@ -333,8 +351,9 @@ export function BannerText({
 /** ComposerBanner.Count */
 export function BannerCount({ children }: { children: ReactNode }) {
   const theme = useTheme();
+  const iconColumn = useBannerIconColumn();
   return (
-    <div style={{ display: "flex", justifyContent: "center", minWidth: BANNER_ICON_COLUMN, flexShrink: 0 }}>
+    <div style={{ display: "flex", justifyContent: "center", minWidth: iconColumn, flexShrink: 0 }}>
       <BannerText weight={500} color={theme.mutedForeground}>
         {children}
       </BannerText>
@@ -399,6 +418,52 @@ export function BannerIconButton({
       }}
     >
       <LucideIcon name={icon} size={14} color={muted ? theme.mutedForeground : theme.foreground} />
+    </div>
+  );
+}
+
+/**
+ * web ui/button InlineButton: medium-weight text that underlines on hover. `muted`
+ * starts muted and turns foreground on hover. Used inside banner titles and descriptions.
+ */
+export function InlineButton({
+  children,
+  onClick,
+  tone = "default",
+  truncate = false,
+  testId,
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+  tone?: "default" | "muted";
+  truncate?: boolean;
+  testId?: string;
+}) {
+  const theme = useTheme();
+  const [hovered, setHovered] = useState(false);
+  const color = tone === "muted" && !hovered ? theme.mutedForeground : theme.foreground;
+  return (
+    <div
+      testId={testId}
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ display: "flex", flexDirection: "row", minWidth: 0, flexShrink: truncate ? 1 : 0, cursor: "pointer" }}
+    >
+      <text
+        style={{
+          color,
+          fontSize: TEXT.xs[0],
+          lineHeight: TEXT.xs[1],
+          fontFamily: FONTS.sans,
+          fontWeight: 500,
+          whiteSpace: "nowrap",
+          ...(truncate ? { textOverflow: "ellipsis", overflow: "hidden", minWidth: 0 } : {}),
+          ...(hovered ? { textDecoration: "underline" } : {}),
+        }}
+      >
+        {children}
+      </text>
     </div>
   );
 }
