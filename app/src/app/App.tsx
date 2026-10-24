@@ -9,6 +9,8 @@ import { environmentCatalog } from "../state/environment.ts";
 import { routeAtom, sidebarMobileOpenAtom, sidebarOpenAtom } from "../state/ui.ts";
 import { SidebarSheetWidthContext, smallViewportAtom, useMobileViewport, viewportWidthAtom, ViewportSync } from "../ui/viewport.tsx";
 import { Sidebar } from "../sidebar/Sidebar.tsx";
+import { LegacySidebar } from "../sidebar/legacy/LegacySidebar.tsx";
+import { legacySidebarEnabledAtom } from "../state/legacySidebar.ts";
 import { SidebarRail } from "../sidebar/SidebarRail.tsx";
 import { SettingsSidebar } from "../settings/SettingsView.tsx";
 import { CommandPalette } from "../palette/CommandPalette.tsx";
@@ -63,7 +65,9 @@ function Shell({ boot }: { boot: Boot }) {
     if (boot.error) console.error(boot.error);
   }, [boot.error]);
   const route = useAtomValue(routeAtom);
-  const sidebar = route.kind === "settings" ? <SettingsSidebar /> : <Sidebar />;
+  const legacySidebarEnabled = useAtomValue(legacySidebarEnabledAtom);
+  const sidebar =
+    route.kind === "settings" ? <SettingsSidebar /> : legacySidebarEnabled ? <LegacySidebar /> : <Sidebar />;
   return (
     <div
       style={{
