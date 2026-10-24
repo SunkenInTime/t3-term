@@ -103,6 +103,11 @@ interface RememberedDisclosures {
   attempts: ReadonlySet<RunAttemptId>;
   changedFiles: ReadonlySet<RunId>;
   workGroupViewState: WorkGroupViewState;
+  /**
+   * web rememberTimelinePosition: the row under the viewport top and how far
+   * into it the reader had scrolled, or null while they follow the end.
+   */
+  position: { readonly rowKey: string; readonly offset: number } | null;
 }
 const rememberedDisclosures = new Map<string, RememberedDisclosures>();
 
@@ -115,8 +120,16 @@ function rememberedFor(threadKey: string): RememberedDisclosures {
       attempts: new Set(),
       changedFiles: new Set(),
       workGroupViewState: { expandedEntries: new Set() },
+      position: null,
     };
     rememberedDisclosures.set(threadKey, remembered);
+  }
+  // Most recently used last, capped at 100 threads like web.
+  rememberedDisclosures.delete(threadKey);
+  rememberedDisclosures.set(threadKey, remembered);
+  if (rememberedDisclosures.size > 100) {
+    const oldest = rememberedDisclosures.keys().next().value;
+    if (oldest !== undefined) rememberedDisclosures.delete(oldest);
   }
   return remembered;
 }
@@ -697,9 +710,13 @@ const TimelineList = memo(function TimelineList({
   const theme = useTheme();
   const renderer = useGpuixRequired();
   const listRef = useRef<PublicInstance | null>(null);
+  const remembered = rememberedFor(scopedThreadKey(threadRef));
+  // useTimelinePositionRestore: a thread reopens where the reader left it. The
+  // list mounts at its end; the saved anchor is applied once it has painted.
+  const pendingRestore = useRef(remembered.position);
   const composerInset = useAtomValue(composerInsetAtom);
   const cardInline = useDetailsCardInline();
-  const [atEnd, setAtEnd] = useState(true);
+  const [atEnd, setAtEnd] = useState(remembered.position === null);
   const leadingRows = (history ? 1 : 0) + (parentThreadLink ? 1 : 0) + 1;
   const rowCount = leadingRows + rows.length + 2;
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
@@ -749,6 +766,10 @@ const TimelineList = memo(function TimelineList({
     const nextAtEnd = anchor >= rowCount - 1;
     setAtEnd((current) => (current === nextAtEnd ? current : nextAtEnd));
     const keys = [...listKeysRef.current, "timeline-footer"];
+    if (pendingRestore.current === null) {
+      const rowKey = keys[anchor];
+      remembered.position = nextAtEnd || rowKey === undefined || rowKey === "timeline-footer" ? null : { rowKey, offset };
+    }
     const heightAt = (index: number) =>
       keys[index] === "timeline-footer" ? footerHeight + topFill : (rowHeights.current.get(keys[index]!) ?? 90);
     let start = -1;
@@ -775,6 +796,24 @@ const TimelineList = memo(function TimelineList({
     setVisibleRange((current) => (current?.start === next?.start && current?.end === next?.end ? current : next));
   };
 
+  // gpuix reports no visible range for the first paint, so the saved anchor is
+  // applied once rows report their layout: the list exists by then.
+  const applyPendingRestore = () => {
+    const restore = pendingRestore.current;
+    const id = listRef.current?.id;
+    if (restore === null || id == null) return;
+    pendingRestore.current = null;
+    const index = listKeysRef.current.indexOf(restore.rowKey);
+    // A row that is gone (rewound, paged out) leaves the thread at its end, like web.
+    if (index < 0) {
+      remembered.position = null;
+      setAtEnd(true);
+      return;
+    }
+    renderer.scrollToItem?.(id, index, restore.offset);
+    setTimeout(checkAtEnd, 50);
+  };
+
   const measureScheduled = useRef(false);
   const onRowLayout = (key: string, height: number) => {
     if (rowHeights.current.get(key) === height) return;
@@ -783,6 +822,7 @@ const TimelineList = memo(function TimelineList({
     measureScheduled.current = true;
     queueMicrotask(() => {
       measureScheduled.current = false;
+      applyPendingRestore();
       refreshTopFill();
       checkAtEnd();
     });
