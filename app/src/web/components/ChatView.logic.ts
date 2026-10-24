@@ -3,6 +3,8 @@
 // thread-type parameters are narrowed to the fields they read.
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
+  type EnvironmentId,
+  type OrchestrationV2ThreadProjection,
   isProviderDriverKind,
   type ModelSelection,
   ProviderDriverKind,
@@ -11,6 +13,8 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { latestUnheldRun, usageLimitRunPresentedAsLatest } from "@t3tools/shared/orchestrationV2ThreadError";
 import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@t3tools/shared/model";
 
 import { stripInlineContextReferences } from "../lib/composerContextReferences";
@@ -311,3 +315,78 @@ export function makeModelDisabledReason(
   };
 }
 
+
+// apps/web/src/components/ChatView.logic.ts: a reconnect that settles within this
+// window never shows the composer's reconnecting banner.
+const ENVIRONMENT_RECONNECT_WARNING_GRACE_MS = 2_000;
+
+export function scheduleEnvironmentReconnectWarning(showWarning: () => void): () => void {
+  const timeoutId = globalThis.setTimeout(showWarning, ENVIRONMENT_RECONNECT_WARNING_GRACE_MS);
+  return () => globalThis.clearTimeout(timeoutId);
+}
+
+export function hasEnvironmentReconnectWarningGraceElapsed(
+  activeEnvironmentId: EnvironmentId | null,
+  elapsedEnvironmentId: EnvironmentId | null,
+): boolean {
+  return activeEnvironmentId !== null && activeEnvironmentId === elapsedEnvironmentId;
+}
+
+export function dismissBranchMismatchForSession(key: string): void {
+  sessionDismissedBranchMismatchKeys.add(key);
+}
+
+export function isBranchMismatchDismissedForSession(key: string | null): boolean {
+  return key !== null && sessionDismissedBranchMismatchKeys.has(key);
+}
+
+export function branchMismatchKey(
+  threadId: string | null,
+  mismatch: { threadBranch: string; currentBranch: string } | null,
+): string | null {
+  if (!threadId || !mismatch) {
+    return null;
+  }
+  return `${threadId}:${mismatch.threadBranch}:${mismatch.currentBranch}`;
+}
+
+// Draft content is the intent signal — composer focus is useless here because
+// ChatView autofocuses the composer on every thread open.
+export function shouldShowBranchMismatchBanner(input: {
+  hasMismatch: boolean;
+  isDismissed: boolean;
+  composerHasContent: boolean;
+  wasShownForCurrentMismatch: boolean;
+}): boolean {
+  if (!input.hasMismatch || input.isDismissed) {
+    return false;
+  }
+  return input.composerHasContent || input.wasShownForCurrentMismatch;
+}
+
+/** Background work the provider still runs after the latest run ended. */
+export function deriveThreadPendingBackgroundTasks(
+  projection: Pick<
+    OrchestrationV2ThreadProjection,
+    "providerSessions" | "thread" | "runs" | "turnItems" | "providerThreads"
+  > | null,
+) {
+  if (projection === null) return [];
+  const sessionError =
+    projection.providerSessions.findLast(
+      (session) => session.providerInstanceId === projection.thread.providerInstanceId,
+    )?.lastError ?? null;
+  const latestRun =
+    usageLimitRunPresentedAsLatest(projection.runs, projection.turnItems, sessionError) ??
+    latestUnheldRun(projection.runs);
+  return [
+    ...derivePendingBackgroundWork({
+      latestRun,
+      providerThreads: projection.providerThreads,
+      turnItems: projection.turnItems,
+      activeProviderThreadId: projection.thread.activeProviderThreadId,
+      runs: projection.runs,
+      pullRequests: projection.thread.pullRequests,
+    }),
+  ];
+}

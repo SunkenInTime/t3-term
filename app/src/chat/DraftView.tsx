@@ -20,6 +20,7 @@ import { useSmallViewport } from "../ui/viewport.tsx";
 import { composerTargetKey } from "../state/composer.ts";
 import { ChatLane, useDetailsCardInline } from "./chatLane.tsx";
 import { Composer } from "./composer/Composer.tsx";
+import { ChatBannerLane } from "./ChatBannerLane.tsx";
 import { DraftDetailsCard } from "./details/ThreadDetailsCard.tsx";
 import { DraftHeroHeadline } from "./draft/DraftHeroHeadline.tsx";
 import { NoActiveThreadState, NoProjectsHero } from "./draft/EmptyStates.tsx";
@@ -81,6 +82,9 @@ export function DraftView({ environmentId, projectId }: { environmentId: Environ
           </div>
           <div style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, minHeight: 0 }} />
         </div>
+        {environmentId !== null && projectId !== null ? (
+          <ChatBannerLane composerTargetKey={composerTargetKey({ kind: "draft", environmentId, projectId })} overlay />
+        ) : null}
         {project && environmentId !== null && projectId !== null ? (
           <DraftDetailsCard
             environmentId={environmentId}

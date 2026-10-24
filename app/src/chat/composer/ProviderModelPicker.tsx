@@ -11,6 +11,7 @@ import type {
 import { ANTIGRAVITY_DEFAULT_MODEL } from "@t3tools/contracts";
 
 import { Popover, Tooltip } from "../../ui/overlay.tsx";
+import { ChatGptSharingControl } from "./ChatGptSharingControl.tsx";
 import { alpha, useTheme } from "../../ui/theme.ts";
 import { useSmallViewport } from "../../ui/viewport.tsx";
 import { resolveModelPickerSelectedModel } from "../../web/components/chat/ModelPickerContent.logic.ts";
@@ -56,6 +57,10 @@ export interface ProviderModelPickerProps {
    * (web `@max-[640px]/composer-surface:[&_[data-chat-provider-model-picker-label]]:w-0 flex-none`).
    */
   readonly collapseLabel?: boolean;
+  /** web multiple-model mode: the models chosen for a draft send (only while there are 2+). */
+  readonly selectedModels?: ReadonlyArray<{ readonly instanceId: ProviderInstanceId; readonly model: string }>;
+  /** Shift-click / shift-Enter adds or removes a model (drafts on servers with worktree bootstrap). */
+  readonly onToggleModel?: (instanceId: ProviderInstanceId, model: string) => void;
 }
 
 export type ModelPickerMeasurePart = "control" | "label" | "labelNatural";
@@ -88,7 +93,25 @@ export function ProviderModelPicker(props: ProviderModelPickerProps) {
   const shortcutLabel = props.keybindings
     ? shortcutLabelForCommand(props.keybindings, "modelPicker.toggle", SHORTCUT_PLATFORM)
     : null;
-  const tooltip = shortcutLabel ? `${triggerLabel} · ${shortcutLabel}` : triggerLabel;
+  // web: with several models chosen the trigger names the first two and counts the rest.
+  const selectedEntries = props.selectedModels?.map((selection) => {
+    const entry = props.instanceEntries.find((candidate) => candidate.instanceId === selection.instanceId);
+    const model = resolveModelPickerSelectedModel({
+      driverKind: entry?.driverKind,
+      model: selection.model,
+      options: props.modelOptionsByInstance.get(selection.instanceId) ?? [],
+    });
+    return model ? `${getTriggerDisplayModelName(model)}${model.isUnavailable ? " (Unavailable)" : ""}` : selection.model;
+  });
+  const multipleLabel = selectedEntries
+    ? selectedEntries.length === 0
+      ? "Choose models"
+      : `${selectedEntries.slice(0, 2).join(", ")}${selectedEntries.length > 2 ? `, ${selectedEntries.length - 2} more` : ""}`
+    : undefined;
+  const allModelNames = selectedEntries ? selectedEntries.join(", ") || "Choose models" : undefined;
+  const tooltip = shortcutLabel
+    ? `${allModelNames ?? triggerLabel} · ${shortcutLabel}`
+    : (allModelNames ?? triggerLabel);
 
   const guard = useReopenGuard(props.onOpenChange);
   const { side, onTriggerLayout } = usePopoverSide(MODEL_PICKER_MAX_HEIGHT);
@@ -130,7 +153,7 @@ export function ProviderModelPicker(props: ProviderModelPickerProps) {
           />
         ) : null}
         <ModelPickerTriggerLabel size={size} measure={measure} collapsed={props.collapseLabel ?? false}>
-          {triggerTitle}
+          {multipleLabel ?? triggerTitle}
         </ModelPickerTriggerLabel>
         {selectedModel?.isUnavailable ? <OutlineBadge>Unavailable</OutlineBadge> : null}
         <ComposerControlChevron size={size} />
@@ -173,7 +196,16 @@ export function ProviderModelPicker(props: ProviderModelPickerProps) {
         onOpenProviderSetup={props.onOpenProviderSetup}
         getModelDisabledReason={props.getModelDisabledReason}
         onInstanceModelChange={handleInstanceModelChange}
+        {...(props.selectedModels !== undefined ? { selectedModels: props.selectedModels } : {})}
+        {...(props.onToggleModel
+          ? {
+              onToggleModel: (instanceId: ProviderInstanceId, model: string) => {
+                if (!props.disabled) props.onToggleModel?.(instanceId, model);
+              },
+            }
+          : {})}
       />
+      {props.selectedModels === undefined ? <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} /> : null}
     </Popover>
   );
 }

@@ -45,6 +45,7 @@ import { appAtomRegistry } from "../../runtime/runtime.ts";
 import { environmentThreadDetails, serverEnvironment } from "../../state/environment.ts";
 import { Icon, type IconName } from "../../ui/Icon.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
+import { SubagentRowHoverCard } from "../subagents/SubagentTooltipContent.tsx";
 import { Button, Text } from "../../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, type Palette, useTheme } from "../../ui/theme.ts";
 import { subagentGroupTiming, v2EventPresentation } from "../../web/components/chat/TimelineV2EventRow.logic.ts";
@@ -696,8 +697,7 @@ function SubagentTimelineLink(props: {
   const model = agent?.model ?? null;
   const tooltip = [props.title, model, statusLabel].filter(Boolean).join(" · ");
   const clickable = threadId !== null;
-  return (
-    <Tooltip content={tooltip} side="top">
+  const row = (
       <div
         testId={`subagent-${props.subagentId}`}
         {...hover}
@@ -754,7 +754,37 @@ function SubagentTimelineLink(props: {
         </Text>
         {clickable ? <Icon name="chevron-right" size={14} color={hovered ? theme.foreground : alpha(theme.mutedForeground, 0.6)} /> : null}
       </div>
-    </Tooltip>
+  );
+  // web SubagentTooltip: the hover card once the subagent node is known, else the plain label.
+  if (agent === null) {
+    return (
+      <Tooltip content={tooltip} side="top">
+        {row}
+      </Tooltip>
+    );
+  }
+  return (
+    <SubagentRowHoverCard
+      environmentId={props.parentRef.environmentId}
+      parentThreadId={props.parentRef.threadId}
+      childThreadId={threadId}
+      title={props.title}
+      model={agent.model}
+      providerInstanceId={props.providerInstanceId}
+      origin={agent.origin}
+      modelSelection={agent.modelSelection}
+      driver={props.driver}
+      elapsed={
+        <text style={{ color: theme.mutedForeground, fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans }}>
+          <AgentElapsed agent={timing} />
+        </text>
+      }
+      status={liveStatus}
+      result={result ?? null}
+      progress={progress ?? null}
+    >
+      {row}
+    </SubagentRowHoverCard>
   );
 }
 

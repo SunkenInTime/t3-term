@@ -1,17 +1,31 @@
-// Ported from apps/web/src/versionSkew.ts. The version-mismatch dismissals
-// (localStorage, read by web's version banners) are left out: nothing in
-// t3-term reads them yet. The rest is unchanged apart from imports.
-import type { ServerConfig, ServerInstallation, ServerSelfUpdateCapability } from "@t3tools/contracts";
+// Port of apps/web/src/versionSkew.ts. localStorage is web/lib/localStore.ts here.
+//
+// The client version is the pinned T3 Code version (web/branding.ts), which is
+// what t3-term's protocol and client-runtime track. T3TERM_DEV_CLIENT_VERSION
+// overrides it in development so the "Server update available" banner can be
+// checked against a server of the same version; it is unset in normal use.
+import type {
+  EnvironmentId,
+  ServerConfig,
+  ServerInstallation,
+  ServerSelfUpdateCapability,
+} from "@t3tools/contracts";
 import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
+import * as Schema from "effect/Schema";
 
 import { APP_VERSION } from "./branding.ts";
+import { localStore } from "./lib/localStore.ts";
+
+const CLIENT_VERSION = process.env.T3TERM_DEV_CLIENT_VERSION?.trim() || APP_VERSION;
 
 export interface VersionMismatch {
   readonly clientVersion: string;
   readonly serverVersion: string;
   readonly hint: string;
 }
+
+const VERSION_MISMATCH_DISMISSALS_STORAGE_KEY = "t3code:version-mismatch-dismissals:v1";
 
 const dismissedServerUpdateFailures = new WeakSet<ServerUpdateState>();
 
@@ -22,6 +36,12 @@ export function isServerUpdateFailureDismissed(state: ServerUpdateState): boolea
 export function dismissServerUpdateFailure(state: ServerUpdateState): void {
   if (state.status === "failed") dismissedServerUpdateFailures.add(state);
 }
+
+const VersionMismatchDismissalsSchema = Schema.Struct({
+  keys: Schema.Array(Schema.String),
+});
+
+type VersionMismatchDismissals = typeof VersionMismatchDismissalsSchema.Type;
 
 function normalizeVersion(version: string | null | undefined): string | null {
   const trimmed = version?.trim();
@@ -34,7 +54,7 @@ function versionCore(version: string): string {
 
 export function resolveVersionMismatch(
   serverVersion: string | null | undefined,
-  clientVersion: string = APP_VERSION,
+  clientVersion: string = CLIENT_VERSION,
 ): VersionMismatch | null {
   const normalizedClientVersion = normalizeVersion(clientVersion);
   const normalizedServerVersion = normalizeVersion(serverVersion);
@@ -77,7 +97,9 @@ export function resolveServerSelfUpdateCapability(
   return serverConfig?.environment.capabilities.serverSelfUpdate ?? null;
 }
 
-export function supportsDesktopAppUpdate(serverConfig: Pick<ServerConfig, "environment"> | null | undefined): boolean {
+export function supportsDesktopAppUpdate(
+  serverConfig: Pick<ServerConfig, "environment"> | null | undefined,
+): boolean {
   return serverConfig?.environment.capabilities.desktopAppUpdate === true;
 }
 
@@ -87,15 +109,66 @@ export function supportsServerUpdateThreadContinuation(
   return serverConfig?.environment.capabilities.serverUpdateThreadContinuation === true;
 }
 
-export function manualServerUpdateCommand(targetVersion: string, installation?: ServerInstallation): string {
+export function manualServerUpdateCommand(
+  targetVersion: string,
+  installation?: ServerInstallation,
+): string {
   if (installation?.kind === "npm-global") {
     const prefix = `'${installation.prefix.replaceAll("'", "'\\''")}'`;
     return `npm install --global --prefix ${prefix} t3@${targetVersion}`;
   }
-  const runner = installation?.kind === "pnpm-dlx" ? "pnpm dlx" : installation?.kind === "bunx" ? "bunx" : "npx";
+  const runner =
+    installation?.kind === "pnpm-dlx" ? "pnpm dlx" : installation?.kind === "bunx" ? "bunx" : "npx";
   return `${runner} t3@${targetVersion}`;
 }
 
 export function serverUpdateGuidance(capability: ServerSelfUpdateCapability): string {
   return capability === "desktop-managed" ? "Update the desktop app" : "Update to stay in sync";
+}
+
+export function buildVersionMismatchDismissalKey(
+  environmentId: EnvironmentId,
+  mismatch: Pick<VersionMismatch, "clientVersion" | "serverVersion">,
+): string {
+  return `${environmentId}:${mismatch.clientVersion}:${mismatch.serverVersion}`;
+}
+
+function readVersionMismatchDismissals(): VersionMismatchDismissals {
+  try {
+    const raw = localStore.getItem(VERSION_MISMATCH_DISMISSALS_STORAGE_KEY);
+    return raw === null
+      ? { keys: [] }
+      : Schema.decodeUnknownSync(VersionMismatchDismissalsSchema)(JSON.parse(raw));
+  } catch (error) {
+    console.error("Could not read version-mismatch dismissals.", error);
+    return { keys: [] };
+  }
+}
+
+function writeVersionMismatchDismissals(document: VersionMismatchDismissals): void {
+  try {
+    localStore.setItem(VERSION_MISMATCH_DISMISSALS_STORAGE_KEY, JSON.stringify(document));
+  } catch (error) {
+    console.error("Could not persist version-mismatch dismissals.", error);
+  }
+}
+
+export function isVersionMismatchDismissed(dismissalKey: string | null | undefined): boolean {
+  if (!dismissalKey) {
+    return false;
+  }
+  return readVersionMismatchDismissals().keys.includes(dismissalKey);
+}
+
+export function dismissVersionMismatch(dismissalKey: string | null | undefined): void {
+  if (!dismissalKey) {
+    return;
+  }
+  const document = readVersionMismatchDismissals();
+  if (document.keys.includes(dismissalKey)) {
+    return;
+  }
+  writeVersionMismatchDismissals({
+    keys: [...document.keys, dismissalKey],
+  });
 }

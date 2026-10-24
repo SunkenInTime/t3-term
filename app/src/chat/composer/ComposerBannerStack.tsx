@@ -7,6 +7,7 @@
 import { useState, type ReactNode } from "react";
 
 import { RADIUS, alpha, useTheme } from "../../ui/theme.ts";
+import { Popover } from "../../ui/overlay.tsx";
 import {
   BannerActions,
   BannerAttachment,
@@ -17,6 +18,7 @@ import {
   BannerRow,
   BannerText,
   type ComposerBannerVariant,
+  useBannerIconColumn,
 } from "./ComposerBannerParts.tsx";
 
 export interface ComposerBannerStackItem {
@@ -48,11 +50,14 @@ export function ComposerBannerStack({
   items,
   attachedAbove,
   frontJoinedAbove = false,
+  hideDescriptions = false,
 }: {
   readonly items: ReadonlyArray<ComposerBannerStackEntry>;
   readonly attachedAbove?: ReactNode;
   /** An attached surface from `attachedAbove` rendered right above the front notice. */
   readonly frontJoinedAbove?: boolean;
+  /** web `@max-[400px]:sr-only` on the description: a banner 400px wide or less shows only its title. */
+  readonly hideDescriptions?: boolean;
 }) {
   const theme = useTheme();
   const [stackExpanded, setStackExpanded] = useState(false);
@@ -78,7 +83,7 @@ export function ComposerBannerStack({
           {stackExpanded ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingBottom: 8 }}>
               {stackedItems.map((item) => (
-                <ComposerBannerStackAlert key={item.id} item={item} attached={false} />
+                <ComposerBannerStackAlert key={item.id} item={item} attached={false} hideDescription={hideDescriptions} />
               ))}
             </div>
           ) : (
@@ -113,7 +118,13 @@ export function ComposerBannerStack({
       ) : null}
       {attachedAbove}
       <BannerAttachment testId="banner-stack-front">
-        <ComposerBannerStackAlert key={frontItem.id} item={frontItem} attached joinedAbove={frontJoinedAbove} />
+        <ComposerBannerStackAlert
+          key={frontItem.id}
+          item={frontItem}
+          attached
+          joinedAbove={frontJoinedAbove}
+          hideDescription={hideDescriptions}
+        />
       </BannerAttachment>
     </>
   );
@@ -123,11 +134,17 @@ function ComposerBannerStackAlert({
   item,
   attached,
   joinedAbove = false,
+  hideDescription = false,
 }: {
   item: ComposerBannerStackEntry;
   attached: boolean;
   joinedAbove?: boolean;
+  hideDescription?: boolean;
 }) {
+  // web `leading-7 sm:leading-6`: the title line matches the icon column.
+  const titleLineHeight = useBannerIconColumn();
+  // web: activity notices stay on one line; the rest wrap their actions when tight.
+  const wrap = item.priority !== "activity";
   const theme = useTheme();
   const placement = attached ? "attached" : "floating";
   if ("content" in item) {
@@ -145,17 +162,18 @@ function ComposerBannerStackAlert({
       joinedAbove={joinedAbove}
       testId={`banner-${item.id}`}
     >
-      <BannerRow>
+      <BannerRow layout={wrap ? "wrap-actions" : "inline"}>
         <BannerIcon style={{ alignSelf: "flex-start" }}>{item.icon}</BannerIcon>
-        <BannerContent>
+        <BannerContent wrap={wrap}>
           {typeof item.title === "string" ? (
-            <BannerText weight={500} truncate style={{ lineHeight: 24 }}>
+            <BannerText weight={500} truncate style={{ lineHeight: titleLineHeight }}>
               {item.title}
             </BannerText>
           ) : (
             item.title
           )}
-          {item.description ? (
+          {item.description && hideDescription ? <NoticeDetailsButton>{item.description}</NoticeDetailsButton> : null}
+          {item.description && !hideDescription ? (
             typeof item.description === "string" ? (
               <BannerText truncate grow color={theme.mutedForeground}>
                 {item.description}
@@ -166,7 +184,7 @@ function ComposerBannerStackAlert({
           ) : null}
         </BannerContent>
         {item.actions || item.onDismiss ? (
-          <BannerActions>
+          <BannerActions wrap={wrap}>
             {item.actions}
             {item.onDismiss ? (
               <BannerIconButton icon="x" testId={`banner-${item.id}-dismiss`} onClick={item.onDismiss} />
@@ -176,5 +194,36 @@ function ComposerBannerStackAlert({
       </BannerRow>
       {item.children ? <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>{item.children}</div> : null}
     </BannerRoot>
+  );
+}
+
+/**
+ * web NoticeText's details button: where the description is hidden (a banner 400px wide or
+ * less), an (i) opens it in a popover. Web also offers it when text is truncated; gpuix has
+ * no overflow measurement, so t3-term shows it only for the hidden case.
+ */
+function NoticeDetailsButton({ children }: { children: ReactNode }) {
+  const theme = useTheme();
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      side="top"
+      align="center"
+      rootStyle={{ flexShrink: 0 }}
+      style={{ maxWidth: 320, paddingTop: 6, paddingBottom: 6, paddingLeft: 8, paddingRight: 8 }}
+      trigger={
+        <div onMouseEnter={() => setOpen(true)}>
+          <BannerIconButton icon="info" testId="banner-notice-details" onClick={() => setOpen(!open)} />
+        </div>
+      }
+    >
+      {typeof children === "string" ? (
+        <text style={{ color: theme.foreground, fontSize: 12, lineHeight: 16 }}>{children}</text>
+      ) : (
+        children
+      )}
+    </Popover>
   );
 }
