@@ -668,6 +668,26 @@ export const draftPendingSendAtom = Atom.family((_draftKey: string) =>
   Atom.make<DraftPendingSend | null>(null).pipe(Atom.keepAlive),
 );
 
+/**
+ * web useAttachmentPreviewHandoff: a sent image keeps showing from its local file once the
+ * server's message replaces the optimistic one, instead of an empty tile while the server's
+ * copy loads (gpuix <img> has no load event to wait for). By the server's attachment id, for
+ * this session; the files stay on disk.
+ */
+const sentImagePreviews = new Map<string, string>();
+
+export function rememberSentImagePreview(attachmentId: string, path: string): void {
+  sentImagePreviews.set(attachmentId, path);
+}
+
+export function sentImagePreviewPath(attachmentId: string): string | null {
+  const path = sentImagePreviews.get(attachmentId);
+  if (path === undefined) return null;
+  if (NodeFs.existsSync(path)) return path;
+  sentImagePreviews.delete(attachmentId);
+  return null;
+}
+
 // ── Settings the composer reads ─────────────────────────────────────────
 
 /**

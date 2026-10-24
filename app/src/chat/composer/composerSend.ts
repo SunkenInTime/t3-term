@@ -41,6 +41,7 @@ import {
   type DraftThreadEnvMode,
   addOptimisticMessage,
   draftPendingSendAtom,
+  rememberSentImagePreview,
   clearComposerContent,
   deleteComposerDraft,
   readComposerDraft,
@@ -311,6 +312,10 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
       throw new Error("Select a base branch before sending in New worktree mode.");
     }
     const attachments = await prepareTurnAttachments(input.environmentId, input.attachments);
+    attachments.forEach((attachment, index) => {
+      const local = input.attachments[index];
+      if (local?.type === "image" && attachment.type === "image" && "id" in attachment && attachment.id) rememberSentImagePreview(attachment.id, local.path);
+    });
     const title = deriveThreadTitleSeed({ text: input.prompt, attachments: input.attachments });
     const bootstrap =
       input.target.kind === "draft"
