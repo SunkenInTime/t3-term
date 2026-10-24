@@ -400,6 +400,10 @@ function withBlocks(doc: Doc, start: number, deleteCount: number, insert: Readon
 export function deleteRange(doc: Doc, from: Pos, to: Pos): EditResult {
   const [start, end] = comparePos(from, to) <= 0 ? [from, to] : [to, from];
   if (samePos(start, end)) return { doc, selection: caret(start) };
+  // Everything selected (ProseMirror's AllSelection): what is left is one empty paragraph.
+  if (start.block === 0 && start.offset === 0 && samePos(end, docEnd(doc))) {
+    return { doc: { blocks: [EMPTY_PARAGRAPH] }, selection: caret({ block: 0, offset: 0 }) };
+  }
   const startBlock = doc.blocks[start.block]!;
   const endBlock = doc.blocks[end.block]!;
   const head = sliceBlock(startBlock, 0, start.offset);
