@@ -36,6 +36,7 @@ import {
   sidebarThreadListAtom,
 } from "../state/sidebar.ts";
 import { routeAtom } from "../state/ui.ts";
+import { legacySidebarEnabledAtom, legacyVisibleThreadKeysAtom } from "../state/legacySidebar.ts";
 import { toast } from "../ui/toast.tsx";
 import {
   getFallbackThreadIdAfterDelete,
@@ -674,11 +675,17 @@ export async function attemptDelete(threadRef: ScopedThreadRef): Promise<void> {
 
 // ── Keyboard helpers (for src/keybindings) ──────────────────────────────
 
+/** The rendered sidebar rows in order: the legacy tree's when that setting is on. */
+function traversalThreadKeys(): ReadonlyArray<string> {
+  return appAtomRegistry.get(legacySidebarEnabledAtom)
+    ? appAtomRegistry.get(legacyVisibleThreadKeysAtom)
+    : appAtomRegistry.get(sidebarThreadListAtom).orderedThreadKeys;
+}
+
 /** thread.previous / thread.next (mod+shift+[ / ]): walk the rendered sidebar order. */
 export function navigateAdjacentThread(direction: ThreadTraversalDirection): boolean {
-  const list = appAtomRegistry.get(sidebarThreadListAtom);
   const targetKey = resolveAdjacentThreadId({
-    threadIds: list.orderedThreadKeys,
+    threadIds: traversalThreadKeys(),
     currentThreadId: appAtomRegistry.get(routeRowThreadKeyAtom),
     direction,
   });
@@ -690,7 +697,7 @@ export function navigateAdjacentThread(direction: ThreadTraversalDirection): boo
 
 /** thread.jump.N (mod+1..9): `index` is zero-based. */
 export function navigateToThreadAtIndex(index: number): boolean {
-  const key = appAtomRegistry.get(sidebarThreadListAtom).orderedThreadKeys[index];
+  const key = traversalThreadKeys()[index];
   const ref = key ? parseScopedThreadKey(key) : null;
   if (!ref) return false;
   navigateToThread(ref);
