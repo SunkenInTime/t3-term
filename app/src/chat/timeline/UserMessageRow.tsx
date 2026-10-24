@@ -22,11 +22,18 @@ import { shouldCollapseUserMessage } from "../../web/components/chat/MessagesTim
 import { asKnownContextRecord, resolveUserMessageContext } from "../../web/lib/userMessageContext.ts";
 import { selectMessageImageResources } from "../../web/session-logic.ts";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../web/timestampFormat.ts";
-import { isFileAttachment, isImageAttachment, isVideoAttachment, type ChatAttachment, type ChatFileAttachment } from "../../web/types.ts";
+import { isFileAttachment, isImageAttachment, isVideoAttachment, videoMimeType, type ChatAttachment, type ChatFileAttachment } from "../../web/types.ts";
+import { VideoFrame } from "../media/VideoFallback.tsx";
 import { rightPanelActions, threadKeyOf } from "../../state/rightPanel.ts";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
 import type { ChipPayload } from "../markdown/MarkdownChips.tsx";
 import { userMessageContextChip } from "./userMessageContextChips.ts";
+import { ContextPressProbe } from "./UserMessageContextDetails.tsx";
+import { SNAP_SHOT_FRAME, SnapShotAttachmentDetails } from "./SnapShotAttachmentDetails.tsx";
+
+/** Context kinds whose chip opens a details popup anchored at the press. */
+const POPUP_CONTEXT_KINDS = new Set(["terminal", "element", "review-comment", "preview-annotation"]);
+import { resolvePreviewAnnotationImage } from "../../web/components/chat/TimelineUserMessageRow.logic.ts";
 import { WorkflowOpeningBlock } from "./WorkflowOpeningBlock.tsx";
 import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
 import { MessageCopyButton, MicroIconButton, useHover } from "./parts.tsx";
@@ -75,6 +82,23 @@ function useAttachmentUrls(environmentId: EnvironmentId, resources: ReadonlyArra
     const result = results[index];
     if (!result || result._tag !== "Success" || httpBaseUrl === null) return null;
     return resolveAssetUrl(httpBaseUrl, result.value.relativeUrl);
+  });
+}
+
+/**
+ * Signed URLs for video attachments, in order (null when not downloadable or not ready). The
+ * resource is web's buildAttachmentVideoAsset: the video MIME type makes the server serve it
+ * inline, so the URL plays in a browser.
+ */
+function useVideoAttachmentUrls(environmentId: EnvironmentId, videos: ReadonlyArray<ChatFileAttachment>): ReadonlyArray<string | null> {
+  const playable = videos.filter((video) => video.downloadable !== false);
+  const urls = useAttachmentUrls(
+    environmentId,
+    playable.map((video) => ({ _tag: "attachment" as const, attachmentId: video.id, fileName: video.name, mimeType: videoMimeType(video) ?? video.mimeType })),
+  );
+  return videos.map((video) => {
+    const index = playable.indexOf(video);
+    return index < 0 ? (video.previewUrl ?? null) : (urls[index] ?? video.previewUrl ?? null);
   });
 }
 
@@ -251,6 +275,9 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
   const plainText = replaceComposerContextReferences(resolvedContext.text, (reference) => reference.label);
   // UserMessageContextChips: each `t3-context:` reference renders as its chip.
   const imageUrls = useAttachmentUrlMap(ctx.activeThreadEnvironmentId, row.message.id, images);
+  const videos = files.filter(isVideoAttachment);
+  const videoUrlList = useVideoAttachmentUrls(ctx.activeThreadEnvironmentId, videos);
+  const videoUrlsKey = videoUrlList.join("\u0000");
   const contextChip = useMemo(
     () => (reference: { kind: string; contextId: string; label: string }) =>
       userMessageContextChip(reference, {
@@ -260,10 +287,22 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
         recordsById: resolvedContext.recordsById,
         imageUrls,
         files: new Map(files.map((file) => [file.id, file])),
+        annotationImage: (record) => {
+          const image = resolvePreviewAnnotationImage({
+            record,
+            recordsById: resolvedContext.recordsById,
+            userImages: images as never,
+            previewImages: images.filter((entry) => entry.name.startsWith("preview-annotation-")) as never,
+            annotationRecordIds: resolvedContext.records.filter((entry) => entry.kind === "preview-annotation").map((entry) => entry.contextId),
+          });
+          const url = image ? imageUrls.get(image.id) : undefined;
+          return image && url ? { url, name: image.name } : null;
+        },
+        videoUrl: (attachmentId) => videoUrlList[videos.findIndex((video) => video.id === attachmentId)] ?? null,
       }),
     // recordsById is rebuilt per render from the message; its identity follows the message.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [row.message, ctx.threadRef, ctx.workspaceRoot, imageUrls],
+    [row.message, ctx.threadRef, ctx.workspaceRoot, imageUrls, videoUrlsKey],
   );
   // Files a chip already shows are not listed again (web's chippedAttachmentIds).
   const chippedAttachmentIds = new Set(
@@ -272,7 +311,7 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
       return record?.kind === "file" || record?.kind === "image" ? [record.attachmentId] : [];
     }),
   );
-  const videos = files.filter(isVideoAttachment);
+  const hasContextPopups = resolvedContext.records.some((record) => POPUP_CONTEXT_KINDS.has(record.kind));
   const unchippedFiles = files.filter((file) => !isVideoAttachment(file) && !chippedAttachmentIds.has(file.id));
   const foldSummary = plainText.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? "";
   const promptLink = promptLinkFor(plainText);
@@ -303,6 +342,7 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
           ...(folded ? {} : { padding: 12 }),
         }}
       >
+        {hasContextPopups ? <ContextPressProbe /> : null}
         {folded ? (
           <FoldedMessageHeader
             icon="messages-square"
@@ -353,42 +393,47 @@ function UserImageGrid({ images, videos }: { images: ReadonlyArray<ChatAttachmen
   const resources = selectMessageImageResources(images as never);
   const urls = useAttachmentUrls(ctx.activeThreadEnvironmentId, resources);
   const urlById = new Map(resources.map((resource, index) => [resource._tag === "attachment" ? resource.attachmentId : "", urls[index] ?? null]));
+  const videoUrls = useVideoAttachmentUrls(ctx.activeThreadEnvironmentId, videos);
   const cellWidth = 101;
   return (
     <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 8, maxWidth: 210, marginBottom: 8 }}>
       {images.map((image) => {
         const url = urlById.get(image.id) ?? ("previewUrl" in image ? (image.previewUrl ?? null) : null);
+        // A SnapShot window capture takes both columns at h-28 w-52 and carries its source app's details.
+        const snapShot = url && isImageAttachment(image) && image.source?.kind === "snap-shot" ? image.source : null;
+        const tile = snapShot ? SNAP_SHOT_FRAME : { width: cellWidth, height: Math.round((cellWidth * 3) / 4) };
+        const openImage = () => {
+          // ExpandedImageDialog over the message's images, starting at this one.
+          const gallery = images.flatMap((entry) => {
+            const src = urlById.get(entry.id) ?? ("previewUrl" in entry ? (entry.previewUrl ?? null) : null);
+            return src ? [{ src, name: entry.name }] : [];
+          });
+          openExpandedImage({ images: gallery, index: Math.max(0, gallery.findIndex((entry) => entry.src === url)) });
+        };
         return (
           <div
             key={image.id}
-            onClick={
-              url
-                ? () => {
-                    // ExpandedImageDialog over the message's images, starting at this one.
-                    const gallery = images.flatMap((entry) => {
-                      const src = urlById.get(entry.id) ?? ("previewUrl" in entry ? (entry.previewUrl ?? null) : null);
-                      return src ? [{ src, name: entry.name }] : [];
-                    });
-                    openExpandedImage({ images: gallery, index: Math.max(0, gallery.findIndex((entry) => entry.src === url)) });
-                  }
-                : undefined
-            }
+            onClick={url ? openImage : undefined}
             style={{
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              width: cellWidth,
-              height: Math.round((cellWidth * 3) / 4),
+              width: tile.width,
+              height: tile.height,
               borderRadius: RADIUS.lg,
               borderWidth: 1,
               borderColor: alpha(theme.border, 0.8),
               backgroundColor: alpha(theme.background, 0.7),
               overflow: "hidden",
               cursor: url ? "pointer" : "default",
+              ...(snapShot ? { position: "relative" as const } : {}),
             }}
           >
             {url ? (
-              <img src={url} objectFit="cover" style={{ width: cellWidth, height: Math.round((cellWidth * 3) / 4), borderRadius: RADIUS.lg }} />
+              <>
+                <img src={url} objectFit="cover" style={{ width: tile.width - 2, height: tile.height - 2, borderRadius: RADIUS.lg - 1 }} />
+                {snapShot ? <SnapShotAttachmentDetails source={snapShot} onOpenImage={openImage} /> : null}
+              </>
             ) : (
               <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)} style={{ textAlign: "center", width: cellWidth - 16 }}>
                 {image.name}
@@ -397,24 +442,19 @@ function UserImageGrid({ images, videos }: { images: ReadonlyArray<ChatAttachmen
           </div>
         );
       })}
-      {videos.map((video) => (
-        // MediaVideoPlayer's resting state: a black 4:3 tile with a play glyph.
-        <div
+      {videos.map((video, index) => (
+        // UserVideoAttachment: the first frame in a 4:3 tile with a play button. gpuix cannot play
+        // video, so the button plays it in the system browser (VideoFallback.tsx).
+        <VideoFrame
           key={video.id}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: cellWidth,
-            height: Math.round((cellWidth * 3) / 4),
-            borderRadius: RADIUS.lg,
-            borderWidth: 1,
-            borderColor: alpha(theme.border, 0.8),
-            backgroundColor: "#000000",
-          }}
-        >
-          <Icon name="play" size={16} color="#ffffff" />
-        </div>
+          testId={`user-video-${video.name}`}
+          url={videoUrls[index] ?? null}
+          posterKey={video.id}
+          label={video.name}
+          showName={video.downloadable === false && video.previewUrl === undefined}
+          width={cellWidth}
+          height={Math.round((cellWidth * 3) / 4)}
+        />
       ))}
     </div>
   );

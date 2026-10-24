@@ -2,8 +2,11 @@
 // remark/rehype pipeline (chat/markdown/parse.ts) and renders tag by tag the
 // way web's components do (chat/markdown/MarkdownView.tsx), with inline
 // content laid out in JavaScript because gpuix has no inline formatting
-// context. Links route like web: file links open the Files surface at the
-// line, thread links navigate, web links open the system browser.
+// context. Links route like web (chat/markdown/linkActions.ts): file links open
+// the Files surface at the line (Ctrl/Cmd+click: the editor; PDFs: the
+// integrated browser), thread links navigate, web links follow the
+// link-target preference. Right-click menus match MarkdownFileLink and
+// externalLinkContextMenu.
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import { isHostPath } from "@t3tools/shared/path";
@@ -19,7 +22,28 @@ import { rightPanelActions, threadKeyOf } from "../../state/rightPanel.ts";
 import { routeAtom } from "../../state/ui.ts";
 import { toast } from "../../ui/toast.tsx";
 import { useTheme } from "../../ui/theme.ts";
-import { markdownFileCopyMenuItems } from "../../web/components/chat/MarkdownFileLink.logic.ts";
+import {
+  markdownFileCopyMenuItems,
+  shouldUseMarkdownFileBrowserPrimaryAction,
+} from "../../web/components/chat/MarkdownFileLink.logic.ts";
+import { showExternalLinkContextMenu } from "../../web/components/chat/externalLinkContextMenu.ts";
+import { shouldOpenMarkdownFileLinkInEditor } from "../../web/markdown-links.ts";
+import { environmentThreadShells } from "../../state/environment.ts";
+import { usePullRequestLinking } from "../../dialogs/usePullRequestLinking.ts";
+import { readEnvironmentScope } from "../../web/state/session.ts";
+import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
+import {
+  activateExternalLink,
+  canOpenInIntegratedBrowser,
+  canUseShellActions,
+  editorMenuLabel,
+  isBrowserPreviewFile,
+  openFileInEditor,
+  openFileInIntegratedBrowser,
+  openUrlInIntegratedBrowser,
+  revealFileInFileManager,
+  revealMenuLabel,
+} from "../markdown/linkActions.ts";
 import { chipAtom, checkboxAtom, CheckboxBox, ChipBox, faviconAtom, FaviconBox, type ChipPayload } from "../markdown/MarkdownChips.tsx";
 import { MarkdownCodeBlock } from "../markdown/MarkdownCodeBlock.tsx";
 import { InlineMathBox, inlineMathAtom, MathBlock, MermaidBlock } from "../markdown/MarkdownDiagrams.tsx";
@@ -41,6 +65,11 @@ import type { BoxAtom } from "../markdown/inline.ts";
 import { messageLinkIndex, type FileChipTarget } from "../markdown/links.ts";
 import { parseChatMarkdown } from "../markdown/parse.ts";
 import { showMarkdownContextMenu } from "../markdown/overlays.tsx";
+import { openCitationPopover } from "../markdown/citations.tsx";
+import { runShellCommandInTerminal } from "../markdown/runInTerminal.ts";
+import { ArtifactTemplateCard } from "../markdown/ArtifactTemplateCard.tsx";
+import { appendCodexArtifactTemplateUsePrompt, type CodexArtifactTemplate } from "@t3tools/shared/codexArtifactTemplates";
+import { composerTargetKey, focusComposer, updateComposerDraft } from "../../state/composer.ts";
 import { markdownStyles, type ChatMarkdownTone } from "../markdown/styles.ts";
 import { NativeChatMarkdown } from "../../dev/nativeMarkdown.tsx";
 import { TimelineRowCtx, type TimelineRowSharedState } from "./rowContext.ts";
@@ -56,6 +85,8 @@ const lastWidths = new Map<string, number>();
 interface LinkContext {
   readonly row: TimelineRowSharedState | null;
   readonly contextChip: ((reference: { kind: string; contextId: string; label: string }) => ChipPayload | null) | undefined;
+  /** usePullRequestLinking for the thread's environment, read at menu time. */
+  readonly linking: { current: ReturnType<typeof usePullRequestLinking> | null };
 }
 
 function panelPathFor(target: FileChipTarget): string | null {
@@ -64,7 +95,7 @@ function panelPathFor(target: FileChipTarget): string | null {
   return meta.workspaceRelativePath ?? (!canPreviewMedia && isHostPath(meta.filePath) ? meta.filePath : null);
 }
 
-function openFileTarget(target: FileChipTarget, context: LinkContext) {
+function openFileInPanel(target: FileChipTarget, context: LinkContext) {
   const row = context.row;
   const panelPath = panelPathFor(target);
   if (!row || !panelPath) {
@@ -72,6 +103,40 @@ function openFileTarget(target: FileChipTarget, context: LinkContext) {
     return;
   }
   rightPanelActions.openFile(threadKeyOf(row.threadRef.environmentId, row.threadRef.threadId), panelPath, target.meta.line);
+}
+
+/** What a file link may do here, the props web's fileLinkChip hands MarkdownFileLink. */
+function fileCapabilities(target: FileChipTarget, context: LinkContext) {
+  const threadRef = context.row?.threadRef ?? null;
+  const environmentId = threadRef?.environmentId ?? null;
+  const canEditor = environmentId !== null && canUseShellActions(environmentId);
+  return {
+    environmentId,
+    threadRef,
+    canEditor,
+    canBrowser: canOpenInIntegratedBrowser(threadRef) && isBrowserPreviewFile(target.meta.filePath),
+    canPanel: threadRef !== null && panelPathFor(target) !== null,
+    revealLabel: canEditor && environmentId !== null ? revealMenuLabel(environmentId) : undefined,
+  };
+}
+
+/** MarkdownFileLink onClick: Ctrl/Cmd opens the editor, a PDF the browser, anything else the Files panel. */
+function openFileTarget(target: FileChipTarget, context: LinkContext, modifiers?: { ctrl: boolean; cmd: boolean }) {
+  const can = fileCapabilities(target, context);
+  const cwd = context.row?.markdownCwd;
+  if (can.canEditor && can.environmentId && modifiers && shouldOpenMarkdownFileLinkInEditor({ ctrlKey: modifiers.ctrl, metaKey: modifiers.cmd }, process.platform === "darwin" ? "MacIntel" : "Win32")) {
+    void openFileInEditor(can.environmentId, target.meta, cwd);
+    return;
+  }
+  if (shouldUseMarkdownFileBrowserPrimaryAction({ iconPath: target.meta.filePath, canOpenInEditor: can.canEditor, canOpenInBrowser: can.canBrowser, canOpenInPanel: can.canPanel }) && can.threadRef) {
+    void openFileInIntegratedBrowser(can.threadRef, target.meta.filePath, cwd);
+    return;
+  }
+  if (can.canPanel || !can.canEditor || !can.environmentId) {
+    openFileInPanel(target, context);
+    return;
+  }
+  void openFileInEditor(can.environmentId, target.meta, cwd);
 }
 
 function copyWithToast(text: string, title: string) {
@@ -88,28 +153,61 @@ function copyWithToast(text: string, title: string) {
 
 function fileContextMenu(target: FileChipTarget, context: LinkContext, position: { x: number; y: number }) {
   const copyItems = markdownFileCopyMenuItems({ targetPath: target.meta.targetPath, workspaceRelativePath: target.meta.workspaceRelativePath });
-  const panelPath = panelPathFor(target);
+  const can = fileCapabilities(target, context);
+  const cwd = context.row?.markdownCwd;
+  // web MarkdownFileLink: a click opens the Files panel; the menu holds the other actions.
   const items: ContextMenuItem<string>[] = [
-    ...(context.row && panelPath ? [{ id: "open-in-panel", label: "Open file" }] : []),
+    ...(can.canEditor && can.environmentId ? [{ id: "open", label: editorMenuLabel(can.environmentId) }] : []),
+    ...(can.canBrowser ? [{ id: "open-in-browser", label: "Open in integrated browser" }] : []),
+    ...(can.revealLabel ? [{ id: "reveal", label: can.revealLabel }] : []),
     ...copyItems.map(({ id, label }) => ({ id, label })),
   ];
   void showMarkdownContextMenu(items, position).then((clicked) => {
-    if (clicked === "open-in-panel") openFileTarget(target, context);
+    if (clicked === "open" && can.environmentId) void openFileInEditor(can.environmentId, target.meta, cwd);
+    if (clicked === "open-in-browser" && can.threadRef) void openFileInIntegratedBrowser(can.threadRef, target.meta.filePath, cwd);
+    if (clicked === "reveal" && can.environmentId) void revealFileInFileManager(can.environmentId, target.meta, cwd);
     const copyItem = copyItems.find((item) => item.id === clicked);
     if (copyItem) copyWithToast(copyItem.value, copyItem.title);
   });
 }
 
-function externalContextMenu(href: string, position: { x: number; y: number }) {
-  // web externalLinkContextMenu: without an integrated browser for this client, the
-  // menu offers the system browser and copying.
-  const items: ContextMenuItem<string>[] = [
-    { id: "open-external", label: "Open in system browser" },
-    { id: "copy-link", label: "Copy Link" },
-  ];
-  void showMarkdownContextMenu(items, position).then((clicked) => {
-    if (clicked === "open-external") openExternalUrl(href);
-    if (clicked === "copy-link") copyWithToast(href, "Link");
+function externalContextMenu(href: string, context: LinkContext, position: { x: number; y: number }) {
+  const threadRef = context.row?.threadRef ?? null;
+  const linking = context.linking.current;
+  const shell = threadRef ? appAtomRegistry.get(environmentThreadShells.threadShellAtom(threadRef)) : null;
+  const canOperateHost = threadRef !== null && readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope);
+  // ChatMarkdown's anchor: a pull request URL can be linked to (or unlinked from) this thread.
+  const threadLinkAction =
+    !canOperateHost || !linking || shell === null
+      ? undefined
+      : linking.isLinked(shell, href)
+        ? ("unlink-from-thread" as const)
+        : linking.canLink(href)
+          ? ("link-to-thread" as const)
+          : undefined;
+  void showExternalLinkContextMenu({
+    href,
+    position,
+    canOpenInPreview: canOpenInIntegratedBrowser(threadRef),
+    threadLinkAction,
+    showContextMenu: (items, at) => showMarkdownContextMenu(items as ContextMenuItem<string>[], at) as never,
+    openInPreview: async (target) => {
+      if (threadRef) await openUrlInIntegratedBrowser(threadRef, target);
+    },
+    openExternal: async (target) => openExternalUrl(target),
+    copyLink: async (target) => copyWithToast(target, "Link"),
+    updateThreadLink: async (target, linked) => {
+      if (threadRef && linking) await linking.changeLink(threadRef, target, linked);
+    },
+    reportFailure: (operation, cause) => {
+      if (operation === "link-pull-request-to-thread" || operation === "unlink-pull-request-from-thread") {
+        toast({
+          type: "error",
+          title: operation === "link-pull-request-to-thread" ? "Unable to link pull request" : "Unable to unlink pull request",
+          description: cause instanceof Error ? cause.message : "The request failed.",
+        });
+      }
+    },
   });
 }
 
@@ -119,21 +217,21 @@ function navigateToThread(environmentId: EnvironmentId, threadId: ThreadId) {
 
 function createActions(context: LinkContext): MarkdownActions {
   return {
-    activateLink(entry) {
+    activateLink(entry, modifiers) {
       const kind = entry.kind;
       if (kind.kind === "file") {
-        openFileTarget({ meta: kind.meta, label: kind.meta.basename, copyMarkdown: entry.href }, context);
+        openFileTarget({ meta: kind.meta, label: kind.meta.basename, copyMarkdown: entry.href }, context, modifiers);
       } else if (kind.kind === "thread") {
         const environmentId = context.row?.threadRef.environmentId;
         if (environmentId) navigateToThread(environmentId, kind.threadId);
       } else if (kind.kind === "external") {
         if (entry.href.startsWith("#")) return;
-        openExternalUrl(entry.href);
+        activateExternalLink(entry.href, context.row?.threadRef ?? null, modifiers.alt);
       }
     },
     linkContextMenu(entry, position) {
       const kind = entry.kind;
-      if (kind.kind === "external" && kind.faviconHost) externalContextMenu(entry.href, position);
+      if (kind.kind === "external" && kind.faviconHost) externalContextMenu(entry.href, context, position);
       if (kind.kind === "file") fileContextMenu({ meta: kind.meta, label: kind.meta.basename, copyMarkdown: entry.href }, context, position);
     },
   };
@@ -168,7 +266,7 @@ function createBoxes(context: LinkContext): InlineBoxRenderers {
         label: target.label,
         icon: { kind: "file", path: target.meta.filePath },
         tooltip: target.meta.targetPath,
-        onActivate: () => openFileTarget(target, context),
+        onActivate: (modifiers) => openFileTarget(target, context, modifiers),
         onContextMenu: (position) => fileContextMenu(target, context, position),
         fileMetadata: { environmentId: context.row?.threadRef.environmentId ?? null, path: target.meta.filePath, cwd: context.row?.markdownCwd },
       };
@@ -206,7 +304,8 @@ function createBoxes(context: LinkContext): InlineBoxRenderers {
         label: assistantCitationLabel(citation),
         icon: { kind: "lucide", name: "quote" },
         tooltip: citation.comment ? `${citation.text}\n\n${citation.comment}` : citation.text,
-        onActivate: () => navigateToThread(citation.environmentId, citation.threadId),
+        // Outside the composer the chip opens a popover with the quote and "Go to source".
+        onActivate: (_modifiers, position) => openCitationPopover(citation, position),
       };
       return chipAtom(id("cite"), payload, env.styles.body, Math.min(lineWidth(env), env.styles.body.size * 0.86 * 16 + 40));
     },
@@ -235,10 +334,35 @@ function createBoxes(context: LinkContext): InlineBoxRenderers {
   };
 }
 
-function createBlocks(): BlockRenderers {
+/**
+ * ChatView insertArtifactTemplate: append the template's prompt to the thread's
+ * draft unless the draft already ends with it, then focus the composer.
+ */
+function insertArtifactTemplate(threadRef: { environmentId: EnvironmentId; threadId: ThreadId }, template: CodexArtifactTemplate) {
+  const key = composerTargetKey({ kind: "thread", environmentId: threadRef.environmentId, threadId: threadRef.threadId });
+  updateComposerDraft(key, (draft) => ({ ...draft, prompt: appendCodexArtifactTemplateUsePrompt(draft.prompt, template) }));
+  focusComposer();
+}
+
+function createBlocks(context: LinkContext): BlockRenderers {
+  const threadRef = context.row?.threadRef ?? null;
+  // web ChatView passes onRunShellCommand with an active project; ChatMarkdown
+  // offers it once the fence has closed and the message stopped streaming.
+  const runShellCommand = threadRef && context.row?.workspaceRoot ? (command: string) => void runShellCommandInTerminal(threadRef, command) : undefined;
   return {
-    codeBlock({ code, language, meta, width, env, key }) {
-      return <MarkdownCodeBlock key={key} code={code} language={language} meta={meta} width={width} styles={env.styles} isStreaming={false} />;
+    codeBlock({ code, language, meta, width, env, key, closedFence }) {
+      return (
+        <MarkdownCodeBlock
+          key={key}
+          code={code}
+          language={language}
+          meta={meta}
+          width={width}
+          styles={env.styles}
+          isStreaming={env.isStreaming}
+          onRunShellCommand={runShellCommand && !env.isStreaming && closedFence ? runShellCommand : undefined}
+        />
+      );
     },
     mathBlock({ tex, width, env, key }) {
       return <MathBlock key={key} tex={tex} width={width} styles={env.styles} />;
@@ -254,6 +378,9 @@ function createBlocks(): BlockRenderers {
     },
     image({ node, width, env, key }) {
       return <MarkdownImage key={key} node={node} width={width} env={env} />;
+    },
+    artifactTemplate({ template, key }) {
+      return <ArtifactTemplateCard key={key} template={template} onUse={threadRef ? (picked) => insertArtifactTemplate(threadRef, picked) : undefined} />;
     },
   };
 }
@@ -305,8 +432,11 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   const [hover] = useState(() => new HoverStore());
   const tree = parseChatMarkdown(text, { lineBreaks, math: mathEnabled, rawHtml: parseRawHtml });
   const cwd = row?.markdownCwd;
-  const context = useMemo<LinkContext>(() => ({ row, contextChip }), [row, contextChip]);
-  const handlers = useMemo(() => ({ actions: createActions(context), boxes: createBoxes(context), blocks: createBlocks() }), [context]);
+  const linking = usePullRequestLinking(row?.threadRef.environmentId ?? null);
+  const [linkingRef] = useState<LinkContext["linking"]>(() => ({ current: null }));
+  linkingRef.current = linking;
+  const context = useMemo<LinkContext>(() => ({ row, contextChip, linking: linkingRef }), [row, contextChip, linkingRef]);
+  const handlers = useMemo(() => ({ actions: createActions(context), boxes: createBoxes(context), blocks: createBlocks(context) }), [context]);
   const rendered = useMemo(() => {
     if (width <= 0) return null;
     const env: RenderEnv = {
@@ -322,6 +452,7 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
       extent: { width: 0, root: width },
       media: { environmentId: row?.threadRef.environmentId ?? null, threadId: row?.threadRef.threadId ?? null, cwd, gallery: [] },
       isStreaming,
+      source: text,
     };
     const nodes = renderDocument(tree, width, env);
     return { nodes, extent: env.extent.width };

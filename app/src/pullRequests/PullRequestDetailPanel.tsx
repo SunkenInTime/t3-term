@@ -10,14 +10,12 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { sourceControlClients, UNKNOWN_SOURCE_CONTROL_CLIENT } from "@t3tools/client-runtime/source-control-clients";
 import {
-  isAtomCommandInterrupted,
   runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
-  ThreadId,
   resolveEnvironmentMachineKind,
   type EnvironmentId,
   type PullRequestAction,
@@ -33,16 +31,16 @@ import { changeRequestRepositoryUrl, parseChangeRequestUrl } from "@t3tools/shar
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { useWindowSize } from "@gpuix/react";
 import type * as Cause from "effect/Cause";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { PullRequestMarkdownContext } from "./pullRequestMarkdownContext.ts";
+import { PullRequestLinkContextMenu } from "./PullRequestLinkContextMenu.tsx";
 
 import { copyTextToClipboard } from "../chat/header/osActions.ts";
 import { requestConfirmDialog } from "../dialogs/confirmDialog.ts";
 import { registerShortcutHandler } from "../keybindings/useGlobalKeybindings.ts";
-import { startNewThread } from "../palette/actions.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
-import { composerTargetKey, setDraftWorkspace } from "../state/composer.ts";
 import { environmentProjects } from "../state/environment.ts";
-import { gitEnvironment, vcsEnvironment } from "../state/git.ts";
+import { vcsEnvironment } from "../state/git.ts";
 import { activeKeybindingsAtom } from "../state/keybindings.ts";
 import {
   guideRunKey,
@@ -53,6 +51,7 @@ import {
   pullRequestEnvironmentConnectedAtom,
   pullRequestEnvironmentsAtom,
   pullRequestPanel,
+  pullRequestPanelWidthAtom,
   useEnvironmentQuery,
   usePullRequestStack,
   usePullRequestTurnRefresh,
@@ -61,8 +60,17 @@ import {
 } from "../state/pullRequests.ts";
 import { Icon } from "../ui/Icon.tsx";
 import { Tooltip } from "../ui/overlay.tsx";
+import { ContextMenu } from "../sidebar/ContextMenu.tsx";
+import { ResizeHandle } from "../panels/RightPanel.tsx";
+import {
+  RIGHT_PANEL_MAX_WIDTH_FRACTION,
+  RIGHT_PANEL_MIN_WIDTH,
+  RIGHT_PANEL_SIBLING_MIN_WIDTH,
+} from "../state/rightPanel.ts";
+import { sidebarOpenAtom } from "../state/ui.ts";
+import { sidebarWidthAtom } from "../ui/viewport.tsx";
 import { IconButton, Text } from "../ui/primitives.tsx";
-import { toast, updateToast } from "../ui/toast.tsx";
+import { toast } from "../ui/toast.tsx";
 import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../ui/theme.ts";
 import { openExternalUrl } from "../usage/openExternal.ts";
 import { shortcutLabelForCommand } from "../web/keybindings.ts";
@@ -79,7 +87,6 @@ import {
   buildFixFindingsHandoff,
   buildResolveConflictsPrompt,
   canDeletePullRequestBranch,
-  checkoutFailureDescription,
   isPullRequestNotFound,
   isStackedPullRequestBase,
   latestPullRequestReviewOutcomes,
@@ -117,7 +124,12 @@ import {
   PullRequestCopyableCode,
   PullRequestTitleEditor,
 } from "./PullRequestHeaderPieces.tsx";
-import { startPullRequestAsk, writeTaskToComposer, type PullRequestThreadTask } from "./pullRequestHandoffs.ts";
+import {
+  runPullRequestCheckoutHandoff,
+  startPullRequestAsk,
+  writeTaskToComposer,
+  type PullRequestThreadTask,
+} from "./pullRequestHandoffs.ts";
 import { PullRequestChecksPopover } from "./PullRequestList.tsx";
 import { GhostBar, PullRequestsUnavailableState } from "./PullRequestListStates.tsx";
 import {
@@ -135,7 +147,7 @@ import { PullRequestThreadLinks } from "./PullRequestThreadLinks.tsx";
 import { PullRequestSummaryTab } from "./PullRequestSummaryTab.tsx";
 import { PullRequestTimelineTab } from "./PullRequestTimelineTab.tsx";
 import { PullRequestCodeTab } from "./PullRequestCodeTab.tsx";
-import { guardPullRequestWrite, PullRequestDryRunError, runPullRequestWrite } from "./pullRequestWrites.ts";
+import { PullRequestDryRunError, runPullRequestWrite } from "./pullRequestWrites.ts";
 
 const TABS: ReadonlyArray<{ value: PullRequestDetailTab; label: string }> = [
   { value: "summary", label: "Summary" },
@@ -161,6 +173,9 @@ export function PullRequestDetailPanel({
   onTogglePanel,
   onActivateSurface,
   onCloseSurface,
+  onCloseOtherSurfaces,
+  onCloseSurfacesToRight,
+  onCloseAllSurfaces,
   listEntry,
   refreshToken,
   onSelectPullRequest,
@@ -173,17 +188,33 @@ export function PullRequestDetailPanel({
   onTogglePanel: () => void;
   onActivateSurface: (surface: PullRequestSurface) => void;
   onCloseSurface: (surface: PullRequestSurface) => void;
+  onCloseOtherSurfaces: (surface: PullRequestSurface) => void;
+  onCloseSurfacesToRight: (surface: PullRequestSurface) => void;
+  onCloseAllSurfaces: () => void;
   listEntry: PullRequestListEntry | null;
   refreshToken: number;
   onSelectPullRequest: (reference: PullRequestRef) => void;
 }) {
   const theme = useTheme();
   const window = useWindowSize();
-  const width = Math.floor(window.width / 2);
+  // web RightPanelTabs: a saved width (default half the window), dragged from the left border
+  // between RIGHT_PANEL_MIN_WIDTH and 70% of the window, leaving the list its minimum.
+  const storedWidth = useAtomValue(pullRequestPanelWidthAtom);
+  const [dragWidth, setDragWidth] = useState<number | null>(null);
+  const drag = useRef<{ startX: number; startWidth: number } | null>(null);
+  const sidebarOpen = useAtomValue(sidebarOpenAtom);
+  const sidebarWidth = useAtomValue(sidebarWidthAtom);
+  const rowWidth = window.width - (sidebarOpen ? sidebarWidth : 0);
+  const maxWidth = Math.max(
+    RIGHT_PANEL_MIN_WIDTH,
+    Math.min(Math.floor(window.width * RIGHT_PANEL_MAX_WIDTH_FRACTION), Math.floor(rowWidth) - RIGHT_PANEL_SIBLING_MIN_WIDTH),
+  );
+  const width = Math.min(Math.max(dragWidth ?? storedWidth ?? Math.floor(window.width / 2), RIGHT_PANEL_MIN_WIDTH), maxWidth);
   return (
     <div
       testId="pr-detail-panel"
       style={{
+        position: "relative",
         display: "flex",
         flexDirection: "column",
         minHeight: 0,
@@ -206,15 +237,20 @@ export function PullRequestDetailPanel({
         }}
       >
         <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, flexGrow: 1, minWidth: 0, overflow: "hidden" }}>
-          {surfaces.map((surface) => (
+          {surfaces.map((surface, index) => (
             <PanelTab
               key={surface.id}
               surface={surface}
               environmentId={(surface.environmentId as EnvironmentId | undefined) ?? environmentId}
               active={surface.id === activeSurface.id}
               seed={surface.id === activeSurface.id ? listEntry : null}
+              isOnly={surfaces.length === 1}
+              isLast={index === surfaces.length - 1}
               onActivate={() => onActivateSurface(surface)}
               onClose={() => onCloseSurface(surface)}
+              onCloseOthers={() => onCloseOtherSurfaces(surface)}
+              onCloseToRight={() => onCloseSurfacesToRight(surface)}
+              onCloseAll={onCloseAllSurfaces}
             />
           ))}
           {/* Web's add-surface menu offers nothing on this page: every surface is unavailable. */}
@@ -247,6 +283,25 @@ export function PullRequestDetailPanel({
         refreshToken={refreshToken}
         onSelectPullRequest={onSelectPullRequest}
       />
+      {maximized ? null : (
+        <ResizeHandle
+          onDragStart={(x) => {
+            drag.current = { startX: x, startWidth: width };
+          }}
+          onDrag={(x) => {
+            const state = drag.current;
+            if (!state) return;
+            setDragWidth(Math.min(Math.max(state.startWidth + (state.startX - x), RIGHT_PANEL_MIN_WIDTH), maxWidth));
+          }}
+          onDragEnd={() => {
+            drag.current = null;
+            setDragWidth((current) => {
+              if (current !== null) appAtomRegistry.set(pullRequestPanelWidthAtom, current);
+              return null;
+            });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -256,18 +311,29 @@ function PanelTab({
   environmentId,
   active,
   seed,
+  isOnly,
+  isLast,
   onActivate,
   onClose,
+  onCloseOthers,
+  onCloseToRight,
+  onCloseAll,
 }: {
   surface: PullRequestSurface;
   environmentId: EnvironmentId;
   active: boolean;
   seed: PullRequestListEntry | null;
+  isOnly: boolean;
+  isLast: boolean;
   onActivate: () => void;
   onClose: () => void;
+  onCloseOthers: () => void;
+  onCloseToRight: () => void;
+  onCloseAll: () => void;
 }) {
   const theme = useTheme();
   const [hovered, setHovered] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   // Web seeds the tab glyph from the list row and then the cached detail.
   const detail = useEnvironmentQuery(
     pullRequestEnvironment.detail({
@@ -282,10 +348,15 @@ function PanelTab({
   ).data;
   const status = detail ?? seed;
   const presentation = status ? resolvePullRequestState({ state: status.state, isDraft: status.isDraft }) : null;
-  return (
+  const tab = (
     <div
       testId={`pr-panel-tab-${surface.number}`}
       onClick={onActivate}
+      // web RightPanelTabs: a right click opens the tab menu, a middle click closes the tab.
+      onAuxClick={(event) => {
+        if (event.isRightClick) setMenu({ x: event.x ?? 0, y: event.y ?? 0 });
+        else onClose();
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -330,6 +401,32 @@ function PanelTab({
         {`#${surface.number}`}
       </Text>
     </div>
+  );
+  return (
+    <>
+      {tab}
+      {/* web RightPanelTabs asks for a context menu at the pointer. */}
+      {menu ? (
+        <ContextMenu
+          testId={`pr-panel-tab-menu-${surface.number}`}
+          items={[
+            { id: "close", label: "Close" },
+            { id: "close-others", label: "Close others", disabled: isOnly },
+            { id: "close-to-right", label: "Close to the right", disabled: isLast },
+            { id: "close-all", label: "Close all" },
+          ]}
+          x={menu.x}
+          y={menu.y}
+          onSelect={(id) => {
+            if (id === "close") onClose();
+            else if (id === "close-others") onCloseOthers();
+            else if (id === "close-to-right") onCloseToRight();
+            else onCloseAll();
+          }}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -429,13 +526,6 @@ const ACTION_FAILURE_HINTS: Record<PullRequestAction, string> = {
 
 const UPDATE_BRANCH_REBASE_FAILURE_HINT =
   "The host refused it. A rebase stops at the first commit that does not apply cleanly; updating with a merge commit may still work.";
-
-const OFF_HEAD_PULL_REQUEST_CHECKOUT_TOAST = {
-  type: "warning",
-  title: "Checked out, but not confirmed on the latest commit",
-  description:
-    "This checkout could not be confirmed at the pull request's latest commit, so its code may differ. Local commits or uncommitted work keep a checkout where it is.",
-} as const;
 
 export interface PullRequestDetailViewProps {
   environmentId: EnvironmentId;
@@ -739,9 +829,14 @@ export function PullRequestDetailView({
   const canFixFindings = attachTarget !== null || canPrepareWorktree;
   const actingProjectRef = (projectId: PullRequestRef["projectId"]) =>
     scopeProjectRef(actingEnvironmentId, acting?.projectId ?? projectId);
-  const startAsk = (task: PullRequestThreadTask) => {
+  const startAsk = (task: PullRequestThreadTask, options?: { readonly keepGuide?: boolean }) => {
     if (!detail || handoff !== null) return;
-    startPullRequestAsk(actingProjectRef(detail.projectId), task, attachTarget);
+    startPullRequestAsk(
+      actingProjectRef(detail.projectId),
+      task,
+      attachTarget,
+      options?.keepGuide === true ? { keepGuide: { environmentId, reference } } : undefined,
+    );
   };
   const startHandoff = async (
     kind: string,
@@ -760,69 +855,15 @@ export function PullRequestDetailView({
     }
     if (checkoutRoot === null || !canWriteSourceControl || (mode === "worktree" && !canOperateThread)) return;
     setHandoff(kind);
-    const toastId = toast({ type: "loading", title: "Preparing the pull request checkout..." });
-    const projectRef = actingProjectRef(handoffSummary.projectId);
-    // The thread id is chosen before the checkout: a worktree's setup script runs for the thread
-    // it was made for.
-    const threadId = ThreadId.make(globalThis.crypto.randomUUID());
-    const input = {
-      cwd: checkoutRoot,
-      reference: handoffSummary.url,
+    await runPullRequestCheckoutHandoff({
+      environmentId: actingEnvironmentId,
+      projectRef: actingProjectRef(handoffSummary.projectId),
+      checkoutRoot,
+      url: handoffSummary.url,
       mode,
-      ...(mode === "worktree" ? { threadId } : {}),
-    };
-    const prepared = await guardPullRequestWrite(
-      gitEnvironment.preparePullRequestThread.label,
-      { environmentId: actingEnvironmentId, input },
-      () =>
-        runAtomCommand(
-          appAtomRegistry,
-          gitEnvironment.preparePullRequestThread,
-          { environmentId: actingEnvironmentId, input },
-          { reportFailure: false },
-        ),
-    );
+      task,
+    });
     setHandoff(null);
-    if (prepared instanceof PullRequestDryRunError || prepared._tag === "Failure") {
-      updateToast(toastId, {
-        type: "error",
-        title: "Could not prepare the pull request checkout",
-        description:
-          prepared instanceof PullRequestDryRunError
-            ? prepared.message
-            : checkoutFailureDescription(
-                isAtomCommandInterrupted(prepared) ? undefined : squashAtomCommandFailure(prepared),
-              ),
-      });
-      return;
-    }
-    startNewThread(projectRef);
-    const draftKey = composerTargetKey({
-      kind: "draft",
-      environmentId: projectRef.environmentId,
-      projectId: projectRef.projectId,
-    });
-    setDraftWorkspace(draftKey, {
-      envMode: prepared.value.worktreePath === null ? "local" : "worktree",
-      branch: prepared.value.branch,
-      worktreePath: prepared.value.worktreePath,
-    });
-    if (task !== null) writeTaskToComposer(draftKey, task);
-    updateToast(
-      toastId,
-      !prepared.value.isOnPullRequestHead
-        ? OFF_HEAD_PULL_REQUEST_CHECKOUT_TOAST
-        : task !== null
-          ? { type: "success", title: "Checkout ready", description: "The task is in the composer. Read it over, then send." }
-          : {
-              type: "success",
-              title: mode === "local" ? "Checked out here" : "Checked out",
-              description:
-                mode === "local"
-                  ? "This repository is on the pull request's branch, with a thread open on it."
-                  : "The pull request is in its own worktree, with a thread open on it.",
-            },
-    );
   };
   const handoffBase = detail
     ? {
@@ -855,11 +896,15 @@ export function PullRequestDetailView({
         },
         question,
       }),
+      { keepGuide: true },
     );
   };
-  const addSelectionToAgent = (selection: { readonly comment: ReviewCommentContext; readonly request: string }) => {
+  const addSelectionToAgent = (
+    selection: { readonly comment: ReviewCommentContext; readonly request: string },
+    options?: { readonly keepGuide?: boolean },
+  ) => {
     if (!handoffBase) return;
-    startAsk(buildAddSelectionToAgentHandoff({ ...handoffBase, comment: selection.comment, request: selection.request }));
+    startAsk(buildAddSelectionToAgentHandoff({ ...handoffBase, comment: selection.comment, request: selection.request }), options);
   };
   const startFixFinding = (finding: PullRequestFinding) => {
     if (!detail) return;
@@ -1012,6 +1057,10 @@ export function PullRequestDetailView({
   const openOnHostText =
     hostClient === UNKNOWN_SOURCE_CONTROL_CLIENT ? "Open on host" : `Open on ${hostClient.label}`;
   const repositoryUrl = detail === null ? null : changeRequestRepositoryUrl(detail.url);
+  const markdownContext = useMemo(
+    () => ({ repositoryUrl, threadRef, environmentId }),
+    [repositoryUrl, threadRef?.environmentId, threadRef?.threadId, environmentId],
+  );
   const checkoutCommand = handoffSummary
     ? pullRequestCheckoutCommand(
         handoffSummary.provider,
@@ -1106,6 +1155,7 @@ export function PullRequestDetailView({
     ) : null;
 
   return (
+    <PullRequestMarkdownContext.Provider value={markdownContext}>
     <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, minWidth: 0 }}>
       {threadPickerOpen && detail ? (
         <PullRequestThreadLinks
@@ -1156,6 +1206,7 @@ export function PullRequestDetailView({
                     url={detail.url}
                     tone={statePresentation.tone(theme)}
                     label={openOnHostText}
+                    provider={detail.provider}
                   />
                   <Tooltip content={detail.title} side="top">
                     <div style={{ display: "flex", minWidth: 0, flexShrink: 1 }}>
@@ -1190,6 +1241,7 @@ export function PullRequestDetailView({
                     url={detail.url}
                     tone={statePresentation.tone(theme)}
                     label={openOnHostText}
+                    provider={detail.provider}
                   />
                 </>
               )
@@ -1446,7 +1498,7 @@ export function PullRequestDetailView({
               title={detail.title}
               workspaceRoot={detail.workspaceRoot}
               canComment={detail.capabilities.review.inlineComment && detail.viewerPermissions.comment}
-              onAskAboutLines={(comment, request) => addSelectionToAgent({ comment, request })}
+              onAskAboutLines={(comment, request) => addSelectionToAgent({ comment, request }, { keepGuide: true })}
               onAskAboutStop={askAboutGuideStop}
               onFinishReview={
                 detail.capabilities.review.verdicts.some((verdict) =>
@@ -1503,6 +1555,7 @@ export function PullRequestDetailView({
         ) : null}
       </div>
     </div>
+    </PullRequestMarkdownContext.Provider>
   );
 }
 
@@ -1515,18 +1568,38 @@ function dryRunDescription(result: { readonly cause: Cause.Cause<unknown> }): { 
 /** Height of the title, meta and branch rows that fold away once the reader scrolls. */
 const FOLD_HEIGHT = 108;
 
-function NumberLink({ number, url, tone, label }: { number: number; url: string; tone: string; label: string }) {
+function NumberLink({
+  number,
+  url,
+  tone,
+  label,
+  provider,
+}: {
+  number: number;
+  url: string;
+  tone: string;
+  label: string;
+  provider: string;
+}) {
+  // web PullRequestDetailCrumbs: a right click on the number offers Copy link and Open on host.
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
     <Tooltip content={label} side="top">
       <div
         testId="pr-detail-number"
         onClick={() => openExternalUrl(url)}
+        onAuxClick={(event) => {
+          if (event.isRightClick) setMenu({ x: event.x ?? 0, y: event.y ?? 0 });
+        }}
         style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 2, flexShrink: 0, cursor: "pointer" }}
       >
         <Text size="xs" weight={500} color={tone}>
           {`#${number}`}
         </Text>
         <Icon name="external-link" size={10} color={tone} />
+        {menu ? (
+          <PullRequestLinkContextMenu url={url} provider={provider} position={menu} onClose={() => setMenu(null)} />
+        ) : null}
       </div>
     </Tooltip>
   );

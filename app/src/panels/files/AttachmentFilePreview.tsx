@@ -3,7 +3,8 @@
 // The server hands out a signed asset URL for the attachment; text-like files are
 // read through it (first 1 MB) and shown as source, rendered markdown or a table,
 // images inline. Not available here, by platform: rendered HTML and PDF (sandboxed
-// frames) and audio and video players; those show web's "No preview" card. "Save
+// frames) and audio and video players; PDFs, audio and video offer the system browser
+// (ExternalPreview), other files web's "No preview" card. "Save
 // file" writes the attachment into the Downloads folder, where web downloads it.
 import * as NodeFs from "node:fs";
 import * as NodeOs from "node:os";
@@ -26,6 +27,7 @@ import { toast } from "../../ui/toast.tsx";
 import { SourceView } from "../code/SourceView.tsx";
 import { DelimitedTablePreview } from "./DelimitedTablePreview.tsx";
 import { useAssetUrlState } from "./fileAssets.ts";
+import { ExternalPreview } from "./ExternalPreview.tsx";
 import {
   FileSurfaceAction,
   FileSurfaceFailure,
@@ -160,6 +162,9 @@ export function AttachmentFilePreview(props: {
     ) : (
       <SourceView path={props.name} text={content.text} wrap={wordWrap} revealLine={null} revealKey={props.attachmentId} />
     )
+  ) : kind === "pdf" || kind === "video" || kind === "audio" ? (
+    // Web frames or plays these; gpuix cannot, so they open in the system browser (see ExternalPreview).
+    <ExternalPreview kind={kind} name={props.name} url={url} failed={false} />
   ) : kind === "image" ? (
     <div style={{ display: "flex", flexGrow: 1, minHeight: 0, alignItems: "center", justifyContent: "center", padding: 16 }}>
       <img testId="attachment-image" src={url} alt={props.name} objectFit="contain" style={{ width: "100%", height: "100%" }} />

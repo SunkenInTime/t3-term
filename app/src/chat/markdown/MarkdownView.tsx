@@ -6,6 +6,9 @@
 // margins take the larger; a container without top/bottom padding passes its
 // first/last child's margin out). Inline content goes through inline.ts and
 // paints as rows of nowrap runs.
+import { artifactTemplateFromHastProperties } from "@t3tools/shared/codexMarkdownDirectives";
+import type { CodexArtifactTemplate } from "@t3tools/shared/codexArtifactTemplates";
+import { isClosedCodeFence } from "../../web/components/chat/MarkdownCodeBlock.logic.ts";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { classifyMarkdownImageSource } from "@t3tools/client-runtime/markdown-images";
 import type { Element, ElementContent, Root } from "hast";
@@ -79,12 +82,15 @@ export interface InlineBoxRenderers {
 }
 
 export interface BlockRenderers {
-  codeBlock(input: { code: string; language: string; meta: string | undefined; width: number; env: RenderEnv; key: string }): ReactNode;
+  /** `closedFence`: the fence's closer has arrived (web isClosedCodeFence), so a shell block may run. */
+  codeBlock(input: { code: string; language: string; meta: string | undefined; width: number; env: RenderEnv; key: string; closedFence: boolean }): ReactNode;
   mathBlock(input: { tex: string; width: number; env: RenderEnv; key: string }): ReactNode;
   mermaid(input: { code: string; meta: string | undefined; width: number; env: RenderEnv; key: string }): ReactNode;
   table(input: { node: Element; width: number; env: RenderEnv; key: string }): ReactNode;
   details(input: { node: Element; width: number; env: RenderEnv; key: string }): ReactNode;
   image(input: { node: Element; width: number; env: RenderEnv; key: string }): ReactNode;
+  /** A Codex `::artifact-template` directive (web CodexArtifactTemplateCard). */
+  artifactTemplate?(input: { template: CodexArtifactTemplate; width: number; env: RenderEnv; key: string }): ReactNode;
 }
 
 export interface RenderEnv {
@@ -107,6 +113,8 @@ export interface RenderEnv {
     readonly gallery: Array<{ src: string; name: string }>;
   };
   readonly isStreaming: boolean;
+  /** The markdown source, for checks against node positions (a code fence's closer). */
+  readonly source?: string | undefined;
 }
 
 // ── Blocks ──────────────────────────────────────────────────────────────
@@ -317,7 +325,15 @@ function renderBlock(node: Element, width: number, env: RenderEnv, ctx: FlowCtx,
         node:
           language === "mermaid"
             ? env.blocks.mermaid({ code: source, meta, width, env, key })
-            : env.blocks.codeBlock({ code: source, language: language === "gitignore" ? "ini" : language, meta, width, env, key }),
+            : env.blocks.codeBlock({
+                code: source,
+                language: language === "gitignore" ? "ini" : language,
+                meta,
+                width,
+                env,
+                key,
+                closedFence: env.source !== undefined && isClosedCodeFence(node, env.source, source),
+              }),
         mt: styles.blockMargin,
         mb: styles.blockMargin,
       };
@@ -335,8 +351,19 @@ function renderBlock(node: Element, width: number, env: RenderEnv, ctx: FlowCtx,
     }
     case "summary":
       return { node: renderParagraph(node.children, width, env, ctx.body, key), mt: 0, mb: 0 };
+    case "div": {
+      // web MarkdownDiv: the remark pipeline turns a Codex artifact-template directive into a div.
+      const template = artifactTemplateFromHastProperties(node.properties);
+      if (template && env.blocks.artifactTemplate) {
+        // my-[0.65rem]
+        return { node: env.blocks.artifactTemplate({ template, width, env, key }), mt: 10.4, mb: 10.4 };
+      }
+      const { nodes, firstMt, lastMb } = stack(renderFlow(node.children, width, env, ctx, `${key}d`));
+      if (nodes.length === 0) return null;
+      return { node: column(nodes), mt: firstMt, mb: lastMb };
+    }
     default: {
-      // div, figure, center, dl and anything else block-level: a plain container.
+      // figure, center, dl and anything else block-level: a plain container.
       const { nodes, firstMt, lastMb } = stack(renderFlow(node.children, width, env, ctx, `${key}d`));
       if (nodes.length === 0) return null;
       return { node: column(nodes), mt: firstMt, mb: lastMb };

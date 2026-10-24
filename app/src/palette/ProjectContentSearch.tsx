@@ -1,21 +1,31 @@
 // Port of apps/web/src/components/search/ProjectContentSearchDialog.tsx: a 420px
 // tall palette, Aa / ab / .* toggles, results grouped by file with line numbers.
 // Each line is syntax-highlighted with its matches marked (HighlightedSearchLine).
+// Like web, a file's header sticks to the top while its matches scroll under it, and
+// the next 100 results load when the list nears its end (web's IntersectionObserver
+// sentinel); keyboard selection past the window grows it too.
+import type { EventPayload } from "@gpuix/native";
 import type { KeyEvent } from "@gpuix/react";
 import type { ProjectContentMatch } from "@t3tools/contracts";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 
-import { Icon } from "../ui/Icon.tsx";
 import { Text } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../ui/theme.ts";
 import { HighlightedSearchLine } from "../panels/code/HighlightedSearchLine.tsx";
-import { PaletteFooter, PaletteFrame, PaletteInput, PalettePanel } from "./command.tsx";
+import { FileEntryIcon } from "../panels/files/FileEntryIcon.tsx";
+import { PaletteFooter, PaletteFrame, PaletteInput, paletteSurface } from "./command.tsx";
 import { useProjectContentSearch } from "./hooks.ts";
 import { requestOpenFile } from "./ProjectFilePicker.tsx";
 import { useActiveProjectTarget, type ActiveProjectTarget } from "./projectTarget.ts";
 
 const VISIBLE_MATCH_WINDOW = 100;
 const DIALOG_HEIGHT = 420;
+/** The results list: py-2, h-8 group headers, h-7 rows, pb-2 per section, an h-8 sentinel. */
+const LIST_PADDING = 8;
+const GROUP_HEADER_HEIGHT = 32;
+const MATCH_ROW_HEIGHT = 28;
+const SECTION_GAP = 8;
+const SENTINEL_HEIGHT = 32;
 
 interface MatchGroup {
   readonly path: string;
@@ -38,6 +48,57 @@ function groupMatches(matches: ReadonlyArray<ProjectContentMatch>): MatchGroup[]
     else groups.set(match.path, [indexed]);
   });
   return [...groups].map(([path, grouped]) => ({ path, matches: grouped }));
+}
+
+/** A group's file header (web's `sticky top-0` section header). */
+const GroupHeader = memo(function GroupHeader({ path, count, sticky }: { path: string; count: number; sticky?: boolean }) {
+  const theme = useTheme();
+  const parts = splitPath(path);
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        height: GROUP_HEADER_HEIGHT,
+        paddingLeft: 12,
+        paddingRight: 12,
+        flexShrink: 0,
+        // bg-popover/95 with backdrop-blur on web; GPUI has no backdrop blur, so the pinned
+        // copy is the palette surface, opaque, or the rows under it would show through sharp.
+        ...(sticky ? { backgroundColor: paletteSurface(theme).background } : {}),
+      }}
+    >
+      {/* PierreEntryIcon className="size-3.5" */}
+      <FileEntryIcon pathValue={path} kind="file" size={14} />
+      <Text size="xs" weight={500} style={{ flexShrink: 0 }}>
+        {parts.name}
+      </Text>
+      {parts.directory ? (
+        <Text size="xs" color={theme.mutedForeground} truncate style={{ flexShrink: 1 }}>
+          {parts.directory}
+        </Text>
+      ) : null}
+      <div style={{ flexGrow: 1 }} />
+      <div style={{ display: "flex", alignItems: "center", height: 16, paddingLeft: 6, paddingRight: 6, borderRadius: 8, backgroundColor: theme.muted }}>
+        <Text size="3xs" color={theme.mutedForeground}>
+          {String(count)}
+        </Text>
+      </div>
+    </div>
+  );
+});
+
+/** Where each group's section starts and ends in the list (rows have fixed heights). */
+function groupOffsets(groups: ReadonlyArray<MatchGroup>): Array<{ top: number; bottom: number }> {
+  let top = LIST_PADDING;
+  return groups.map((group) => {
+    const bottom = top + GROUP_HEADER_HEIGHT + group.matches.length * MATCH_ROW_HEIGHT + SECTION_GAP;
+    const offsets = { top, bottom };
+    top = bottom;
+    return offsets;
+  });
 }
 
 function escapeBack(onBack: () => void) {
@@ -122,6 +183,8 @@ function OpenContentSearch({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [visibleCount, setVisibleCount] = useState(VISIBLE_MATCH_WINDOW);
   const rowRefs = useRef(new Map<number, { scrollIntoView?: () => void }>());
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
   const search = useProjectContentSearch({
     environmentId: target.environmentId,
     cwd: target.cwd,
@@ -137,9 +200,21 @@ function OpenContentSearch({
     setResultsFor(matches);
     setSelectedIndex(0);
     setVisibleCount(VISIBLE_MATCH_WINDOW);
+    setScrollTop(0);
   }
   if (selectedIndex >= visibleCount) setVisibleCount(selectedIndex + VISIBLE_MATCH_WINDOW);
   const groups = groupMatches(matches.slice(0, visibleCount));
+  const offsets = groupOffsets(groups);
+  const contentHeight = (offsets.at(-1)?.bottom ?? LIST_PADDING) + (matches.length > visibleCount ? SENTINEL_HEIGHT : 0) + LIST_PADDING;
+  // The sentinel came into view: load the next window, as web's observer does.
+  const sentinelVisible = matches.length > visibleCount && viewportHeight > 0 && scrollTop + viewportHeight >= contentHeight - LIST_PADDING - SENTINEL_HEIGHT;
+  useEffect(() => {
+    if (sentinelVisible) setVisibleCount((count) => count + VISIBLE_MATCH_WINDOW);
+  }, [sentinelVisible]);
+  // The section under the list's top edge pins its header there until the section ends.
+  const stickyGroupIndex = offsets.findIndex((offset) => scrollTop > offset.top && scrollTop < offset.bottom);
+  const stickyGroup = stickyGroupIndex >= 0 ? groups[stickyGroupIndex] : undefined;
+  const stickyTop = stickyGroupIndex >= 0 ? Math.min(0, offsets[stickyGroupIndex]!.bottom - SECTION_GAP - scrollTop - GROUP_HEADER_HEIGHT) : 0;
   const fileCount = new Set(matches.map((match) => match.path)).size;
   const showSearchStatus =
     search.canReadFiles && (search.hasQuery || search.isPending || search.error !== null || search.invalidRegex);
@@ -253,30 +328,33 @@ function OpenContentSearch({
           </Text>
         </div>
       ) : (
-        <PalettePanel fill padding={{ y: 8, x: 0 }}>
-          {groups.flatMap((group) => {
-            const path = splitPath(group.path);
-            return [
-              <div key={`header:${group.path}`} style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, height: 32, paddingLeft: 12, paddingRight: 12, flexShrink: 0 }}>
-                <Icon name="file" size={14} color={theme.mutedForeground} />
-                <Text size="xs" weight={500} style={{ flexShrink: 0 }}>
-                  {path.name}
-                </Text>
-                {path.directory ? (
-                  <Text size="xs" color={theme.mutedForeground} truncate style={{ flexShrink: 1 }}>
-                    {path.directory}
-                  </Text>
-                ) : null}
-                <div style={{ flexGrow: 1 }} />
-                <div style={{ display: "flex", alignItems: "center", height: 16, paddingLeft: 6, paddingRight: 6, borderRadius: 8, backgroundColor: theme.muted }}>
-                  <Text size="3xs" color={theme.mutedForeground}>
-                    {String(group.matches.length)}
-                  </Text>
-                </div>
-              </div>,
+        <div style={{ position: "relative", display: "flex", flexDirection: "column", flexGrow: 1, flexShrink: 1, minHeight: 0 }}>
+          <div
+            testId="command-palette-results"
+            onLayout={(event: EventPayload) => {
+              const next = Math.floor(Number(event.height ?? 0));
+              if (next !== viewportHeight) setViewportHeight(next);
+            }}
+            onScrollChange={(event: EventPayload) => setScrollTop(Math.max(0, -Number(event.scrollY ?? 0)))}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              paddingTop: LIST_PADDING,
+              paddingBottom: LIST_PADDING,
+              flexGrow: 1,
+              flexShrink: 1,
+              minHeight: 0,
+              overflowY: "scroll",
+              scrollbarColor: theme.scrollbar,
+              scrollbarWidth: 6,
+            }}
+          >
+            {groups.flatMap((group) => [
+              <GroupHeader key={`header:${group.path}`} path={group.path} count={group.matches.length} />,
               ...group.matches.map((match, index) => (
                 <div
                   key={`${match.path}:${match.lineNumber}:${match.resultIndex}`}
+                  testId={`content-search-result-${match.resultIndex}`}
                   ref={((instance: { scrollIntoView?: () => void } | null) => {
                     if (instance) rowRefs.current.set(match.resultIndex, instance);
                     else rowRefs.current.delete(match.resultIndex);
@@ -288,10 +366,10 @@ function OpenContentSearch({
                     flexDirection: "row",
                     alignItems: "center",
                     gap: 12,
-                    height: 28,
+                    height: MATCH_ROW_HEIGHT,
                     paddingLeft: 12,
                     paddingRight: 12,
-                    marginBottom: index === group.matches.length - 1 ? 8 : 0,
+                    marginBottom: index === group.matches.length - 1 ? SECTION_GAP : 0,
                     backgroundColor: match.resultIndex === selectedIndex ? theme.accent : "#00000000",
                     cursor: canOpenMatches ? "pointer" : "default",
                     flexShrink: 0,
@@ -305,19 +383,17 @@ function OpenContentSearch({
                   <HighlightedSearchLine match={match} path={match.path} />
                 </div>
               )),
-            ];
-          })}
-          {matches.length > visibleCount ? (
-            <div
-              onClick={() => setVisibleCount((count) => count + VISIBLE_MATCH_WINDOW)}
-              style={{ display: "flex", justifyContent: "center", paddingTop: 6, paddingBottom: 6, cursor: "pointer", flexShrink: 0 }}
-            >
-              <Text size="xs" color={theme.mutedForeground}>
-                Show more results
-              </Text>
+            ])}
+            {/* web's load-more sentinel: an empty h-8 row; reaching it loads the next 100. */}
+            {matches.length > visibleCount ? <div testId="content-search-sentinel" style={{ height: SENTINEL_HEIGHT, flexShrink: 0 }} /> : null}
+          </div>
+          {stickyGroup ? (
+            // Painted after the list so it covers the rows scrolling under it.
+            <div style={{ position: "absolute", left: 0, right: 6, top: stickyTop, height: GROUP_HEADER_HEIGHT, overflow: "hidden" }}>
+              <GroupHeader path={stickyGroup.path} count={stickyGroup.matches.length} sticky />
             </div>
           ) : null}
-        </PalettePanel>
+        </div>
       )}
       <PaletteFooter actionLabel="Open file" escapeLabel="Back" />
     </PaletteFrame>
