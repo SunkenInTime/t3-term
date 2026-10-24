@@ -85,8 +85,8 @@ export function atomWidth(atom: Atom, fontSize: number, maxWidth: number): numbe
   let labelWidth = textAdvance(SANS_MEDIUM, metrics.fontSize, label);
   // web ContextChipLabel max-w-[16em] on citations.
   if (atom.kind === "citation") labelWidth = Math.min(labelWidth, metrics.fontSize * 16);
-  // The citation's comment button: ml-[0.17em] size-[1.17em].
-  const action = atom.kind === "citation" ? metrics.fontSize * (0.17 + 1.17) : 0;
+  // The citation's comment button: the chip's gap, then ml-[0.17em] size-[1.17em].
+  const action = atom.kind === "citation" ? metrics.gap + metrics.fontSize * (0.17 + 1.17) : 0;
   const natural = 2 + 2 * metrics.padX + metrics.icon + metrics.gap + labelWidth + action;
   return Math.ceil(Math.min(natural, Math.max(40, maxWidth)));
 }
@@ -297,12 +297,20 @@ function layoutBlock(block: Block, width: number, metrics: EditorMetrics, epoch:
   return layout;
 }
 
+const placedCache = new WeakMap<Omit<BlockLayout, "y">, BlockLayout>();
+
 export function layoutDoc(doc: Doc, width: number, metrics: EditorMetrics, epoch: number): DocLayout {
   let y = 0;
   const blocks: BlockLayout[] = [];
   for (const block of doc.blocks) {
     const layout = layoutBlock(block, Math.max(1, width), metrics, epoch);
-    blocks.push({ ...layout, y });
+    // The same object for an unchanged block at the same place, so its memoized view skips.
+    let placed = placedCache.get(layout);
+    if (!placed || placed.y !== y) {
+      placed = { ...layout, y };
+      placedCache.set(layout, placed);
+    }
+    blocks.push(placed);
     y += layout.height;
   }
   return { blocks, width, height: y };

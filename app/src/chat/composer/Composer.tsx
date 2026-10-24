@@ -1637,6 +1637,15 @@ function ComposerBody({
   // A printable key or a paste with nothing editable focused goes to the end of the prompt.
   const appendToEditor = (text: string) => {
     if (isChoiceOnlyPendingQuestion || requests.activePendingIsResponding) return false;
+    const editor = editorRef.current;
+    if (editor) {
+      // Straight into the editor's state: the next key can reach the editor before this
+      // composer re-renders it with a new value, and must land after this one.
+      if (restingRequested) appAtomRegistry.set(composerRestingAtom(draftKey), false);
+      editor.appendTyped(text);
+      editor.focus();
+      return true;
+    }
     const next = `${valueRef.current}${text}`;
     valueRef.current = next;
     caretRef.current = next.length;

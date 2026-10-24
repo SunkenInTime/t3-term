@@ -137,7 +137,7 @@ function ChipShell(props: ChipShellProps) {
         height: metrics.height,
         flexShrink: 0,
         paddingLeft: metrics.padX,
-        paddingRight: props.trailing ? metrics.padX - 1 : metrics.padX,
+        paddingRight: metrics.padX,
         borderRadius: metrics.radius,
         borderWidth: 1,
         borderColor: border,

@@ -144,6 +144,12 @@ export interface ComposerEditorHandle {
    * before it when it would otherwise run into the text (web insertComposerText).
    */
   insertText(text: string, where: "caret" | "end", options?: { readonly ensureLeadingBoundary?: boolean }): void;
+  /**
+   * Type-to-focus: text typed with nothing focused goes on the end as typing (no chip
+   * parsing), applied to the editor's own state at once so the keys that follow, which may
+   * reach the editor before React re-renders it, land after it in order.
+   */
+  appendTyped(text: string): void;
   /** Element id of the focusable editor, for renderer.focusElement. */
   readonly id: number | null;
 }
@@ -213,8 +219,10 @@ function renderer(): { simulateKeystrokes?: (keys: string) => void } | null {
   return slot?.renderer ?? null;
 }
 
-/** Copied text and its chips, so a paste back into a composer restores chips the plain text cannot carry. */
+/** The last copy, pasted from memory while the OS clipboard tool is still taking it. */
 let lastCopy: { text: string; at: number } | null = null;
+/** The editor's last measured width, for the first frame of the next mount. */
+let lastKnownWidth = 0;
 
 export const ComposerEditor = memo(
   forwardRef<ComposerEditorHandle, ComposerEditorProps>(function ComposerEditor(props, ref) {
@@ -284,8 +292,9 @@ export const ComposerEditor = memo(
     const state = stateRef.current!;
 
     // ── Layout ──
-    const [width, setWidth] = useState(0);
-    const layoutWidth = props.resting ? 100000 : Math.max(1, width);
+    const [width, setWidth] = useState(lastKnownWidth);
+    // Before the first layout report, no wrapping beats wrapping at one pixel.
+    const layoutWidth = props.resting || width <= 0 ? 100000 : width;
     const layout = useMemo(() => layoutDoc(state.doc, layoutWidth, METRICS, epoch), [state.doc, layoutWidth, epoch]);
     const layoutRef = useRef(layout);
     layoutRef.current = layout;
@@ -778,6 +787,11 @@ export const ComposerEditor = memo(
           select(caret(docEnd(stateRef.current!.doc)));
         },
         readSnapshot: snapshot,
+        appendTyped: (text) => {
+          const current = stateRef.current!;
+          const end = docEnd(current.doc);
+          apply(insertInline(current.doc, end, sanitizeText(text.replace(/\r\n?/g, "\n"))), "insert");
+        },
         insertText: (text, where, options) => {
           const current = stateRef.current!;
           const at = where === "end" ? caret(docEnd(current.doc)) : current.selection;
@@ -792,19 +806,6 @@ export const ComposerEditor = memo(
       // eslint-disable-next-line react-hooks/exhaustive-deps
       [],
     );
-
-    // ── Caret blink: on for 500 ms after any change, then 500 on / 500 off ──
-    const [caretOn, setCaretOn] = useState(true);
-    useEffect(() => {
-      setCaretOn(true);
-      if (!focused) return;
-      let on = true;
-      const id = setInterval(() => {
-        on = !on;
-        setCaretOn(on);
-      }, 530);
-      return () => clearInterval(id);
-    }, [focused, blinkEpoch]);
 
     // ── Paint ──
     const [from, to] = orderedRange(state.selection);
@@ -825,7 +826,10 @@ export const ComposerEditor = memo(
         style={{ position: "relative", width: "100%", height: viewportHeight, overflow: "hidden", flexShrink: 0 }}
         onLayout={(event) => {
           const next = Number(event.width ?? 0);
-          if (next > 0 && Math.abs(next - width) > 0.5) setWidth(next);
+          if (next > 0 && Math.abs(next - width) > 0.5) {
+            lastKnownWidth = next;
+            setWidth(next);
+          }
         }}
         onScroll={(event) => {
           if (props.resting || maxScroll <= 0) return;
@@ -891,20 +895,19 @@ export const ComposerEditor = memo(
             />
           ))}
           {layout.blocks.map((block, index) => (
-            <EditorBlock key={index} layout={block} offsetY={offsetY} textStyle={textStyle} width={layoutWidth} blockIndex={index} selection={state.selection} />
-          ))}
-          {caretBox && caretOn ? (
-            <div
-              style={{
-                position: "absolute",
-                left: Math.round(caretBox.x),
-                top: Math.round(caretBox.y + offsetY),
-                width: 1,
-                height: caretBox.height,
-                backgroundColor: theme.foreground,
-                pointerEvents: "none",
-              }}
+            <EditorBlock
+              key={index}
+              layout={block}
+              offsetY={offsetY}
+              textStyle={textStyle}
+              width={layoutWidth}
+              blockIndex={index}
+              selectedFrom={from.block < index ? -1 : from.block === index ? from.offset : Number.MAX_SAFE_INTEGER}
+              selectedTo={to.block > index ? Number.MAX_SAFE_INTEGER : to.block === index ? to.offset : -1}
             />
+          ))}
+          {caretBox ? (
+            <Caret x={Math.round(caretBox.x)} y={Math.round(caretBox.y + offsetY)} height={caretBox.height} color={theme.foreground} restartKey={blinkEpoch} />
           ) : null}
         </div>
         {/* A draft has no timeline to host text measuring; the newest host does the work. */}
@@ -933,26 +936,47 @@ export const ComposerEditor = memo(
 
 // ── Painting a block ─────────────────────────────────────────────────────
 
+/**
+ * The caret blinks in its own component so a blink repaints one box, not the editor. Like
+ * Chrome it stays on for a moment after each change (restartKey), then blinks.
+ */
+const Caret = memo(function Caret({ x, y, height, color, restartKey }: { x: number; y: number; height: number; color: string; restartKey: number }) {
+  const [on, setOn] = useState(true);
+  useEffect(() => {
+    setOn(true);
+    let visible = true;
+    const id = setInterval(() => {
+      visible = !visible;
+      setOn(visible);
+    }, 530);
+    return () => clearInterval(id);
+  }, [restartKey]);
+  if (!on) return null;
+  return <div style={{ position: "absolute", left: x, top: y, width: 1, height, backgroundColor: color, pointerEvents: "none" }} />;
+});
+
 const EditorBlock = memo(function EditorBlock({
   layout,
   offsetY,
   textStyle,
   width,
   blockIndex,
-  selection,
+  selectedFrom,
+  selectedTo,
 }: {
   layout: BlockLayout;
   offsetY: number;
   textStyle: { fontFamily: string; fontSize: number; lineHeight: number; color: string };
   width: number;
   blockIndex: number;
-  selection: Selection;
+  /** The selection's range within this block (offsets; beyond the text when it covers all). */
+  selectedFrom: number;
+  selectedTo: number;
 }) {
   const block = layout.block;
   if (block.kind === "code") {
     return <CodeBlockView layout={layout} offsetY={offsetY} width={width} blockIndex={blockIndex} />;
   }
-  const [from, to] = orderedRange(selection);
   return (
     <>
       {layout.lines.map((line, index) => (
@@ -963,8 +987,8 @@ const EditorBlock = memo(function EditorBlock({
           top={layout.y + layout.textY + line.y + offsetY}
           left={layout.textX}
           textStyle={textStyle}
-          selectedFrom={from.block < blockIndex ? -1 : from.block === blockIndex ? from.offset : Number.MAX_SAFE_INTEGER}
-          selectedTo={to.block > blockIndex ? Number.MAX_SAFE_INTEGER : to.block === blockIndex ? to.offset : -1}
+          selectedFrom={selectedFrom}
+          selectedTo={selectedTo}
         />
       ))}
     </>
