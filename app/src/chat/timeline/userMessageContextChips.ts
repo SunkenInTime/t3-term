@@ -1,9 +1,9 @@
 // apps/web/src/components/chat/UserMessageContextChips.tsx: the chip each
 // `t3-context:` reference in a sent message renders as (file mention, skill,
 // thread, image, file, terminal excerpt, browser element, review comment,
-// preview annotation), or the dashed "no longer available" chip. Web opens
-// popovers with the element, comment and annotation details; here the chip
-// carries a tooltip with the same summary.
+// preview annotation), or the dashed "no longer available" chip. Terminal,
+// element, review-comment and annotation chips open web's read-only details
+// popup (UserMessageContextDetails.tsx) instead of a tooltip.
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import type { ComposerContextRecord, EnvironmentId, ThreadId } from "@t3tools/contracts";
 
@@ -14,6 +14,10 @@ import { SKILL_CHIP_ICON_SVG } from "../markdown/chipIcons.ts";
 import type { ChipPayload } from "../markdown/MarkdownChips.tsx";
 import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
 import { asKnownContextRecord } from "../../web/lib/userMessageContext.ts";
+import { contextDetails, type AnnotationImage } from "./UserMessageContextDetails.tsx";
+import { openExternalUrl } from "./system.ts";
+
+type PreviewAnnotationRecord = Extract<NonNullable<ReturnType<typeof asKnownContextRecord>>, { kind: "preview-annotation" }>;
 
 /** composerInlineChip.ts middleTruncateAttachmentName */
 export function middleTruncateAttachmentName(name: string, maxCharacters = 36): string {
@@ -37,6 +41,10 @@ export interface ContextChipEnvironment {
   readonly imageUrls: ReadonlyMap<string, string>;
   /** File attachments by id: a file chip opens its attachment in the Files surface. */
   readonly files: ReadonlyMap<string, Parameters<typeof rightPanelActions.openAttachment>[1]>;
+  /** The screenshot sent with a preview annotation (web resolvePreviewAnnotationImage). */
+  readonly annotationImage?: ((record: PreviewAnnotationRecord) => AnnotationImage | null) | undefined;
+  /** A video attachment's playable URL; its chip plays it in the system browser (gpuix has no video element). */
+  readonly videoUrl?: ((attachmentId: string) => string | null) | undefined;
 }
 
 function unavailable(label: string): ChipPayload {
@@ -100,6 +108,8 @@ export function userMessageContextChip(
     case "file": {
       const video = record.mimeType.startsWith("video/");
       const file = context.files.get(record.attachmentId);
+      // Web expands a video chip into its player; here it plays in the system browser.
+      const videoUrl = video ? (context.videoUrl?.(record.attachmentId) ?? null) : null;
       return {
         type: "chip",
         kind: video ? "video" : "file",
@@ -109,7 +119,9 @@ export function userMessageContextChip(
         tooltip: `${record.name}\n${formatAttachmentSize(record.sizeBytes)}`,
         ...(file && !video
           ? { onActivate: () => rightPanelActions.openAttachment(threadKeyOf(context.environmentId, context.threadId), file) }
-          : {}),
+          : videoUrl
+            ? { onActivate: () => openExternalUrl(videoUrl), tooltip: `${record.name}\n${formatAttachmentSize(record.sizeBytes)}\nPlays in your browser` }
+            : {}),
       };
     }
     case "terminal":
@@ -118,7 +130,8 @@ export function userMessageContextChip(
         kind: "terminal",
         label: record.label,
         icon: { kind: "lucide", name: "terminal" },
-        tooltip: `${record.terminalLabel} · lines ${record.lineStart}-${record.lineEnd}`,
+        // TerminalContextInlineChip: an excerpt with text opens its popup; an empty one is a plain chip.
+        ...(record.text.length > 0 ? { onActivate: () => contextDetails.terminal(reference.contextId, record) } : {}),
       };
     case "element":
       return {
@@ -126,7 +139,7 @@ export function userMessageContextChip(
         kind: "element",
         label: record.label,
         icon: { kind: "lucide", name: "mouse-pointer-click" },
-        tooltip: [record.pageTitle ?? record.pageUrl, record.selector ?? record.tagName].filter(Boolean).join("\n"),
+        onActivate: () => contextDetails.element(reference.contextId, record),
       };
     case "preview-annotation":
       return {
@@ -134,16 +147,25 @@ export function userMessageContextChip(
         kind: "element",
         label: record.label,
         icon: { kind: "lucide", name: "mouse-pointer-click" },
-        tooltip: [record.pageTitle?.trim() || record.pageUrl, record.comment].filter(Boolean).join("\n"),
+        onActivate: () => contextDetails.previewAnnotation(reference.contextId, record, context.annotationImage?.(record) ?? null),
       };
     case "review-comment":
-      return {
-        type: "chip",
-        kind: record.pullRequest ? "pull-request" : "review-comment",
-        label: record.label,
-        icon: { kind: "lucide", name: record.pullRequest ? "git-pull-request" : "message-circle" },
-        tooltip: [record.filePath, `${record.sectionTitle} · ${record.rangeLabel}`, record.text].filter(Boolean).join("\n"),
-      };
+      // A pull-request summary keeps its tooltip: web shows it as a PR link chip, not this popup.
+      return record.pullRequest
+        ? {
+            type: "chip",
+            kind: "pull-request",
+            label: record.label,
+            icon: { kind: "lucide", name: "git-pull-request" },
+            tooltip: [record.filePath, `${record.sectionTitle} · ${record.rangeLabel}`, record.text].filter(Boolean).join("\n"),
+          }
+        : {
+            type: "chip",
+            kind: "review-comment",
+            label: record.label,
+            icon: { kind: "lucide", name: "message-circle" },
+            onActivate: () => contextDetails.reviewComment(reference.contextId, record, context.workspaceRoot),
+          };
     default:
       return unavailable(reference.label);
   }

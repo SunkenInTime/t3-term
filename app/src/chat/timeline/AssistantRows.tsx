@@ -3,10 +3,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/markdownPipeline";
-import { memo, use, useState, type ReactNode } from "react";
+import { useGpuixRequired, type PublicInstance } from "@gpuix/react";
+import { memo, use, useRef, useState, type ReactNode } from "react";
 
 import { getClientSettings } from "../../state/clientSettings.ts";
 import { citationFromSelection, closeCitationToolbar, openCitationToolbar, readSelectedText, renderedPlainText } from "../markdown/citations.tsx";
+import { cleanMarkdownSelection } from "../markdown/copy.ts";
+import { selectionOccurrence } from "./findOccurrence.ts";
 import { parseChatMarkdown } from "../markdown/parse.ts";
 
 import { v2ItemSupportAtom } from "../../state/timeline.ts";
@@ -55,11 +58,15 @@ export const AssistantTimelineRow = memo(function AssistantTimelineRow({ row }: 
  */
 function CitationSource({ messageId, text, children }: { messageId: string; text: string; children: ReactNode }) {
   const ctx = use(TimelineRowCtx);
+  const renderer = useGpuixRequired();
+  const rootRef = useRef<PublicInstance | null>(null);
   return (
     <div
+      ref={rootRef}
       onMouseDown={() => closeCitationToolbar()}
       onMouseUp={(event) => {
         const position = { x: (event.x ?? 0) + 4, y: (event.y ?? 0) + 12 };
+        const pointer = { x: event.x ?? 0, y: event.y ?? 0 };
         // The selection settles with the release; read it after this event.
         setTimeout(() => {
           const selected = readSelectedText();
@@ -68,7 +75,11 @@ function CitationSource({ messageId, text, children }: { messageId: string; text
             lineBreaks: shouldPreserveAssistantLineBreaks(text),
             math: getClientSettings().mathRenderingEnabled,
           });
-          const citation = citationFromSelection(ctx.threadRef, messageId, renderedPlainText(tree), selected);
+          // A quote that repeats in the reply resolves to the occurrence under the pointer.
+          const rootId = rootRef.current?.id;
+          const treeJson = rootId == null ? null : (renderer as { getAutomationTree?: () => string }).getAutomationTree?.();
+          const occurrence = treeJson && rootId != null ? (selectionOccurrence(treeJson, rootId, cleanMarkdownSelection(selected), pointer) ?? 0) : 0;
+          const citation = citationFromSelection(ctx.threadRef, messageId, renderedPlainText(tree), selected, occurrence);
           if (citation) openCitationToolbar(citation, position);
         }, 30);
       }}

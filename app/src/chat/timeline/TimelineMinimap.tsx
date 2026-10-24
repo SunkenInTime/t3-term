@@ -4,17 +4,20 @@
 // that appear when hovered, and a click jumps to that message.
 //
 // Differences forced by gpuix: no transforms, so strips change width instead of
-// scaling; the preview card is a deferred floating layer that takes no input
-// (web lets you select its text); the hit strip keeps its collapsed width.
+// scaling. Like web, while a preview shows the hit area widens to 22rem so the
+// pointer can reach the card, and the card's text can be selected; the card is
+// a deferred floating layer, which takes the hover from the rail, so the rail
+// keeps the preview while the pointer is on the card.
 import { useWindowSize } from "@gpuix/react";
 import { FloatingLayer } from "@gpuix/react/floating";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { Tooltip } from "../../ui/overlay.tsx";
 import { IconButton } from "../../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import {
   resolveTimelineMinimapIndexFromPointer,
+  resolveTimelineMinimapInteractiveWidth,
   resolveTimelineMinimapNavigationInteractive,
   resolveTimelineMinimapTopPercent,
   TIMELINE_MINIMAP_MIN_ITEMS,
@@ -56,6 +59,8 @@ export function TimelineMinimap({
   const [railTop, setRailTop] = useState(0);
   const [hoveredNav, setHoveredNav] = useState<"previous" | "next" | null>(null);
   const [railHovered, setRailHovered] = useState(false);
+  // web data-minimap-preview: on the card, moves keep the preview and clicks do not jump.
+  const previewHovered = useRef(false);
 
   if (items.length < TIMELINE_MINIMAP_MIN_ITEMS) return null;
 
@@ -66,6 +71,9 @@ export function TimelineMinimap({
   const previousItem = resolvedCurrentIndex === null ? null : (items[resolvedCurrentIndex - 1] ?? null);
   const nextItem = resolvedCurrentIndex === null ? null : (items[resolvedCurrentIndex + 1] ?? null);
   const navigationInteractive = resolveTimelineMinimapNavigationInteractive(hitStripWidth);
+  const expandedWidth = resolveTimelineMinimapInteractiveWidth(hitStripWidth, activeItem !== null);
+  // "22rem" at the 16px root size.
+  const railWidth = typeof expandedWidth === "number" ? expandedWidth : Number.parseFloat(expandedWidth) * 16;
 
   const indexAt = (pointerY: number) =>
     resolveTimelineMinimapIndexFromPointer({ itemCount: items.length, railTop, railHeight: height, pointerY });
@@ -131,11 +139,18 @@ export function TimelineMinimap({
           testId="timeline-minimap-rail"
           onLayout={(event) => setRailTop(event.y ?? 0)}
           onMouseMove={(event) => {
+            if (previewHovered.current) return;
             const next = indexAt(event.y ?? 0);
             setActiveIndex((current) => (current === next ? current : next));
           }}
-          onMouseLeave={() => setActiveIndex(null)}
+          onMouseLeave={() => {
+            // The card paints above the rail and takes the hover; its enter lands after this leave.
+            setTimeout(() => {
+              if (!previewHovered.current) setActiveIndex(null);
+            }, 0);
+          }}
           onClick={(event) => {
+            if (previewHovered.current) return;
             const index = indexAt(event.y ?? 0);
             const item = index === null ? null : (items[index] ?? null);
             if (item) onSelect(item);
@@ -144,7 +159,7 @@ export function TimelineMinimap({
             position: "absolute",
             top: 0,
             left: 0,
-            width: hitStripWidth,
+            width: activeItem ? railWidth : hitStripWidth,
             height,
             cursor: "pointer",
             pointerEvents: hitStripWidth > 0 ? "auto" : "none",
@@ -200,7 +215,16 @@ export function TimelineMinimap({
                 borderColor: alpha(theme.foreground, 0.1),
                 backgroundColor: theme.appearance === "dark" ? "#141414" : "#ffffff",
                 boxShadow: { offsetX: 0, offsetY: 20, blurRadius: 25, spreadRadius: -5, color: "#00000040" },
-                pointerEvents: "none",
+                pointerEvents: "auto",
+                cursor: "text",
+                userSelect: "text",
+              }}
+              onMouseEnter={() => {
+                previewHovered.current = true;
+              }}
+              onMouseLeave={() => {
+                previewHovered.current = false;
+                setActiveIndex(null);
               }}
             >
               <text

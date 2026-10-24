@@ -123,7 +123,8 @@ export interface ChipPayload {
   /** What a copy of the chip yields instead of its label (web data-markdown-copy). */
   readonly copyText?: string | undefined;
   readonly dashed?: boolean | undefined;
-  readonly onActivate?: ((modifiers: ReturnType<typeof normalizeModifiers>) => void) | undefined;
+  /** `position` is the click point, for chips that open a popover there. */
+  readonly onActivate?: ((modifiers: ReturnType<typeof normalizeModifiers>, position: { x: number; y: number }) => void) | undefined;
   readonly onContextMenu?: ((position: { x: number; y: number }) => void) | undefined;
   readonly fileMetadata?: { readonly environmentId: EnvironmentId | null; readonly path: string; readonly cwd: string | undefined } | undefined;
   readonly threadRef?: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId } | undefined;
@@ -210,7 +211,7 @@ export const ChipBox = memo(function ChipBox({ atom, env, join }: { atom: BoxAto
         setHovered(false);
         hoverProps.onMouseLeave?.();
       }}
-      onClick={payload.onActivate ? (event) => payload.onActivate?.(normalizeModifiers(event.modifiers)) : undefined}
+      onClick={payload.onActivate ? (event) => payload.onActivate?.(normalizeModifiers(event.modifiers), { x: event.x ?? 0, y: event.y ?? 0 }) : undefined}
       onAuxClick={
         payload.onContextMenu
           ? (event) => {
