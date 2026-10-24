@@ -16,6 +16,7 @@ import * as TooltipPrimitive from "@gpuix/react/tooltip";
 import { resolveEnvironmentMachineKind, type ScopedThreadRef } from "@t3tools/contracts";
 import { memo, useEffect, useState, type ReactNode } from "react";
 
+import { appAtomRegistry } from "../runtime/runtime.ts";
 import { environmentServerConfigsAtom, environmentThreadShells } from "../state/environment.ts";
 import {
   canOperateEnvironmentAtom,
@@ -23,9 +24,16 @@ import {
   sidebarClientSettingsAtom,
   sidebarContextMenuAtom,
   sidebarDraftDiscardAtom,
+  clearThreadSelection,
+  rangeSelectThreadsTo,
+  setThreadSelectionAnchor,
   sidebarRenameAtom,
+  sidebarThreadListAtom,
   threadKeysWithUnsentDraftAtom,
   threadLocalLastVisitedAtAtom,
+  threadSelectedAtom,
+  threadSelectionAtom,
+  toggleThreadSelection,
   type SidebarProviderEntry,
 } from "../state/sidebar.ts";
 import { rightPanelOpenAtom, rightPanelSurfaceAtom } from "../state/ui.ts";
@@ -34,6 +42,7 @@ import { Menu, Tooltip } from "../ui/overlay.tsx";
 import { Text } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme, type Palette } from "../ui/theme.ts";
 import {
+  type SidebarDropVerb,
   hasUnseenCompletion,
   resolveSidebarThreadStatus,
   resolveThreadLastVisitedAt,
@@ -41,7 +50,13 @@ import {
   shouldRecedeSidebarThread,
 } from "../web/components/Sidebar.logic.ts";
 import { resolveSnoozePresets, type SnoozePreset } from "../web/components/Sidebar.snooze.ts";
-import { claimClick, consumeClaimedClick } from "./clickGuard.ts";
+import {
+  claimRowPress,
+  consumeRowClick,
+  rowMouseDown,
+  rowMouseMove,
+  rowMouseUp,
+} from "./sidebarGesture.ts";
 import { requestCustomSnooze } from "../dialogs/CustomSnoozeDialog.tsx";
 import { ProjectFavicon } from "./ProjectFavicon.tsx";
 import { ProviderIcon } from "./ProviderIcon.tsx";
@@ -59,6 +74,74 @@ import {
 import { useNowMinute, useNowSecond } from "./clock.ts";
 
 export type SidebarSweepAction = "settle" | "unsettle" | "unsnooze";
+
+const DOUBLE_CLICK_MS = 500;
+let lastRowClick: { threadKey: string | null; at: number } = { threadKey: null, at: 0 };
+
+/**
+ * A control inside a row acts through the row's captured press (sidebarGesture.ts):
+ * the row runs it on release unless the press became a drag or sweep.
+ */
+function pressControl(
+  event: { button?: number },
+  run: () => void,
+  sweep: SidebarSweepAction | null = null,
+): void {
+  if ((event.button ?? 0) === 0) claimRowPress(run, sweep);
+}
+
+const dropVerbBadge: Record<SidebarDropVerb, { icon: IconName; label: string }> = {
+  pin: { icon: "pin", label: "Pin" },
+  unpin: { icon: "pin-off", label: "Unpin" },
+  settle: { icon: "circle-check", label: "Settle" },
+  unsettle: { icon: "undo-2", label: "Un-settle" },
+  wake: { icon: "alarm-clock-off", label: "Wake" },
+};
+
+/** The verb a drop or sweep would apply, as a primary-tinted badge where the row's status sits. */
+function DragDestination({ verb }: { verb: SidebarDropVerb }) {
+  const theme = useTheme();
+  const { icon, label } = dropVerbBadge[verb];
+  return (
+    <div
+      testId="sidebar-drag-destination"
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+        height: 20,
+        paddingLeft: 6,
+        paddingRight: 6,
+        flexShrink: 0,
+        borderRadius: RADIUS.sm,
+        borderWidth: 1,
+        borderColor: alpha(theme.primary, 0.4),
+        backgroundColor: alpha(theme.primary, 0.1),
+        pointerEvents: "none",
+      }}
+    >
+      <Icon name={icon} size={12} color={theme.primary} />
+      <Text size="2xs" weight={500} color={theme.primary} style={{ whiteSpace: "nowrap" }}>
+        {label}
+      </Text>
+    </div>
+  );
+}
+
+/** `bg-sidebar` under a translucent `sidebar-row-active` wash, flattened to one colour. */
+function overSidebar(theme: Palette, wash: string): string {
+  const parse = (hex: string) => {
+    const value = hex.replace("#", "");
+    const channel = (index: number) => parseInt(value.slice(index, index + 2), 16);
+    return { r: channel(0), g: channel(2), b: channel(4), a: value.length >= 8 ? channel(6) / 255 : 1 };
+  };
+  const base = parse(theme.sidebar.background);
+  const top = parse(wash);
+  const mix = (under: number, over: number) => Math.round(under * (1 - top.a) + over * top.a);
+  const hex = (value: number) => value.toString(16).padStart(2, "0");
+  return `#${hex(mix(base.r, top.r))}${hex(mix(base.g, top.g))}${hex(mix(base.b, top.b))}`;
+}
 
 /** sidebar text tokens that web reads through `text-secondary-label` & co. */
 export function sidebarTones(theme: Palette) {
@@ -235,13 +318,14 @@ function PullRequestBadge({
   return (
     <Tooltip content={badge.label} side="top">
       <div
-        onMouseDown={claimClick}
-        onClick={() => {
-          // pullRequestLinksOpenInApp (default on): the thread's PR opens in its right panel.
-          setRightPanelSurface("pull-request");
-          setRightPanelOpen(true);
-          if (!isRouteThread) navigateToThread(scopeThreadRef(thread.environmentId, thread.id));
-        }}
+        onMouseDown={(event) =>
+          pressControl(event, () => {
+            // pullRequestLinksOpenInApp (default on): the thread's PR opens in its right panel.
+            setRightPanelSurface("pull-request");
+            setRightPanelOpen(true);
+            if (!isRouteThread) navigateToThread(scopeThreadRef(thread.environmentId, thread.id));
+          })
+        }
         style={{
           display: "flex",
           flexDirection: "row",
@@ -453,8 +537,7 @@ function SnoozeMenuButton({
         const button = (
           <div
             testId="sidebar-snooze-button"
-            onMouseDown={claimClick}
-            onClick={toggle}
+            onMouseDown={(event) => pressControl(event, toggle)}
             onMouseEnter={() => setHovered(true)}
             onMouseLeave={() => setHovered(false)}
             style={{ display: "flex", alignItems: "center", height: 20, paddingLeft: 6, paddingRight: 6, borderRadius: RADIUS.sm, cursor: "pointer" }}
@@ -536,6 +619,14 @@ export interface SidebarThreadRowProps {
   readonly project: EnvironmentProject | null;
   readonly projectDisplayName: string | null;
   readonly providerEntryByInstanceId: ReadonlyMap<string, SidebarProviderEntry>;
+  /** The verb a drop would apply to this row while it is dragged. */
+  readonly dropVerb?: SidebarDropVerb | null;
+  /** The dragged pin is over the pinned section: keep its pin glyph. */
+  readonly dragOverPinned?: boolean;
+  /** This row is in an action sweep: highlighted, its status replaced by the verb. */
+  readonly sweepAction?: SidebarSweepAction | null;
+  /** The copy that follows the pointer during a drag: no events, lifted surface. */
+  readonly dragGhost?: boolean;
 }
 
 /** Reads the live shell, so streaming updates re-render only this row. */
@@ -560,7 +651,18 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
   const setRename = useAtomSet(sidebarRenameAtom);
   const setContextMenu = useAtomSet(sidebarContextMenuAtom);
   const isRenaming = rename !== null && rename.threadKey === threadKey && canOperate;
-  const [hovered, setHovered] = useState(false);
+  const isSelected = useAtomValue(threadSelectedAtom(threadKey));
+  const ghost = props.dragGhost === true;
+  const sweepAction = props.sweepAction ?? null;
+  const destinationVerb: SidebarDropVerb | null = ghost
+    ? (props.dropVerb ?? null)
+    : sweepAction === "unsnooze"
+      ? "wake"
+      : sweepAction;
+  const dragDestination = destinationVerb !== null ? <DragDestination verb={destinationVerb} /> : null;
+  const [hoveredRaw, setHovered] = useState(false);
+  // The dragged row is under the pointer in web, so its copy keeps hover styling.
+  const hovered = ghost || hoveredRaw;
   const [snoozeMenuOpenRaw, setSnoozeMenuOpen] = useState(false);
   const isRegeneratingTitle = thread.titleRegeneration != null;
 
@@ -577,7 +679,7 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
     isUnread,
     isWoke,
     isActive: props.isActive,
-    isSelected: false,
+    isSelected,
   });
   const topStatus: { label: string; icon: IconName; color: string } | null =
     status === "working"
@@ -612,26 +714,61 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
   const settledMuted = variantAction === "unsettle" && !hovered ? alpha(tones.secondaryLabel, 0.7) : null;
 
   const handleClick = (event: { clickCount?: number; modifiers?: { shift?: boolean; ctrl?: boolean; cmd?: boolean; alt?: boolean } }) => {
-    if (consumeClaimedClick()) return;
+    if (consumeRowClick(threadKey) !== "row") return;
     if (isRenaming) return;
-    if ((event.clickCount ?? 1) === 2) {
-      const modifiers = event.modifiers;
-      if (canOperate && !modifiers?.shift && !modifiers?.ctrl && !modifiers?.cmd && !modifiers?.alt) {
+    const modifiers = event.modifiers;
+    // Sidebar.tsx handleThreadClick: mod-click toggles, shift-click extends from the anchor.
+    if (process.platform === "darwin" ? modifiers?.cmd : modifiers?.ctrl) {
+      toggleThreadSelection(threadKey);
+      return;
+    }
+    if (modifiers?.shift) {
+      rangeSelectThreadsTo(threadKey, appAtomRegistry.get(sidebarThreadListAtom).orderedThreadKeys);
+      return;
+    }
+    // Synthetic clicks (automation, some terminals) always report clickCount 1; time them too.
+    const now = Date.now();
+    const clickCount =
+      (event.clickCount ?? 1) === 1 && lastRowClick.threadKey === threadKey && now - lastRowClick.at < DOUBLE_CLICK_MS
+        ? 2
+        : (event.clickCount ?? 1);
+    lastRowClick = clickCount === 1 ? { threadKey, at: now } : { threadKey: null, at: 0 };
+    if (clickCount === 2) {
+      if (canOperate && !modifiers?.alt) {
         setRename({ threadKey, title: thread.title });
       }
       return;
     }
-    if ((event.clickCount ?? 1) > 2) return;
+    if (clickCount > 2) return;
+    clearThreadSelection();
+    setThreadSelectionAnchor(threadKey);
     navigateToThread(threadRef);
   };
+  const gestureHandlers = ghost
+    ? {}
+    : {
+        onClick: handleClick,
+        onMouseDown: (event: { x?: number; y?: number; button?: number }) => rowMouseDown(threadKey, event),
+        onMouseMove: rowMouseMove,
+        onMouseUp: rowMouseUp,
+      };
   const handleAuxClick = (event: { x?: number; y?: number; isRightClick?: boolean }) => {
     if (event.isRightClick === false) return;
-    setContextMenu({ kind: "thread", threadKey, x: event.x ?? 0, y: event.y ?? 0 });
+    const selection = appAtomRegistry.get(threadSelectionAtom).selectedThreadKeys;
+    setContextMenu(
+      selection.size > 0 && selection.has(threadKey)
+        ? { kind: "selection", x: event.x ?? 0, y: event.y ?? 0 }
+        : { kind: "thread", threadKey, x: event.x ?? 0, y: event.y ?? 0 },
+    );
   };
 
-  const rowBackground = props.isActive
+  const rowBackground = ghost
+    ? overSidebar(theme, theme.sidebar.rowActive)
+    : props.isActive
     ? theme.sidebar.rowActive
-    : hasUnsentDraft
+    : isSelected || sweepAction !== null
+      ? theme.sidebar.rowSelected
+      : hasUnsentDraft
       ? hovered
         ? alpha(theme.warning, 0.08)
         : alpha(theme.warning, 0.04)
@@ -708,9 +845,10 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
     </Text>
   );
 
+  const showPin = thread.pinnedAt != null && (!ghost || (props.dragOverPinned === true && props.dropVerb == null));
   const pinIndicator =
-    thread.pinnedAt != null ? (
-      props.pinningSupported && canOperate ? (
+    showPin ? (
+      props.pinningSupported && canOperate && !ghost ? (
         <Tooltip content="Unpin thread" side="top">
           <PinButton threadRef={threadRef} />
         </Tooltip>
@@ -746,12 +884,11 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
           : variantAction === "unsettle"
             ? { icon: "undo-2", size: 14, tooltip: "Un-settle thread", run: () => attemptUnsettle(threadRef) }
             : { icon: "check", size: 12, tooltip: "Settle thread", run: () => attemptSettle(threadRef) };
-    return (
-      <HoverCard disabled={isRenaming} card={hoverCard}>
+    const slimRow = (
         <div
-          testId={`sidebar-row-slim-${thread.id}`}
-          onClick={handleClick}
-          onAuxClick={handleAuxClick}
+          testId={ghost ? "sidebar-drag-ghost" : `sidebar-row-slim-${thread.id}`}
+          {...gestureHandlers}
+          {...(ghost ? {} : { onAuxClick: handleAuxClick })}
           onMouseEnter={() => setHovered(true)}
           onMouseLeave={() => setHovered(false)}
           style={{
@@ -769,6 +906,7 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
             backgroundColor: rowBackground,
             cursor: "pointer",
             overflow: "hidden",
+            ...(ghost ? { boxShadow: DRAG_GHOST_SHADOW } : {}),
           }}
         >
           {props.project ? (
@@ -783,6 +921,7 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
           {title}
           {pinIndicator}
           {prBadge}
+          {ghost ? dragDestination : sweepAction !== null ? null : (
           <div
             style={{
               position: "relative",
@@ -814,24 +953,31 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
                   size={actionIcon.size}
                   testId="sidebar-row-action"
                   onActivate={actionIcon.run}
+                  sweep={variantAction}
                 />
               </Tooltip>
             ) : null}
           </div>
+          )}
+          {sweepAction !== null ? dragDestination : null}
           {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
         </div>
+    );
+    return ghost ? (
+      slimRow
+    ) : (
+      <HoverCard disabled={isRenaming} card={hoverCard}>
+        {slimRow}
       </HoverCard>
     );
   }
 
   const isRemoteMachine = props.isRemote;
-  return (
-    <div style={{ width: "100%", paddingTop: 2, paddingBottom: 2, flexShrink: 0 }}>
-      <HoverCard disabled={snoozeMenuOpen || isRenaming} card={hoverCard}>
+  const cardRow = (
         <div
-          testId={`sidebar-row-card-${thread.id}`}
-          onClick={handleClick}
-          onAuxClick={handleAuxClick}
+          testId={ghost ? "sidebar-drag-ghost" : `sidebar-row-card-${thread.id}`}
+          {...gestureHandlers}
+          {...(ghost ? {} : { onAuxClick: handleAuxClick })}
           onMouseEnter={() => setHovered(true)}
           onMouseLeave={() => setHovered(false)}
           style={{
@@ -848,7 +994,8 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
             backgroundColor: rowBackground,
             cursor: "pointer",
             overflow: "hidden",
-            ...(workingRecede ? { opacity: 0.7 } : {}),
+            ...(workingRecede && !ghost ? { opacity: 0.7 } : {}),
+            ...(ghost ? { boxShadow: DRAG_GHOST_SHADOW } : {}),
           }}
         >
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, width: "100%", height: 20, minWidth: 0 }}>
@@ -868,6 +1015,7 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
             ) : (
               <div style={{ flexGrow: 1 }} />
             )}
+            {ghost ? dragDestination : sweepAction !== null ? null : (
             <div style={{ display: "flex", flexDirection: "row", alignItems: "stretch", justifyContent: "flex-end", height: 20, minWidth: 32, flexShrink: 0 }}>
               {revealed && !(topStatus?.icon === "alarm-clock") && (props.settlementSupported || showSnoozeButton || hasUnsentDraft) ? (
                 <div style={{ display: "flex", flexDirection: "row", alignItems: "stretch" }}>
@@ -911,6 +1059,8 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
                 </div>
               )}
             </div>
+            )}
+            {sweepAction !== null ? dragDestination : null}
           </div>
           <div style={{ display: "flex", flexDirection: "row", width: "100%", marginTop: 4, minWidth: 0 }}>{title}</div>
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, width: "100%", marginTop: 2, minWidth: 0, height: 16 }}>
@@ -938,10 +1088,25 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
           </div>
           {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
         </div>
-      </HoverCard>
+  );
+  return (
+    <div style={{ width: "100%", paddingTop: 2, paddingBottom: 2, flexShrink: 0 }}>
+      {ghost ? (
+        cardRow
+      ) : (
+        <HoverCard disabled={snoozeMenuOpen || isRenaming} card={hoverCard}>
+          {cardRow}
+        </HoverCard>
+      )}
     </div>
   );
 }
+
+/** shadow-lg (0 10px 15px -3px, 0 4px 6px -4px, black/10), blur halved for GPUI. */
+const DRAG_GHOST_SHADOW = [
+  { offsetX: 0, offsetY: 10, blurRadius: 7.5, spreadRadius: -3, color: "#0000001a" },
+  { offsetX: 0, offsetY: 4, blurRadius: 3, spreadRadius: -4, color: "#0000001a" },
+];
 
 function RemoteMachineIcon({ environmentId }: { environmentId: string }) {
   const theme = useTheme();
@@ -954,8 +1119,7 @@ function PinButton({ threadRef }: { threadRef: ScopedThreadRef }) {
   const [hovered, setHovered] = useState(false);
   return (
     <div
-      onMouseDown={claimClick}
-      onClick={() => attemptUnpin(threadRef)}
+      onMouseDown={(event) => pressControl(event, () => attemptUnpin(threadRef))}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{ display: "flex", flexShrink: 0, cursor: "pointer" }}
@@ -970,10 +1134,11 @@ function WokeButton({ threadRef, wokeAt, size }: { threadRef: ScopedThreadRef; w
   return (
     <Tooltip content="Dismiss Woke notification" side="top">
       <div
-        onMouseDown={claimClick}
-        onClick={() => {
-          if (wokeAt !== null) acknowledgeThreadWoke(threadRef, wokeAt);
-        }}
+        onMouseDown={(event) =>
+          pressControl(event, () => {
+            if (wokeAt !== null) acknowledgeThreadWoke(threadRef, wokeAt);
+          })
+        }
         style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, cursor: "pointer" }}
       >
         <Icon name="alarm-clock" size={size} color={theme.warning} />
@@ -989,11 +1154,14 @@ function RowIconAction({
   icon,
   size,
   onActivate,
+  sweep = null,
   testId,
 }: {
   icon: IconName;
   size: number;
   onActivate: () => void;
+  /** Dragging from this control sweeps the action across rows. */
+  sweep?: SidebarSweepAction | null;
   testId?: string;
 }) {
   const theme = useTheme();
@@ -1001,8 +1169,7 @@ function RowIconAction({
   return (
     <div
       testId={testId}
-      onMouseDown={claimClick}
-      onClick={onActivate}
+      onMouseDown={(event) => pressControl(event, onActivate, sweep)}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{ display: "flex", alignItems: "center", height: "100%", paddingLeft: 6, paddingRight: 6, borderRadius: RADIUS.sm, cursor: "pointer" }}
@@ -1013,14 +1180,14 @@ function RowIconAction({
 }
 
 function SettleButton({ onActivate, testId }: { onActivate: () => void; testId?: string }) {
+  const sweep: SidebarSweepAction = "settle";
   const theme = useTheme();
   const [hovered, setHovered] = useState(false);
   const color = hovered ? theme.foreground : theme.sidebar.mutedForeground;
   return (
     <div
       testId={testId}
-      onMouseDown={claimClick}
-      onClick={onActivate}
+      onMouseDown={(event) => pressControl(event, onActivate, sweep)}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{

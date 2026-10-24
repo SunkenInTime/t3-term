@@ -9,6 +9,7 @@
 // registerShortcutHandler (the composer for composer.*, the terminal for
 // terminal.*, the sidebar for thread.undo), and built-in fallbacks cover the
 // commands that only change app state.
+import { cancelSidebarGesture, isSidebarGestureActive } from "../sidebar/sidebarGesture.ts";
 import { noteUserInput } from "../notifications/platform.ts";
 import type { KeyEvent } from "@gpuix/react";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -471,6 +472,12 @@ export function handleGlobalKeyDown(event: KeyEvent, renderer?: unknown): void {
   noteUserInput();
   updateJumpHints(event, true);
   if (event.defaultPrevented) return;
+  // SidebarPointerSensor: Escape cancels a sidebar row drag or sweep.
+  if (event.key === "escape" && isSidebarGestureActive()) {
+    event.preventDefault();
+    cancelSidebarGesture();
+    return;
+  }
   if (handleEscapeToGoBack(event)) return;
   if (!isCommandPaletteOpen() && typeToFocusHandler?.(event, renderer)) {
     event.preventDefault();

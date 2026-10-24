@@ -36,6 +36,7 @@ import {
   sidebarThreadListAtom,
 } from "../state/sidebar.ts";
 import { routeAtom } from "../state/ui.ts";
+import { legacySidebarEnabledAtom, legacyVisibleThreadKeysAtom } from "../state/legacySidebar.ts";
 import { toast } from "../ui/toast.tsx";
 import {
   getFallbackThreadIdAfterDelete,
@@ -75,6 +76,7 @@ function capability(
     | "threadSnooze"
     | "threadPinning"
     | "threadPinReorder"
+    | "threadActiveReorder"
     | "threadAutoSettleOptOut"
     | "threadVisitedTracking"
     | "threadTitleRegeneration",
@@ -276,6 +278,21 @@ export async function pinThread(
     threadId: target.threadId,
     ...(orderKey !== undefined ? { orderKey } : {}),
   });
+}
+
+export async function reorderPinnedThread(target: ScopedThreadRef, orderKey: string): Promise<Result> {
+  if (!capability(target.environmentId, "threadPinReorder")) {
+    return failure("This environment's server does not support reordering pins yet. Update the server to reorder.");
+  }
+  ThreadUndo.invalidate("pin", scopedThreadKey(target));
+  return run(threadEnvironment.reorderPin, target.environmentId, { threadId: target.threadId, orderKey });
+}
+
+export async function reorderActiveThread(target: ScopedThreadRef, orderKey: string): Promise<Result> {
+  if (!capability(target.environmentId, "threadActiveReorder")) {
+    return failure("This environment's server does not support reordering threads yet. Update the server to reorder.");
+  }
+  return run(threadEnvironment.reorderActive, target.environmentId, { threadId: target.threadId, orderKey });
 }
 
 export async function unpinThread(target: ScopedThreadRef): Promise<Result> {
@@ -523,11 +540,21 @@ export async function copyToClipboard(
 const settlingThreadKeys = new Set<string>();
 const snoozingThreadKeys = new Set<string>();
 
+/** A settle in flight (button, drop, or sweep): a second one for the same row is dropped. */
+export function isThreadSettling(threadKey: string): boolean {
+  return settlingThreadKeys.has(threadKey);
+}
+
+export function markThreadSettling(threadKey: string, settling: boolean): void {
+  if (settling) settlingThreadKeys.add(threadKey);
+  else settlingThreadKeys.delete(threadKey);
+}
+
 /**
  * Callers snapshot the plan BEFORE the command mutates the partition;
  * background parks never navigate (null plan).
  */
-function planForwardNavigation(
+export function planForwardNavigation(
   threadKey: string,
   coParkingKeys?: ReadonlySet<string>,
 ): (() => void) | null {
@@ -648,11 +675,17 @@ export async function attemptDelete(threadRef: ScopedThreadRef): Promise<void> {
 
 // ── Keyboard helpers (for src/keybindings) ──────────────────────────────
 
+/** The rendered sidebar rows in order: the legacy tree's when that setting is on. */
+function traversalThreadKeys(): ReadonlyArray<string> {
+  return appAtomRegistry.get(legacySidebarEnabledAtom)
+    ? appAtomRegistry.get(legacyVisibleThreadKeysAtom)
+    : appAtomRegistry.get(sidebarThreadListAtom).orderedThreadKeys;
+}
+
 /** thread.previous / thread.next (mod+shift+[ / ]): walk the rendered sidebar order. */
 export function navigateAdjacentThread(direction: ThreadTraversalDirection): boolean {
-  const list = appAtomRegistry.get(sidebarThreadListAtom);
   const targetKey = resolveAdjacentThreadId({
-    threadIds: list.orderedThreadKeys,
+    threadIds: traversalThreadKeys(),
     currentThreadId: appAtomRegistry.get(routeRowThreadKeyAtom),
     direction,
   });
@@ -664,7 +697,7 @@ export function navigateAdjacentThread(direction: ThreadTraversalDirection): boo
 
 /** thread.jump.N (mod+1..9): `index` is zero-based. */
 export function navigateToThreadAtIndex(index: number): boolean {
-  const key = appAtomRegistry.get(sidebarThreadListAtom).orderedThreadKeys[index];
+  const key = traversalThreadKeys()[index];
   const ref = key ? parseScopedThreadKey(key) : null;
   if (!ref) return false;
   navigateToThread(ref);
