@@ -79,7 +79,8 @@ import { composerTargetKey, focusComposer, restoreComposerContent } from "../../
 import { ThreadErrorBanner } from "./ThreadErrorBanner.tsx";
 import { findHighlightColors, ThreadFindBar, type ThreadFindState } from "./ThreadFindBar.tsx";
 import type { ThreadFindPositionReader } from "../../web/components/chat/threadFind.ts";
-import { locateFindOccurrence, locateQuote } from "./findOccurrence.ts";
+import { locateFindMatch, locateQuote, readRowText } from "./findOccurrence.ts";
+import { revealFindFolds } from "./findReveal.ts";
 import { ThreadStatusFooter } from "./ThreadStatusLine.tsx";
 import { PendingHandoffRow } from "./PendingHandoffRow.tsx";
 import { TimelineRowContent } from "./TimelineRows.tsx";
@@ -810,6 +811,15 @@ type HighlightSpec = {
   readonly activeColor?: string;
   readonly activeIndex?: number;
 };
+/** The active row's find washes, once its text has been located (findOccurrence.ts). */
+interface FindPaint {
+  readonly rowKey: string;
+  /** The navigation they belong to. */
+  readonly navKey: string;
+  readonly queryOrdinal: number | null;
+  readonly activeRange: [number, number] | null;
+  readonly extraRanges: ReadonlyArray<[number, number]>;
+}
 /** web FIND_MATCH_VIEW_MARGIN: a revealed match keeps this much room from the viewport edges. */
 const FIND_MATCH_VIEW_MARGIN = 96;
 
@@ -1032,12 +1042,16 @@ const TimelineList = memo(function TimelineList({
             (row.kind === "work-toggle" && row.id === `work-toggle:${find.match!.entryId}`),
         );
   // useThreadFindNavigation reveal: the row comes in 96px below the top, then
-  // the active occurrence's line is located inside it (findOccurrence.ts) and
-  // scrolled into view when it falls outside the margins, so a match deep in
-  // a long message is shown rather than the message's first lines.
+  // the active occurrence is located in the row's rendered text
+  // (findOccurrence.ts) and scrolled into view when it falls outside the
+  // margins, so a match deep in a long message is shown rather than the
+  // message's first lines. Folded or clipped text that holds it opens first
+  // (findReveal.ts), and a code block pans sideways to it.
   const revealGeneration = useRef(0);
   const listBounds = useRef({ y: 0, height: 0 });
   const activeFindFrame = useRef<PublicInstance | null>(null);
+  const [findPaint, setFindPaint] = useState<FindPaint | null>(null);
+  const [findRevealTick, setFindRevealTick] = useState(0);
   useEffect(() => {
     const id = listRef.current?.id;
     const match = find?.match;
@@ -1045,15 +1059,37 @@ const TimelineList = memo(function TimelineList({
     const generation = ++revealGeneration.current;
     const index = leadingRows + findRowIndex;
     const query = find.query;
+    const navKey = `${find.navigationId}:${query}:${match.entryId}:${match.occurrence}`;
+    const rowKey = rows[findRowIndex]?.id ?? null;
+    if (revealFindFolds(match.entryId, "hidden")) {
+      // The fold's body mounts on the next render; this effect runs again for it.
+      setFindRevealTick((tick) => tick + 1);
+      return;
+    }
     renderer.scrollToItem?.(id, index, -FIND_MATCH_VIEW_MARGIN);
-    const timer = setTimeout(() => {
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const locate = (attempt: number) => {
       if (generation !== revealGeneration.current) return;
       const frameId = activeFindFrame.current?.id;
       const bounds = listBounds.current;
       const tree = (renderer as { getAutomationTree?: () => string }).getAutomationTree?.();
       if (frameId == null || !tree || bounds.height <= 0) return;
-      const line = locateFindOccurrence(tree, frameId, query, match.occurrence);
+      const rowText = readRowText(tree, frameId);
+      const line = rowText ? locateFindMatch(rowText, query, match.occurrence) : null;
       if (!line) return;
+      // A match below a collapsed message's clip opens it, then is located again.
+      if (attempt === 0 && revealFindFolds(match.entryId, "clipped", line.rowTop + line.top + line.height)) {
+        timers.push(setTimeout(() => locate(1), 64));
+        return;
+      }
+      if (rowKey !== null) {
+        setFindPaint({ rowKey, navKey, queryOrdinal: line.queryOrdinal, activeRange: line.activeRange, extraRanges: line.extraRanges });
+      }
+      if (line.pan) {
+        // gpui scroll offsets are 0 at the start and negative as content scrolls.
+        const [scrollX = 0, scrollY = 0] = renderer.getScrollOffset?.(line.pan.scrollerId) ?? [];
+        renderer.scrollTo?.(line.pan.scrollerId, Math.min(0, scrollX - line.pan.deltaX), scrollY);
+      }
       const usable = bounds.height - composerInset;
       const margin = Math.min(FIND_MATCH_VIEW_MARGIN, Math.max(0, (usable - line.height) / 2));
       // Like web, move only as far as needed: a match below lands at the bottom margin.
@@ -1062,10 +1098,13 @@ const TimelineList = memo(function TimelineList({
       const delta = top < margin ? top - margin : top + line.height > usable - margin ? top + line.height - (usable - margin) : 0;
       if (Math.abs(delta) < 1) return;
       renderer.scrollToItem?.(id, index, -rowTop + delta);
-    }, 64);
-    return () => clearTimeout(timer);
+    };
+    timers.push(setTimeout(() => locate(0), 64));
+    return () => {
+      for (const timer of timers) clearTimeout(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [findRowIndex, find?.navigationId, find?.match?.entryId, find?.match?.occurrence]);
+  }, [findRowIndex, find?.navigationId, find?.match?.entryId, find?.match?.occurrence, findRevealTick]);
   // AssistantCitationSource: scroll the cited reply in, locate the quote in it,
   // bring its first line into view and pulse it. web animates the wash's
   // opacity for 3 s (two pulses, a hold, a fade); gpuix cannot animate a
@@ -1086,14 +1125,17 @@ const TimelineList = memo(function TimelineList({
       const bounds = listBounds.current;
       const located = frameId != null && tree ? locateQuote(tree, frameId, citation.citation) : null;
       if (!located) {
+        // web: the source reply stays in view and the saved quote is kept.
+        toast({ type: "warning", title: "The quoted text has changed", description: "Showing the source response. The saved quote is unchanged." });
         onCitationDone(citation.key);
         return;
       }
+      // web scrolls the passage to min(120px, a third of the viewport) below the top.
       const usable = bounds.height - composerInset;
       const rowTop = located.rowTop - bounds.y;
       const top = rowTop + located.top;
-      const delta = top < FIND_MATCH_VIEW_MARGIN ? top - FIND_MATCH_VIEW_MARGIN : top + located.height > usable - FIND_MATCH_VIEW_MARGIN ? top - FIND_MATCH_VIEW_MARGIN : 0;
-      if (Math.abs(delta) >= 1) renderer.scrollToItem?.(id, index, -rowTop + delta);
+      const target = Math.min(120, usable / 3);
+      if (Math.abs(top - target) >= 1) renderer.scrollToItem?.(id, index, -rowTop + (top - target));
       const wash = { rowId: citation.rowId, range: located.range };
       setCitationWash(wash);
       at(64 + 650, () => setCitationWash(null));
@@ -1116,7 +1158,15 @@ const TimelineList = memo(function TimelineList({
     const isFindRow = rowIndex >= 0 && rowIndex === findRowIndex;
     const isCitationRow = citation !== null && key === citation.rowId;
     const specs: HighlightSpec[] = [];
-    if (findQuery) specs.push({ query: findQuery, ...highlightColors, ...(isFindRow && find?.match ? { activeIndex: find.match.occurrence } : {}) });
+    if (findQuery) {
+      const navKey = find?.match ? `${find.navigationId}:${find.query}:${find.match.entryId}:${find.match.occurrence}` : null;
+      const paint = isFindRow && findPaint?.rowKey === key && findPaint.navKey === navKey ? findPaint : null;
+      // Until the row's text is located, gpuix's own numbering stands in.
+      const activeIndex = isFindRow && find?.match ? (paint ? paint.queryOrdinal : find.match.occurrence) : null;
+      specs.push({ query: findQuery, ...highlightColors, ...(activeIndex !== null ? { activeIndex } : {}) });
+      if (paint && paint.extraRanges.length > 0) specs.push({ ranges: [...paint.extraRanges], color: highlightColors.color });
+      if (paint?.activeRange) specs.push({ ranges: [paint.activeRange], color: highlightColors.activeColor });
+    }
     // ::highlight(t3-assistant-citation): the primary colour at the pulse's 45% peak.
     if (citationWash && citationWash.rowId === key) specs.push({ ranges: [citationWash.range], color: alpha(theme.primary, 0.45) });
     return (

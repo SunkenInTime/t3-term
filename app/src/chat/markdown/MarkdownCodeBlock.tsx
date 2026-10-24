@@ -3,7 +3,8 @@
 // copy buttons; Shiki highlighting with the pierre themes (same worker the
 // Files and Diff surfaces use). Lines wrap like `pre-wrap` when the wordWrap
 // client setting is on (web's default), otherwise the block scrolls sideways.
-import { memo, useEffect, useState, type ReactNode } from "react";
+import type { PublicInstance } from "@gpuix/react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { FileEntryIcon } from "../../panels/files/FileEntryIcon.tsx";
 import { expandTabs, segmentsFor, wrapLine } from "../../panels/code/codeRows.tsx";
@@ -15,6 +16,8 @@ import { useSmallViewport } from "../../ui/viewport.tsx";
 import { FONTS, RADIUS, useTheme } from "../../ui/theme.ts";
 import { hasSpecificPierreIconForFileName, syntheticFileNameForLanguageId } from "../../web/pierre-icons.ts";
 import { copyTextToClipboard } from "../timeline/system.ts";
+import { registerHorizontalScroller } from "../timeline/findOccurrence.ts";
+import { JOIN } from "./copy.ts";
 import { textWidth } from "./measure.ts";
 import type { MarkdownStyles } from "./styles.ts";
 import { MARGIN_AWARE } from "./MarkdownView.tsx";
@@ -225,6 +228,13 @@ export const HighlightedCode = memo(function HighlightedCode({
   const palette = styles.palette;
   const block = styles.codeBlock;
   const source = code.endsWith("\n") ? code.slice(0, -1) : code;
+  // Find pans this block sideways to a match (findOccurrence.ts).
+  const scrollerRef = useRef<PublicInstance | null>(null);
+  useEffect(() => {
+    const id = scrollerRef.current?.id;
+    if (wrapped || id == null) return;
+    return registerHorizontalScroller(id);
+  }, [wrapped]);
   const tokens = useSyntaxTokens(source, syntheticFileNameForLanguageId(language), palette.appearance);
   // --font-size-code (Settings → Typography, default 13) at leading-snug.
   const textSize = useClientSettings((settings) => settings.fontSizeCode);
@@ -237,8 +247,13 @@ export const HighlightedCode = memo(function HighlightedCode({
   source.split("\n").forEach((rawLine, lineIndex) => {
     const line = expandTabs(rawLine);
     const lineTokens = tokens?.[lineIndex] ?? null;
-    for (const [start, end] of wrapLine(line, columns)) {
+    const pieces = wrapLine(line, columns);
+    pieces.forEach(([start, end], rowIndex) => {
       const segments = segmentsFor(line, lineTokens, start, end, [], fallback);
+      // Runs that continue the source line end with JOIN, as prose does: copy
+      // drops it with gpuix's run separator (copy.ts), and find reads the
+      // line as one (timeline/findOccurrence.ts).
+      const continuesRow = rowIndex < pieces.length - 1;
       rows.push(
         <div key={`${lineIndex}:${start}`} style={{ display: "flex", flexDirection: "row", height: lineHeight, flexShrink: 0 }}>
           {segments.map((segment, index) => (
@@ -253,12 +268,12 @@ export const HighlightedCode = memo(function HighlightedCode({
                 flexShrink: 0,
               }}
             >
-              {segment.text}
+              {index < segments.length - 1 || continuesRow ? `${segment.text}${JOIN}` : segment.text}
             </text>
           ))}
         </div>,
       );
-    }
+    });
   });
   const body = (
     <div style={{ display: "flex", flexDirection: "column", flexShrink: 0, paddingLeft: block.padX, paddingRight: block.padX, paddingTop: block.padY, paddingBottom: block.padY }}>
@@ -267,7 +282,7 @@ export const HighlightedCode = memo(function HighlightedCode({
   );
   if (wrapped) return body;
   return (
-    <div style={{ display: "flex", flexDirection: "row", width: "100%", overflowX: "scroll", scrollbarColor: palette.border }}>
+    <div ref={scrollerRef} style={{ display: "flex", flexDirection: "row", width: "100%", overflowX: "scroll", scrollbarColor: palette.border }}>
       {body}
     </div>
   );
