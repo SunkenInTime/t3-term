@@ -137,7 +137,10 @@ function MediaUploadOverlay({ uploadId, onRetry, index }: { uploadId: string; on
   return null;
 }
 
-/** web `variant="media-close"`: a small dark circle with a white X over the thumbnail. */
+/**
+ * web Button `variant="media-close" size="icon-xs"`: 24px, radius 8, black/65 (black/80 on
+ * hover) with a 1px white/20 ring, a 14px white X.
+ */
 function MediaCloseButton({ label, onClick, testId }: { label: string; onClick: () => void; testId?: string }) {
   return (
     <Tooltip content={label} side="top">
@@ -148,15 +151,17 @@ function MediaCloseButton({ label, onClick, testId }: { label: string; onClick: 
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          width: 20,
-          height: 20,
-          borderRadius: 10,
-          backgroundColor: "#000000b3",
+          width: 24,
+          height: 24,
+          borderRadius: RADIUS.md,
+          backgroundColor: "#000000a6",
+          borderWidth: 1,
+          borderColor: "#ffffff33",
           cursor: "pointer",
-          hover: { backgroundColor: "#000000e6" },
+          hover: { backgroundColor: "#000000cc" },
         }}
       >
-        <Icon name="x" size={12} color="#ffffff" />
+        <Icon name="x" size={14} color="#ffffff" />
       </div>
     </Tooltip>
   );

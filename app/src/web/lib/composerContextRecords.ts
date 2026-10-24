@@ -1,5 +1,6 @@
-// The review-comment pieces of apps/web/src/lib/composerContextRecords.ts: the label,
-// context id, inline reference and wire record a review comment becomes in a message.
+// Pieces of apps/web/src/lib/composerContextRecords.ts: the label, context id, inline
+// reference and wire record a review comment, terminal excerpt, thread or attachment
+// becomes in a message.
 import {
   COMPOSER_CONTEXT_REVIEW_DIFF_MAX_CHARS,
   COMPOSER_CONTEXT_REVIEW_TEXT_MAX_CHARS,
@@ -157,16 +158,65 @@ export function threadContextRecord(ref: ScopedThreadRef, title: string): Thread
   } as ThreadContextRecord;
 }
 
-/** web buildMessageContext for the records this composer sends: terminal excerpts, review comments, threads. */
+/** What the composer's staged attachments carry into a context reference or record. */
+export interface ComposerAttachmentIdentity {
+  readonly id: string;
+  readonly type: "image" | "file";
+  readonly name: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+}
+
+export function imageContextReference(image: Pick<ComposerAttachmentIdentity, "id" | "name">): ComposerContextReference {
+  return {
+    kind: "image",
+    contextId: toKindScopedComposerContextId("image", image.id),
+    label: image.name,
+  };
+}
+
+export function fileContextReference(file: Pick<ComposerAttachmentIdentity, "id" | "name">): ComposerContextReference {
+  return {
+    kind: "file",
+    contextId: toKindScopedComposerContextId("file", file.id),
+    label: file.name,
+  };
+}
+
+export interface BoundComposerAttachment {
+  readonly attachment: ComposerAttachmentIdentity;
+  readonly attachmentId: string;
+}
+
+export function attachmentContextRecord(bound: BoundComposerAttachment) {
+  const { attachment, attachmentId } = bound;
+  const base = {
+    version: 1 as const,
+    contextId: toKindScopedComposerContextId(attachment.type, attachment.id),
+    label: sanitizeComposerContextLabel(attachment.name, attachment.type),
+    attachmentId,
+    name: attachment.name,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+  };
+  return attachment.type === "image" ? { ...base, kind: "image" as const } : { ...base, kind: "file" as const };
+}
+
+/**
+ * web buildMessageContext for the records this composer sends: terminal excerpts, review
+ * comments, threads, and one record per attachment (bound to the id the receiver knows).
+ */
 export function buildComposerMessageContext(input: {
   readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
   readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
   readonly threadContexts?: ReadonlyArray<ThreadContextRecord>;
+  readonly attachments?: ReadonlyArray<BoundComposerAttachment>;
 }): OrchestrationMessageContext | undefined {
   const records = [
     ...input.terminalContexts.map(terminalContextRecord),
     ...input.reviewComments.map(reviewCommentContextRecord),
     ...(input.threadContexts ?? []),
+    ...(input.attachments ?? []).map(attachmentContextRecord),
   ];
   return records.length === 0 ? undefined : ({ version: 1, records } as OrchestrationMessageContext);
 }

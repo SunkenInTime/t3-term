@@ -7,11 +7,18 @@
 // Wrapping follows the web editor's CSS: `white-space: pre-wrap` (breaks after spaces,
 // spaces at a line end hang), `overflow-wrap: break-word` in paragraphs and `anywhere` in
 // code, and chips as atomic inline boxes a line may break around.
+//
+// List items sit in their list's gutter and lists keep their block margins, as web's
+// composer CSS lays them out (apps/web/src/index.css: `.composer-tiptap ul/ol`, the
+// `--list-gutter` rules, `ul[data-type="taskList"]`, `li[data-checked]`).
 import { assistantCitationLabel } from "@t3tools/shared/assistantCitations";
 
 import { advanceEm, type FontFace, graphemeList } from "../../markdown/measure.ts";
 import { chipMetrics } from "../../markdown/MarkdownChips.tsx";
+import { middleTruncateAttachmentName } from "../../../web/components/composerInlineChip.ts";
+import { ATTACHMENT_CHIP_TRAILING_FONT_SIZE, attachmentChipTrailing } from "./attachmentChips.ts";
 import { ATOM_CHAR, type Atom, type Block, type Doc, type Pos, atomIndexAt } from "./doc.ts";
+import { type ItemPlace, type ListNode, listPlaces } from "./lists.ts";
 
 export interface EditorMetrics {
   readonly fontSize: number;
@@ -24,6 +31,8 @@ export interface EditorMetrics {
   readonly codePadTop: number;
   readonly codePadBottom: number;
   readonly codeMarginY: number;
+  /** A bullet or ordered list's block margin (web `margin: 0.65rem 0`); task lists have none. */
+  readonly listMarginY: number;
 }
 
 export const SANS: FontFace = { family: "sans", weight: 400 };
@@ -59,8 +68,16 @@ export interface VisualLine {
   readonly width: number;
 }
 
+/** web's list markers: the ::marker of a bullet or ordered item, a task item's checkbox. */
+export type ListMarker =
+  | { readonly kind: "disc" | "circle" | "square"; readonly contentX: number }
+  | { readonly kind: "text"; readonly text: string; readonly x: number }
+  | { readonly kind: "checkbox"; readonly x: number; readonly checked: boolean };
+
 export interface BlockLayout {
   readonly block: Block;
+  /** A list item's marker, painted beside its first line. */
+  readonly marker?: ListMarker;
   /** Top of the block in the document. */
   readonly y: number;
   readonly height: number;
@@ -86,7 +103,15 @@ export function atomWidth(atom: Atom, fontSize: number, maxWidth: number): numbe
   // web ContextChipLabel max-w-[16em] on citations.
   if (atom.kind === "citation") labelWidth = Math.min(labelWidth, metrics.fontSize * 16);
   // The citation's comment button: the chip's gap, then ml-[0.17em] size-[1.17em].
-  const action = atom.kind === "citation" ? metrics.gap + metrics.fontSize * (0.17 + 1.17) : 0;
+  let action = atom.kind === "citation" ? metrics.gap + metrics.fontSize * (0.17 + 1.17) : 0;
+  if (atom.kind === "context" && (atom.contextKind === "file" || atom.contextKind === "image")) {
+    // web FileChip / ImageChipButton: the name stops at max-w-72, then the size and the
+    // upload's state follow in text-3xs, a gap apart.
+    labelWidth = Math.min(labelWidth, 288);
+    for (const text of attachmentChipTrailing(atom.contextId)) {
+      action += metrics.gap + textAdvance(SANS_MEDIUM, ATTACHMENT_CHIP_TRAILING_FONT_SIZE, text);
+    }
+  }
   const natural = 2 + 2 * metrics.padX + metrics.icon + metrics.gap + labelWidth + action;
   return Math.ceil(Math.min(natural, Math.max(40, maxWidth)));
 }
@@ -103,7 +128,7 @@ export function atomLabel(atom: Atom): string {
     case "citation":
       return assistantCitationLabel(atom.citation);
     case "context":
-      return atom.label;
+      return atom.contextKind === "file" || atom.contextKind === "image" ? middleTruncateAttachmentName(atom.label) : atom.label;
   }
 }
 
@@ -265,14 +290,14 @@ function wrapText(
 
 const blockCache = new WeakMap<Block, { key: string; layout: Omit<BlockLayout, "y"> }>();
 
-function layoutBlock(block: Block, width: number, metrics: EditorMetrics, epoch: number): Omit<BlockLayout, "y"> {
-  const key = `${width}|${epoch}|${metrics.fontSize}|${metrics.lineHeight}|${metrics.codeFontSize}`;
+function layoutBlock(block: Block, width: number, metrics: EditorMetrics, epoch: number | string, contentX: number): Omit<BlockLayout, "y"> {
+  const key = `${width}|${epoch}|${metrics.fontSize}|${metrics.lineHeight}|${metrics.codeFontSize}|${contentX}`;
   const cached = blockCache.get(block);
   if (cached && cached.key === key) return cached.layout;
   let layout: Omit<BlockLayout, "y">;
   if (block.kind === "paragraph") {
-    const lines = wrapText(block.text, block.atoms, 0, SANS, metrics.fontSize, width, metrics.lineHeight, 0);
-    layout = { block, height: lines.length * metrics.lineHeight, textX: 0, textY: 0, lines, face: SANS, fontSize: metrics.fontSize };
+    const lines = wrapText(block.text, block.atoms, 0, SANS, metrics.fontSize, Math.max(1, width - contentX), metrics.lineHeight, 0);
+    layout = { block, height: lines.length * metrics.lineHeight, textX: contentX, textY: 0, lines, face: SANS, fontSize: metrics.fontSize };
   } else {
     const inner = Math.max(20, width - 2 - 2 * metrics.codePadX);
     const lines: VisualLine[] = [];
@@ -299,21 +324,114 @@ function layoutBlock(block: Block, width: number, metrics: EditorMetrics, epoch:
 
 const placedCache = new WeakMap<Omit<BlockLayout, "y">, BlockLayout>();
 
-export function layoutDoc(doc: Doc, width: number, metrics: EditorMetrics, epoch: number): DocLayout {
+function sameMarker(a: ListMarker | undefined, b: ListMarker | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.kind !== b.kind) return false;
+  if (a.kind === "text") return b.kind === "text" && a.text === b.text && a.x === b.x;
+  if (a.kind === "checkbox") return b.kind === "checkbox" && a.checked === b.checked && a.x === b.x;
+  return b.kind !== "text" && b.kind !== "checkbox" && a.contentX === b.contentX;
+}
+
+// web index.css, in px at the 16px root: ul `padding-inline-start: max(1.25rem, 2ch)`; ol
+// `--list-gutter: max(1.25rem, 3ch)`, one more ch per marker character past two; a task item
+// is a 0.95rem checkbox and a 0.5rem gap; a task list nested in a task list `1.375rem`.
+const LIST_MIN_GUTTER = 20;
+const TASK_BOX = 15.2;
+const TASK_GAP = 8;
+const NESTED_TASK_LIST_INSET = 22;
+
+interface ListGeometry {
+  readonly contentX: number;
+  readonly marker: ListMarker;
+  /** Margin of a list that starts at this item, and of the lists that end with it. */
+  readonly marginTop: number;
+  readonly marginBottom: number;
+  /**
+   * The part of marginBottom from nested lists. At the end of the draft web zeroes only the
+   * top-level list's margin (`> :last-child`); a nested list's still collapses out below it.
+   */
+  readonly nestedMarginBottom: number;
+}
+
+function listGeometry(doc: Doc, places: ReadonlyArray<ItemPlace | null>, metrics: EditorMetrics): Array<ListGeometry | null> {
+  const ch = textAdvance(SANS, metrics.fontSize, "0");
+  const contentXs: number[] = [];
+  const gutters = new Map<ListNode, { listX: number; gutter: number }>();
+  const margin = (list: ListNode) => (list.kind === "task" ? 0 : metrics.listMarginY);
+  return places.map((place, index) => {
+    const block = doc.blocks[index]!;
+    if (!place || block.kind !== "paragraph" || !block.list) return null;
+    const list = place.list;
+    let geometry = gutters.get(list);
+    if (!geometry) {
+      let listX = list.parentItem >= 0 ? (contentXs[list.parentItem] ?? 0) : 0;
+      let inTask = false;
+      for (let parent = list.parentList; parent; parent = parent.parentList) if (parent.kind === "task") inTask = true;
+      if (list.kind === "task" && inTask) listX += NESTED_TASK_LIST_INSET;
+      let gutter: number;
+      if (list.kind === "task") gutter = TASK_BOX + TASK_GAP;
+      else if (list.kind === "bullet") gutter = Math.max(LIST_MIN_GUTTER, 2 * ch);
+      else {
+        // `data-marker-width` caps at ten; one- and two-character markers share the 3ch default.
+        const widest = Math.max(2, ...list.items.map((item) => Math.min(10, (doc.blocks[item] as { list?: { marker: string } }).list?.marker.length ?? 1)));
+        gutter = Math.max(LIST_MIN_GUTTER, (widest + 1) * ch);
+      }
+      geometry = { listX, gutter };
+      gutters.set(list, geometry);
+    }
+    const contentX = geometry.listX + geometry.gutter;
+    contentXs[index] = contentX;
+    let marker: ListMarker;
+    if (block.list.kind === "task") marker = { kind: "checkbox", x: geometry.listX, checked: block.list.checked };
+    else if (block.list.kind === "ordered") {
+      // `content: attr(data-marker) " "`, painted outside, ending where the text starts.
+      marker = { kind: "text", text: block.list.marker, x: contentX - textAdvance(SANS, metrics.fontSize, `${block.list.marker} `) };
+    } else {
+      // `ul ul` is a circle and `ul ul ul` a square; a task list is a `ul` too.
+      let outer = 0;
+      for (let parent = list.parentList; parent; parent = parent.parentList) if (parent.kind !== "ordered") outer += 1;
+      marker = { kind: outer === 0 ? "disc" : outer === 1 ? "circle" : "square", contentX };
+    }
+    let marginBottom = 0;
+    let nestedMarginBottom = 0;
+    for (let ending: ListNode | null = list; ending && ending.last === index; ending = ending.parentList) {
+      marginBottom = Math.max(marginBottom, margin(ending));
+      if (ending.parentList) nestedMarginBottom = Math.max(nestedMarginBottom, margin(ending));
+    }
+    return { contentX, marker, marginTop: place.index === 0 ? margin(list) : 0, marginBottom, nestedMarginBottom };
+  });
+}
+
+/** `epoch` changes whenever glyph widths or chip contents change under an unchanged doc. */
+export function layoutDoc(doc: Doc, width: number, metrics: EditorMetrics, epoch: number | string): DocLayout {
   let y = 0;
   const blocks: BlockLayout[] = [];
-  for (const block of doc.blocks) {
-    const layout = layoutBlock(block, Math.max(1, width), metrics, epoch);
+  const hasLists = doc.blocks.some((block) => block.kind === "paragraph" && block.list !== undefined);
+  const lists = hasLists ? listGeometry(doc, listPlaces(doc.blocks), metrics) : null;
+  doc.blocks.forEach((block, index) => {
+    const list = lists?.[index] ?? null;
+    if (index > 0 && lists) {
+      // Block margins collapse: the larger of the two meeting here, less what a code block's
+      // layout already holds. The draft's first block has no top margin (web `> :first-child`).
+      const previous = doc.blocks[index - 1]!;
+      const before = lists[index - 1]?.marginBottom ?? 0;
+      const baked = (previous.kind === "code" ? metrics.codeMarginY : 0) + (block.kind === "code" ? metrics.codeMarginY : 0);
+      const wanted = Math.max(before, list?.marginTop ?? 0, previous.kind === "code" || block.kind === "code" ? metrics.codeMarginY : 0);
+      y += Math.max(0, wanted - baked);
+    }
+    const layout = layoutBlock(block, Math.max(1, width), metrics, epoch, list?.contentX ?? 0);
+    const marker = list?.marker;
     // The same object for an unchanged block at the same place, so its memoized view skips.
     let placed = placedCache.get(layout);
-    if (!placed || placed.y !== y) {
-      placed = { ...layout, y };
+    if (!placed || placed.y !== y || !sameMarker(placed.marker, marker)) {
+      placed = marker ? { ...layout, y, marker } : { ...layout, y };
       placedCache.set(layout, placed);
     }
     blocks.push(placed);
     y += layout.height;
-  }
-  return { blocks, width, height: y };
+  });
+  const trailing = lists?.[doc.blocks.length - 1]?.nestedMarginBottom ?? 0;
+  return { blocks, width, height: y + trailing };
 }
 
 // ── Geometry queries ─────────────────────────────────────────────────────

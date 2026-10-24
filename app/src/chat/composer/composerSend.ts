@@ -114,7 +114,11 @@ export async function prepareTurnAttachments(
     throw new Error(`You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`);
   }
   for (const attachment of attachments) {
-    if (!NodeFs.existsSync(attachment.path) && appAtomRegistry.get(attachmentUploadStateAtom(attachment.id))?.status !== "ready") {
+    if (
+      !NodeFs.existsSync(attachment.path) &&
+      attachment.uploadEnvironmentId !== environmentId &&
+      appAtomRegistry.get(attachmentUploadStateAtom(attachment.id))?.status !== "ready"
+    ) {
       throw new Error(`'${attachment.name}' is no longer on disk. Remove it and attach it again.`);
     }
   }
@@ -211,11 +215,20 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
     reviewComments: input.reviewComments ?? [],
     terminalContexts: input.terminalContexts ?? [],
   };
-  const messageContext = buildComposerMessageContext({
-    terminalContexts: input.terminalContexts ?? [],
-    reviewComments: input.reviewComments ?? [],
-    threadContexts: input.threadContexts ?? [],
-  });
+  // web buildOutgoingMessageContext: records bind attachments by the id each side knows: the
+  // local id for the optimistic row, the upload id (or local id on the data-URL path) on the
+  // wire; the server rebinds them to the persisted id.
+  const buildOutgoingMessageContext = (attachmentIds: ReadonlyArray<string | undefined>) =>
+    buildComposerMessageContext({
+      terminalContexts: input.terminalContexts ?? [],
+      reviewComments: input.reviewComments ?? [],
+      threadContexts: input.threadContexts ?? [],
+      attachments: input.attachments.map((attachment, index) => ({
+        attachment,
+        attachmentId: attachmentIds[index] ?? attachment.id,
+      })),
+    });
+  const messageContext = buildOutgoingMessageContext(input.attachments.map((attachment) => attachment.id));
   // web useComposerSend: a message sent over approvals declines them first, and only goes
   // out if it is still the message the user sent, no approval was already being answered,
   // and no new approval arrived meanwhile. Otherwise the draft stays for the next send.
@@ -295,7 +308,6 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
     appAtomRegistry.set(draftPendingSendAtom(input.draftKey), {
       threadId,
       message: optimisticMessage,
-      title: deriveThreadTitleSeed({ text: input.prompt, attachments: input.attachments }),
     });
   }
   let failure: string | null = null;
@@ -325,6 +337,9 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
       throw new Error("Select a base branch before sending in New worktree mode.");
     }
     const attachments = await prepareTurnAttachments(input.environmentId, input.attachments);
+    const wireMessageContext = buildOutgoingMessageContext(
+      attachments.map((attachment) => ("id" in attachment && attachment.id ? String(attachment.id) : undefined)),
+    );
     attachments.forEach((attachment, index) => {
       const local = input.attachments[index];
       if (local?.type === "image" && attachment.type === "image" && "id" in attachment && attachment.id) rememberSentImagePreview(attachment.id, local.path);
@@ -386,7 +401,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
             messageId,
             role: "user",
             text: input.outgoingText,
-            ...(messageContext ? { context: messageContext } : {}),
+            ...(wireMessageContext ? { context: wireMessageContext } : {}),
             attachments,
           },
           modelSelection: input.modelSelection,

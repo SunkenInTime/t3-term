@@ -192,7 +192,8 @@ export function convertCodeFenceOnEnter(doc: Doc, selection: Selection): EditRes
   if (!isCollapsed(selection)) return null;
   const pos = selection.head;
   const block = doc.blocks[pos.block]!;
-  if (block.kind !== "paragraph" || pos.offset !== block.text.length) return null;
+  // Top-level paragraphs only: a list item's line has no room for a fence.
+  if (block.kind !== "paragraph" || block.list || pos.offset !== block.text.length) return null;
   const opening = parseOpeningFence(blockPlainText(block));
   if (!opening) return null;
   const code: CodeBlock = { kind: "code", info: opening.language, fence: opening.fence, close: `\n${opening.fence}`, text: "" };

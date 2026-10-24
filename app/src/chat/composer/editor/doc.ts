@@ -1,17 +1,19 @@
 // The composer's document: what web's Tiptap schema holds (ComposerPromptEditorTiptap.tsx,
 // composer-rich-text-doc.ts), as plain data. Paragraphs hold text and inline atoms (the
-// mention, skill, citation and context-reference chips); fenced code is a block of its own.
-// The stored prompt is the Markdown this serializes to, and parseDoc rebuilds the same
-// blocks from it, the way web's buildTiptapContent does.
+// mention, skill, citation and context-reference chips); a list item is a paragraph with list
+// attributes (editor/lists.ts); fenced code is a block of its own. The stored prompt is the
+// Markdown this serializes to, and parseDoc rebuilds the same blocks from it, the way web's
+// buildTiptapContent does.
 //
-// Not ported: web's inline styling (bold, italic, inline code, strike), lists, task lists,
-// headings, quotes and rules. Their Markdown stays literal text in a paragraph, so the
-// stored prompt is unchanged; only the presentation differs.
+// Not ported: web's inline styling (bold, italic, inline code, strike), headings, quotes and
+// rules. Their Markdown stays literal text in a paragraph, so the stored prompt is unchanged;
+// only the presentation differs.
 import type { AssistantCitation } from "@t3tools/contracts";
 import { composerMathRanges } from "@t3tools/shared/composerInlineTokens";
 
 import { splitPromptIntoComposerSegments } from "../../../web/composer-editor-mentions.ts";
 import { isClosingFence, parseOpeningFence } from "../../../web/composer-rich-text-doc.ts";
+import { type ListAttrs, listItemPrefix, parseListPrefix } from "./lists.ts";
 
 /** Stands for one atom inside a paragraph's text. Never kept from typed or pasted text. */
 export const ATOM_CHAR = "￼";
@@ -32,6 +34,8 @@ export interface ParagraphBlock {
   /** Text with one ATOM_CHAR per atom, in order. */
   readonly text: string;
   readonly atoms: ReadonlyArray<Atom>;
+  /** Set on a list item (rich text only). */
+  readonly list?: ListAttrs;
 }
 
 export interface CodeBlock {
@@ -63,8 +67,8 @@ export interface Selection {
 
 export const EMPTY_PARAGRAPH: ParagraphBlock = { kind: "paragraph", text: "", atoms: [] };
 
-export function paragraph(text: string, atoms: ReadonlyArray<Atom> = []): ParagraphBlock {
-  return { kind: "paragraph", text, atoms };
+export function paragraph(text: string, atoms: ReadonlyArray<Atom> = [], list?: ListAttrs): ParagraphBlock {
+  return list ? { kind: "paragraph", text, atoms, list } : { kind: "paragraph", text, atoms };
 }
 
 export function comparePos(a: Pos, b: Pos): number {
@@ -108,6 +112,11 @@ export interface ParseOptions {
   readonly codeBlocks: boolean;
   /** Everything stays text (web literalText: a pending question's custom answer). */
   readonly literal?: boolean;
+  /**
+   * No block syntax (web `blocks: false`): a paste into a list item, whose line has no room
+   * for a fence or another item.
+   */
+  readonly nested?: boolean;
   /**
    * Keeps this many leading characters as text (web literalLength): a paste that continues
    * a path query must reach file search as typed.
@@ -177,14 +186,17 @@ export function parseDoc(value: string, options: ParseOptions): Doc {
   const blocks: Block[] = [];
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
-    const opening = options.codeBlocks && !options.literal ? parseOpeningFence(line) : null;
+    const blockSyntax = options.codeBlocks && !options.literal && !options.nested;
+    const opening = blockSyntax ? parseOpeningFence(line) : null;
     if (!opening) {
       const literal = index === 0 ? sanitizeText(line.slice(0, options.literalLength ?? 0)) : "";
-      const rest = line.slice(literal.length);
+      // web buildDocLine: a list line's marker becomes the item's attributes.
+      const item = blockSyntax && !literal ? parseListPrefix(line) : null;
+      const rest = line.slice(literal.length + (item?.length ?? 0));
       // The newline after the line lets a token at the line end match (web's `(?=\s)`).
       const inline = parseInline(index < lines.length - 1 ? `${rest}\n` : rest, options);
       const text = index < lines.length - 1 ? inline.text.slice(0, -1) : inline.text;
-      blocks.push(paragraph(literal + text, inline.atoms));
+      blocks.push(paragraph(literal + text, inline.atoms, item?.list));
       continue;
     }
     const body: string[] = [];
@@ -243,8 +255,13 @@ export function paragraphSource(block: ParagraphBlock, from = 0, to = block.text
   return out;
 }
 
+/** The Markdown before a list item's text (web walkList's prefix run); "" for a paragraph. */
+export function listPrefixOf(block: Block): string {
+  return block.kind === "paragraph" && block.list ? listItemPrefix(block.list, block.text.length === 0) : "";
+}
+
 export function blockSource(block: Block, followed: boolean): string {
-  if (block.kind === "paragraph") return paragraphSource(block);
+  if (block.kind === "paragraph") return listPrefixOf(block) + paragraphSource(block);
   const { open, content, close } = codeBlockSource(block, followed);
   return open + content + close;
 }
@@ -292,8 +309,9 @@ export function blockSpans(doc: Doc): BlockSpan[] {
   doc.blocks.forEach((block, index) => {
     const followed = index < doc.blocks.length - 1;
     if (block.kind === "paragraph") {
-      const length = paragraphSource(block).length;
-      spans.push({ start: md, contentStart: md, end: md + length });
+      const prefix = listPrefixOf(block).length;
+      const length = prefix + paragraphSource(block).length;
+      spans.push({ start: md, contentStart: md + prefix, end: md + length });
       md += length + 1;
     } else {
       const { open, content, close } = codeBlockSource(block, followed);
@@ -353,15 +371,17 @@ export function clampPos(doc: Doc, pos: Pos): Pos {
 
 // ── Editing ──────────────────────────────────────────────────────────────
 
-function sliceParagraph(block: ParagraphBlock, from: number, to: number): ParagraphBlock {
-  if (block.atoms.length === 0) return paragraph(block.text.slice(from, to));
+/** A piece of a paragraph; an item's piece stays an item of the same list. */
+export function sliceParagraph(block: ParagraphBlock, from: number, to: number): ParagraphBlock {
+  if (block.atoms.length === 0) return paragraph(block.text.slice(from, to), [], block.list);
   const first = atomIndexAt(block, from);
   const last = atomIndexAt(block, to);
-  return paragraph(block.text.slice(from, to), block.atoms.slice(first, last));
+  return paragraph(block.text.slice(from, to), block.atoms.slice(first, last), block.list);
 }
 
+/** The first one's kind wins, as in ProseMirror's join (an item takes the text after it). */
 function concatParagraphs(a: ParagraphBlock, b: ParagraphBlock): ParagraphBlock {
-  return paragraph(a.text + b.text, a.atoms.length || b.atoms.length ? [...a.atoms, ...b.atoms] : []);
+  return paragraph(a.text + b.text, a.atoms.length || b.atoms.length ? [...a.atoms, ...b.atoms] : [], a.list);
 }
 
 /** A block's content as plain text, chips written as their source (what a code block can hold). */
@@ -438,7 +458,7 @@ export function insertInline(doc: Doc, pos: Pos, text: string, atoms: ReadonlyAr
   }
   const before = atomIndexAt(block, pos.offset);
   const nextAtoms = atoms.length > 0 ? [...block.atoms.slice(0, before), ...atoms, ...block.atoms.slice(before)] : block.atoms;
-  const next = paragraph(block.text.slice(0, pos.offset) + text + block.text.slice(pos.offset), nextAtoms);
+  const next = paragraph(block.text.slice(0, pos.offset) + text + block.text.slice(pos.offset), nextAtoms, block.list);
   return { doc: withBlocks(doc, pos.block, 1, [next]), selection: caret({ block: pos.block, offset: pos.offset + text.length }) };
 }
 
@@ -454,28 +474,38 @@ export function insertBlocks(doc: Doc, pos: Pos, fragment: ReadonlyArray<Block>)
     const text = fragment.map((piece) => blockPlainText(piece)).join("\n");
     return insertInline(doc, pos, text);
   }
-  if (fragment.length === 1 && fragment[0]!.kind === "paragraph") {
+  if (fragment.length === 1 && fragment[0]!.kind === "paragraph" && !fragment[0]!.list) {
     return insertInline(doc, pos, fragment[0]!.text, fragment[0]!.atoms);
   }
   const head = sliceParagraph(block, 0, pos.offset);
   const tail = sliceParagraph(block, pos.offset, block.text.length);
+  // A list item holds one line (web "paragraph list*"): lines pasted into one go on after its
+  // list, and a pasted item does not join the text around the caret.
+  const isLine = (piece: Block): boolean => piece.kind === "paragraph" && !piece.list;
   const out: Block[] = [];
   const first = fragment[0]!;
-  if (first.kind === "paragraph") out.push(concatParagraphs(head, first));
+  if (isLine(first) && !head.list) out.push(concatParagraphs(head, first as ParagraphBlock));
   else {
-    if (head.text.length > 0) out.push(head);
+    if (head.text.length > 0 || head.list) out.push(head);
     out.push(first);
   }
   for (const piece of fragment.slice(1, -1)) out.push(piece);
   const last = fragment.length > 1 ? fragment[fragment.length - 1]! : null;
   let caretPos: Pos;
   if (last === null) {
-    // One code block: the text after the caret goes on in a paragraph after it.
+    // One block: the text after the caret goes on in a paragraph after it.
     caretPos = { block: pos.block + out.length - 1, offset: out[out.length - 1]!.text.length };
-    out.push(tail);
-  } else if (last.kind === "paragraph") {
-    out.push(concatParagraphs(last, tail));
+    if (first.kind === "code" || tail.text.length > 0) out.push(first.kind === "code" ? tail : paragraph(tail.text, tail.atoms));
+  } else if (isLine(last)) {
+    out.push(concatParagraphs(last as ParagraphBlock, tail));
     caretPos = { block: pos.block + out.length - 1, offset: last.text.length };
+  } else if (last.kind === "paragraph") {
+    // ProseMirror puts the caret after the inserted list: at the start of the text after it.
+    out.push(last);
+    if (tail.text.length > 0) {
+      out.push(paragraph(tail.text, tail.atoms));
+      caretPos = { block: pos.block + out.length - 1, offset: 0 };
+    } else caretPos = { block: pos.block + out.length - 1, offset: last.text.length };
   } else {
     out.push(last);
     caretPos = { block: pos.block + out.length - 1, offset: last.text.length };
