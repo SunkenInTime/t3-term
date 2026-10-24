@@ -34,6 +34,7 @@ import {
   terminalOpenAtom,
 } from "../state/ui.ts";
 import { toast } from "../ui/toast.tsx";
+import { hasOpenDismissLayer } from "../ui/dismissLayers.ts";
 import { handleUsageShortcutCommand } from "../usage/usageShortcuts.ts";
 import {
   navigateAdjacentThread,
@@ -472,6 +473,9 @@ export function handleGlobalKeyDown(event: KeyEvent, renderer?: unknown): void {
   noteUserInput();
   updateJumpHints(event, true);
   if (event.defaultPrevented) return;
+  // An open menu, popover or dialog takes Escape first, as in web. gpuix closes
+  // the top layer in its default action after this handler, so step aside.
+  if (event.key === "escape" && hasOpenDismissLayer() && !isSidebarGestureActive()) return;
   // SidebarPointerSensor: Escape cancels a sidebar row drag or sweep.
   if (event.key === "escape" && isSidebarGestureActive()) {
     event.preventDefault();
