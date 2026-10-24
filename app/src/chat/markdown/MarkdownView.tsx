@@ -26,6 +26,7 @@ import {
   type MessageLinkIndex,
 } from "./links.ts";
 import { matchInlineSkills, type InlineSkill } from "@t3tools/shared/inlineSkills";
+import { parseComposerContextHref } from "@t3tools/shared/composerContextReferences";
 import { JOIN } from "./copy.ts";
 import { textWidth } from "./measure.ts";
 import { baselineOffset, deriveRun, fontAscent, fontLineHeight, xHeight, type MarkdownStyles } from "./styles.ts";
@@ -347,7 +348,9 @@ function standaloneImage(node: Element): Element | null {
   const meaningful = node.children.filter((child) => !isWhitespaceText(child));
   if (meaningful.length !== 1) return null;
   const only = meaningful[0]!;
-  if (only.type === "element" && only.tagName === "img" && only.properties.dataStandalone) return only;
+  if (only.type === "element" && only.tagName === "img" && only.properties.dataStandalone) {
+    return typeof only.properties.src === "string" && parseComposerContextHref(only.properties.src) ? null : only;
+  }
   return null;
 }
 
@@ -610,6 +613,15 @@ function collectElement(node: Element, style: RunStyle, out: InlineCollect) {
       return;
     }
     case "img": {
+      // web's img renderer: `![label](t3-context://...)` is a context reference, not media.
+      const reference = typeof node.properties.src === "string" ? parseComposerContextHref(node.properties.src) : null;
+      if (reference) {
+        const label = String(node.properties.alt ?? "") || reference.contextId;
+        const chip = env.boxes.contextChip(reference.kind, reference.contextId, label, env);
+        if (chip) out.atoms.push(chip);
+        else pushText(out, label, style);
+        return;
+      }
       const box = env.boxes.inlineImage(node, env, style);
       if (box) out.atoms.push(box);
       else pushText(out, String(node.properties.alt ?? ""), style);
