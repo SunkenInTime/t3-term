@@ -1,9 +1,10 @@
 // One terminal session's viewport: attaches to the server session, feeds the
-// headless emulator, paints its grid, and turns keys and wheel into PTY input.
-// Port of TerminalViewport/TerminalSessionViewport in
-// apps/web/src/components/ThreadTerminalDrawer.tsx; the web paints
-// libghostty onto a canvas, this paints one <text> per styled run.
-import { useGpuixRequired, type KeyEvent } from "@gpuix/react";
+// headless emulator, paints its grid, and turns keys, pointer and wheel into
+// PTY input. Port of TerminalViewport/TerminalSessionViewport in
+// apps/web/src/components/ThreadTerminalDrawer.tsx and the pointer handling of
+// apps/web/src/terminal/ghostty/surface.ts; the web paints libghostty onto a
+// canvas, this paints one <text> per styled run.
+import { useGpuixRequired, useWindowSize, type KeyEvent } from "@gpuix/react";
 import {
   INITIAL_TERMINAL_OUTPUT_CURSOR,
   readTerminalOutputUpdate,
@@ -13,6 +14,7 @@ import {
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
+  AuthOrchestrationOperateScope,
   AuthPreviewOperateScope,
   AuthTerminalOperateScope,
   type EnvironmentId,
@@ -21,6 +23,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
+import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { memo, useEffect, useRef, useState } from "react";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
@@ -40,11 +43,25 @@ import {
   type OpenPreviewMutation,
   openTerminalLinkInPreview,
 } from "../web/components/preview/openTerminalLinkInPreview.ts";
+import { isTerminalUrl } from "../web/terminal-links.ts";
+import { resolveSelectionActionPosition, SELECTION_MULTI_CLICK_INTERVAL_MS } from "../web/lib/selectionActions.ts";
+import { useOpenInPreferredEditor } from "../settings/keybindings/openInEditor.ts";
 import { openExternalUrl, readClipboardText, writeClipboardText } from "./clipboard.ts";
-import { TerminalEmulator, type CellRun, type TerminalFrame, type TerminalTheme } from "./vt/emulator.ts";
+import {
+  MOUSE_ACTION,
+  MOUSE_BUTTON,
+  TerminalEmulator,
+  WHEEL_ACTION,
+  type CellRun,
+  type MouseTrackingMode,
+  type TerminalFrame,
+  type TerminalTheme,
+} from "./vt/emulator.ts";
+import { findTerminalLinkAt, isSameTerminalLink, type TerminalCellPoint, type TerminalLinkWithRange } from "./links.ts";
 import { locateSelectionLines } from "./selectionLines.ts";
 import { addTerminalContextToThreadComposer } from "../chat/composer/terminalContextIntake.ts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
+import { isAtomCommandInterrupted, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { encodeKey } from "./vt/keys.ts";
 
 /** apps/web/src/terminal/ghostty/surface.ts */
@@ -60,6 +77,31 @@ const FRAME_INTERVAL_MS = 16;
 const PROBE = "M".repeat(64);
 
 const isMac = process.platform === "darwin";
+/** web contextMenuFallback.ts: every menu level is min-w-32. */
+const MENU_MIN_WIDTH = 128;
+
+type Modifiers = { shift: boolean; ctrl: boolean; alt: boolean; cmd: boolean };
+const NO_MODIFIERS: Modifiers = { shift: false, ctrl: false, alt: false, cmd: false };
+
+/** surface.ts shouldReportTerminalMouse: Shift, Ctrl and Cmd keep the pointer for selection and links. */
+function shouldReportTerminalMouse(tracking: MouseTrackingMode, modifiers: Modifiers): boolean {
+  return tracking !== "none" && !modifiers.shift && !modifiers.ctrl && !modifiers.cmd;
+}
+
+/** What Copy and Add to chat act on, read when the menu opens (web readSelectionAction). */
+interface CapturedSelection {
+  readonly clipboardText: string;
+  readonly text: string;
+  readonly lineStart: number;
+  readonly lineEnd: number;
+}
+
+/** "Select all": gpuix has no API to set its window selection, so the terminal keeps this one itself. */
+interface SelectAllState {
+  readonly first: number;
+  readonly last: number;
+  readonly text: string;
+}
 
 export type TerminalShortcutCommand = "split" | "splitVertical" | "new" | "close";
 
@@ -125,6 +167,9 @@ function TerminalSessionView({
   const palette = useTheme();
   const renderer = useGpuixRequired();
   const canOperate = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
+  const canOpenHostEditor = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
+  const openInPreferredEditor = useOpenInPreferredEditor(environmentId);
+  const windowSize = useWindowSize();
   const theme: TerminalTheme = {
     appearance: palette.appearance,
     background: palette.background,
@@ -138,7 +183,19 @@ function TerminalSessionView({
   const [cellWidth, setCellWidth] = useState<number | null>(measuredCellWidth);
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
   const origin = useRef({ x: 0, y: 0 });
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; hasSelection: boolean } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; selection: CapturedSelection | null } | null>(
+    null,
+  );
+  // web showSelectionAction: Copy / Add to chat near where a mouse selection ended.
+  const [selectionAction, setSelectionAction] = useState<{ x: number; y: number; selection: CapturedSelection } | null>(
+    null,
+  );
+  const [selectAll, setSelectAll] = useState<SelectAllState | null>(null);
+  const [hoveredLink, setHoveredLink] = useState<TerminalLinkWithRange | null>(null);
+  // Motion just went to the program, so the pointer is its arrow rather than a text beam.
+  const [reportingCursor, setReportingCursor] = useState(false);
+  // Shift/Ctrl/Cmd held at the last pointer move: selection stays live under mouse tracking.
+  const [bypassTracking, setBypassTracking] = useState(false);
   const [focused, setFocused] = useState(false);
   const focusedRef = useRef(false);
   const [frame, setFrame] = useState<TerminalFrame | null>(null);
@@ -299,48 +356,116 @@ function TerminalSessionView({
     [],
   );
 
-  const scrollRemainder = useRef(0);
-  const onScroll = (event: { deltaY?: number; precise?: boolean }) => {
-    const delta = event.deltaY ?? 0;
-    if (delta === 0) return;
-    // gpuix reports pixels: a trackpad's own, or wheel lines at 20px each.
-    // Positive moves toward older output.
-    const lines = (event.precise ? delta / CELL_HEIGHT : delta / WHEEL_LINE_PIXELS) + scrollRemainder.current;
-    const whole = Math.trunc(lines);
-    scrollRemainder.current = lines - whole;
-    if (whole === 0) return;
-    if (emulator.alternate) {
-      // Full-screen programs scroll by arrow keys, like alternate scroll mode.
-      const arrow = whole > 0 ? "A" : "B";
-      const prefix = emulator.applicationCursorKeys ? "\x1bO" : "\x1b[";
-      write(`${prefix}${arrow}`.repeat(Math.abs(whole)));
-      return;
+  // ── Pointer geometry ────────────────────────────────────────────────
+
+  /** The viewport cell under a window point; null outside the grid unless clamped (mouse reports clamp, like web's encoder). */
+  const cellAt = (x: number, y: number, clamp: boolean): (TerminalCellPoint & { px: number; py: number }) | null => {
+    if (cellWidth === null) return null;
+    const px = x - origin.current.x - CONTENT_PADDING;
+    const py = y - origin.current.y - CONTENT_PADDING;
+    let col = Math.floor(px / cellWidth);
+    let row = Math.floor(py / CELL_HEIGHT);
+    if (clamp) {
+      col = Math.max(0, Math.min(emulator.cols - 1, col));
+      row = Math.max(0, Math.min(emulator.rows - 1, row));
+    } else if (col < 0 || row < 0 || col >= emulator.cols || row >= emulator.rows) {
+      return null;
     }
-    emulator.scrollLines(-whole);
+    return { x: col, y: row, px: Math.max(0, px), py: Math.max(0, py) };
   };
 
-  const copySelection = (): boolean => {
-    const text = renderer.getSelectedText?.();
-    if (!text) return false;
-    void writeClipboardText(text).catch((error: unknown) =>
+  /** ThreadTerminalDrawer canActivateTerminalLink: URLs always, paths only with the host-editor grant. */
+  const canActivateLink = (text: string) =>
+    isTerminalUrl(text) || readEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
+
+  /** surface.ts linkAt. */
+  const linkAt = (x: number, y: number): TerminalLinkWithRange | null => {
+    const cell = cellAt(x, y, false);
+    if (cell === null) return null;
+    const link = findTerminalLinkAt(emulator, cell);
+    return link && canActivateLink(link.text) ? link : null;
+  };
+
+  const setHovered = (link: TerminalLinkWithRange | null) =>
+    setHoveredLink((current) => (current === link || (link !== null && isSameTerminalLink(link, current)) ? current : link));
+
+  // Output and scrolling move text under a still pointer; re-resolve the hovered link
+  // like web's render pass does. The grant can change too.
+  const hoverPointer = useRef<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    const pointer = hoverPointer.current;
+    setHovered(pointer ? linkAt(pointer.x, pointer.y) : null);
+  }, [frame, canOpenHostEditor]);
+
+  // ── Mouse reporting (surface.ts sendMouse) ──────────────────────────
+
+  const reportingButton = useRef<number | null>(null);
+  const reportMouse = (event: { x?: number; y?: number }, button: number, action: number, modifiers: Modifiers) => {
+    const cell = cellAt(event.x ?? 0, event.y ?? 0, true);
+    if (cell === null) return;
+    emulator.sendMouse({
+      col: cell.x,
+      row: cell.y,
+      x: cell.px,
+      y: cell.py,
+      button,
+      action,
+      ctrl: modifiers.ctrl,
+      alt: modifiers.alt,
+      shift: modifiers.shift,
+    });
+  };
+
+  // ── Selection ───────────────────────────────────────────────────────
+
+  const readSelection = (): CapturedSelection | null => {
+    if (selectAll !== null) {
+      return { clipboardText: selectAll.text, text: selectAll.text, lineStart: selectAll.first + 1, lineEnd: selectAll.last + 1 };
+    }
+    const raw = renderer.getSelectedText?.();
+    if (!raw) return null;
+    const text = raw.replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, "");
+    if (text.length === 0) return null;
+    const { lineStart, lineEnd } = locateSelectionLines(emulator, text);
+    return { clipboardText: raw, text, lineStart, lineEnd };
+  };
+
+  const clearSelection = () => {
+    setSelectAll(null);
+    renderer.clearSelection?.();
+  };
+
+  const focusTerminal = () => {
+    if (containerRef.current && readEnvironmentScope(environmentId, AuthTerminalOperateScope)) {
+      renderer.focusElement?.(containerRef.current.id);
+    }
+  };
+
+  const copySelection = (selection: CapturedSelection) => {
+    void writeClipboardText(selection.clipboardText).catch((error: unknown) =>
       emulator.writeSystemMessage(error instanceof Error ? error.message : "Unable to copy terminal selection"),
     );
-    renderer.clearSelection?.();
-    return true;
+    focusTerminal();
   };
 
-  const addSelectionToChat = () => {
-    const text = renderer.getSelectedText?.();
-    if (!text) return;
-    const { lineStart, lineEnd } = locateSelectionLines(emulator, text);
+  const addSelectionToChat = (selection: CapturedSelection) => {
     addTerminalContextToThreadComposer(environmentId, threadId, {
       terminalId,
       terminalLabel: getTerminalLabel(terminalId),
-      lineStart,
-      lineEnd,
-      text,
+      lineStart: selection.lineStart,
+      lineEnd: selection.lineEnd,
+      text: selection.text,
     });
+    clearSelection();
+    focusTerminal();
+  };
+
+  /** surface.ts selectAll: everything from the first to the last line with text, scrollback included. */
+  const selectAllText = () => {
+    const range = emulator.contentLineRange();
     renderer.clearSelection?.();
+    setSelectAll(range === null ? null : { ...range, text: emulator.text(range.first, range.last + 1) });
+    focusTerminal();
   };
 
   const paste = () => {
@@ -355,28 +480,90 @@ function TerminalSessionView({
       );
   };
 
-  /** The URL under a window point, if any. */
-  const urlAt = (x: number, y: number): string | null => {
-    if (cellWidth === null) return null;
-    const col = Math.floor((x - origin.current.x - CONTENT_PADDING) / cellWidth);
-    const row = Math.floor((y - origin.current.y - CONTENT_PADDING) / CELL_HEIGHT);
-    if (col < 0 || row < 0 || row >= emulator.rows) return null;
-    const buffer = emulator.terminal.buffer.active;
-    const text = buffer.getLine(buffer.viewportY + row)?.translateToString(false) ?? "";
-    for (const match of text.matchAll(/https?:\/\/[^\s"'<>`]+/g)) {
-      const start = match.index ?? 0;
-      const url = match[0].replace(/[.,;:!?)\]}]+$/, "");
-      if (col >= start && col < start + url.length) return url;
+  // observeSelectionActions: a primary-button gesture that ends with a selection
+  // shows the popup at the release point; anything else in the terminal dismisses it.
+  const selectionGesture = useRef(false);
+  const selectionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dismissSelectionAction = () => {
+    if (selectionTimer.current !== null) clearTimeout(selectionTimer.current);
+    selectionTimer.current = null;
+    setSelectionAction(null);
+  };
+  useEffect(() => () => {
+    if (selectionTimer.current !== null) clearTimeout(selectionTimer.current);
+  }, []);
+  const showSelectionAction = (pointer: { x: number; y: number }) => {
+    const selection = readSelection();
+    if (selection === null || size === null) {
+      setSelectionAction(null);
+      return;
     }
-    return null;
+    const position = resolveSelectionActionPosition({
+      bounds: { left: origin.current.x, top: origin.current.y, width: size.width, height: size.height },
+      selectionRect: null,
+      pointer,
+      viewport: windowSize,
+    });
+    setSelectionAction({ x: position.x - origin.current.x, y: position.y - origin.current.y, selection });
+  };
+  const showSelectionActionRef = useRef(showSelectionAction);
+  showSelectionActionRef.current = showSelectionAction;
+
+  // ── Wheel ───────────────────────────────────────────────────────────
+
+  const scrollRemainder = useRef(0);
+  const onScroll = (event: { x?: number; y?: number; deltaY?: number; precise?: boolean; modifiers?: Modifiers }) => {
+    const delta = event.deltaY ?? 0;
+    if (delta === 0) return;
+    dismissSelectionAction();
+    // gpuix reports pixels: a trackpad's own, or wheel lines at 20px each.
+    // Positive moves toward older output.
+    const lines = (event.precise ? delta / CELL_HEIGHT : delta / WHEEL_LINE_PIXELS) + scrollRemainder.current;
+    const whole = Math.trunc(lines);
+    scrollRemainder.current = lines - whole;
+    if (whole === 0) return;
+    const modifiers = event.modifiers ?? NO_MODIFIERS;
+    if (shouldReportTerminalMouse(emulator.mouseTracking, modifiers)) {
+      // surface.ts scrollRows: one wheel-button press per row.
+      for (let index = 0; index < Math.abs(whole); index++) {
+        reportMouse(event, MOUSE_BUTTON.wheel, whole > 0 ? WHEEL_ACTION.up : WHEEL_ACTION.down, modifiers);
+      }
+      return;
+    }
+    if (emulator.alternate) {
+      // Full-screen programs scroll by arrow keys, like alternate scroll mode.
+      const arrow = whole > 0 ? "A" : "B";
+      const prefix = emulator.applicationCursorKeys ? "\x1bO" : "\x1b[";
+      write(`${prefix}${arrow}`.repeat(Math.abs(whole)));
+      return;
+    }
+    emulator.scrollLines(-whole);
   };
 
+  // ── Links ───────────────────────────────────────────────────────────
+
   /**
-   * web handleLinkActivate: a plain click opens a URL in the thread's Browser
-   * when the link-target preference is "app"; Ctrl/Cmd+click, or no preview
-   * access, opens the system browser.
+   * web handleLinkActivate: a URL opens in the thread's Browser when the
+   * link-target preference is "app" (Ctrl/Cmd+click, or no preview access, opens
+   * the system browser); a path opens in the preferred editor on the server's machine.
    */
-  const activateLink = (url: string, forceBrowser: boolean) => {
+  const activateLink = (text: string, forceBrowser: boolean) => {
+    if (!canActivateLink(text)) return;
+    if (!isTerminalUrl(text)) {
+      const target = resolvePathLinkTarget(text, cwd);
+      void (async () => {
+        const opened = await openInPreferredEditor(target);
+        if (!opened.ok) {
+          emulator.writeSystemMessage(opened.message);
+          return;
+        }
+        if (opened.result._tag === "Success" || isAtomCommandInterrupted(opened.result)) return;
+        const error = squashAtomCommandFailure(opened.result);
+        emulator.writeSystemMessage(error instanceof Error ? error.message : "Unable to open path");
+      })();
+      return;
+    }
+    const url = text;
     const fallbackToBrowser = () => {
       void openExternalUrl(url).catch((error: unknown) =>
         emulator.writeSystemMessage(error instanceof Error ? error.message : "Unable to open link"),
@@ -403,16 +590,25 @@ function TerminalSessionView({
     );
   };
   // web activates a link only when the press and the release land on the same link.
-  const linkPressRef = useRef<string | null>(null);
+  const linkPressRef = useRef<TerminalLinkWithRange | null>(null);
+
+  // ── Keys ────────────────────────────────────────────────────────────
 
   const onKeyDown = (event: KeyEvent) => {
     const key = (event.key ?? "").toLowerCase();
-    const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
+    const mods = event.modifiers ?? NO_MODIFIERS;
     const mod = isMac ? mods.cmd : mods.ctrl;
     const consume = () => {
       event.preventDefault();
       event.stopPropagation();
     };
+    dismissSelectionAction();
+    // An open menu takes Escape, as web's native menus do, instead of the shell.
+    if (key === "escape" && contextMenu !== null) {
+      consume();
+      setContextMenu(null);
+      return;
+    }
 
     // Terminal commands bound with `when: terminalFocus` (packages/shared/src/keybindings.ts).
     if (mod && !mods.alt) {
@@ -435,11 +631,22 @@ function TerminalSessionView({
     }
     if (mod && mods.alt && key === "b") return;
 
+    // surface.ts selectAllShortcut: Cmd+A on macOS, Ctrl+Shift+A elsewhere.
+    if (key === "a" && mod && !mods.alt && (isMac ? !mods.shift && !mods.ctrl : mods.shift && !mods.cmd)) {
+      consume();
+      selectAllText();
+      return;
+    }
+
     // Copy and paste.
     const copyChord = isMac ? mods.cmd && key === "c" : mods.ctrl && mods.shift && key === "c";
-    if (copyChord || (!isMac && mods.ctrl && !mods.shift && key === "c" && renderer.getSelectedText?.())) {
+    const selection = copyChord || (!isMac && mods.ctrl && !mods.shift && key === "c") ? readSelection() : null;
+    if (copyChord || selection !== null) {
       consume();
-      copySelection();
+      if (selection !== null) {
+        copySelection(selection);
+        clearSelection();
+      }
       return;
     }
     const pasteChord = isMac ? mods.cmd && key === "v" : mods.ctrl && key === "v";
@@ -460,11 +667,17 @@ function TerminalSessionView({
     if (data === null) return;
     consume();
     if (!emulator.isAtBottom()) emulator.scrollToBottom();
-    renderer.clearSelection?.();
+    clearSelection();
     write(data);
   };
 
   const scrollbar = frame !== null && size !== null && frame.baseY > 0 && !frame.alternate ? scrollbarGeometry(frame, size.height) : null;
+  const tracking = frame?.mouseTracking ?? "none";
+  // gpuix starts a text selection from any press in a selectable region, and JS
+  // cannot cancel it, so the viewport stops being selectable while the program
+  // owns the pointer. Shift/Ctrl/Cmd (seen on the last move) hand it back, like web.
+  const pointerOwnedByProgram = tracking !== "none" && !bypassTracking;
+  const selectionColor = palette.appearance === "dark" ? "#b4cbff40" : "#253f6333";
 
   return (
     <div
@@ -482,25 +695,101 @@ function TerminalSessionView({
         appAtomRegistry.set(terminalFocusAtom, false);
       }}
       onMouseDown={(event) => {
-        linkPressRef.current =
-          (event.button ?? 0) === 0 && !event.modifiers?.shift && (event.clickCount ?? 1) === 1
-            ? urlAt(event.x ?? 0, event.y ?? 0)
-            : null;
+        dismissSelectionAction();
+        const modifiers = event.modifiers ?? NO_MODIFIERS;
+        const button = event.button ?? 0;
+        linkPressRef.current = null;
+        selectionGesture.current = false;
+        if (shouldReportTerminalMouse(emulator.mouseTracking, modifiers)) {
+          if (button > MOUSE_BUTTON.right) return;
+          hoverPointer.current = null;
+          setHovered(null);
+          setReportingCursor(true);
+          reportingButton.current = button;
+          reportMouse(event, button, MOUSE_ACTION.down, modifiers);
+          return;
+        }
+        if (button !== 0) return;
+        setSelectAll(null);
+        const link = !modifiers.shift && (event.clickCount ?? 1) === 1 ? linkAt(event.x ?? 0, event.y ?? 0) : null;
+        linkPressRef.current = link;
+        selectionGesture.current = link === null;
+      }}
+      onMouseMove={(event) => {
+        const modifiers = event.modifiers ?? NO_MODIFIERS;
+        const bypass = modifiers.shift || modifiers.ctrl || modifiers.cmd;
+        if (bypass !== bypassTracking) setBypassTracking(bypass);
+        // Hover motion is only reportable in any-event tracking (DEC 1003); the
+        // other modes report motion only during a press the program took.
+        if (reportingButton.current !== null || (emulator.mouseTracking === "any" && !bypass)) {
+          hoverPointer.current = null;
+          setHovered(null);
+          setReportingCursor(true);
+          const pressed = event.pressedButton ?? null;
+          reportMouse(
+            event,
+            pressed !== null && pressed <= MOUSE_BUTTON.right ? pressed : (reportingButton.current ?? MOUSE_BUTTON.none),
+            MOUSE_ACTION.move,
+            modifiers,
+          );
+          return;
+        }
+        setReportingCursor(false);
+        if (event.pressedButton !== undefined && event.pressedButton !== null) {
+          // A selection drag, not a hover.
+          hoverPointer.current = null;
+          setHovered(null);
+          return;
+        }
+        hoverPointer.current = { x: event.x ?? 0, y: event.y ?? 0 };
+        setHovered(linkAt(hoverPointer.current.x, hoverPointer.current.y));
+      }}
+      onMouseLeave={() => {
+        hoverPointer.current = null;
+        setHovered(null);
+      }}
+      onMouseUp={(event) => {
+        const button = event.button ?? 0;
+        const reporting = reportingButton.current;
+        if (reporting !== null) {
+          if (button !== reporting) return;
+          reportingButton.current = null;
+          reportMouse(event, button, MOUSE_ACTION.up, event.modifiers ?? NO_MODIFIERS);
+          return;
+        }
+        if (button !== 0 || !selectionGesture.current) return;
+        selectionGesture.current = false;
+        const pointer = { x: event.x ?? 0, y: event.y ?? 0 };
+        if (selectionTimer.current !== null) clearTimeout(selectionTimer.current);
+        // A double click's word selection waits out a possible third click.
+        selectionTimer.current = setTimeout(
+          () => {
+            selectionTimer.current = null;
+            showSelectionActionRef.current(pointer);
+          },
+          (event.clickCount ?? 1) >= 2 ? SELECTION_MULTI_CLICK_INTERVAL_MS : 0,
+        );
       }}
       onClick={(event) => {
         const pressed = linkPressRef.current;
         linkPressRef.current = null;
-        const url = urlAt(event.x ?? 0, event.y ?? 0);
-        if (url === null || url !== pressed) return;
+        if (pressed === null) return;
+        // A press that became a drag selected text instead.
+        if (renderer.getSelectedText?.()) return;
+        const link = linkAt(event.x ?? 0, event.y ?? 0);
+        if (!isSameTerminalLink(pressed, link)) return;
         const modifiers = event.modifiers;
-        activateLink(url, Boolean(modifiers?.ctrl || modifiers?.cmd));
+        activateLink(pressed.text, Boolean(modifiers?.ctrl || modifiers?.cmd));
       }}
       onAuxClick={(event) => {
         if (!event.isRightClick) return;
+        // The program took the press; web suppresses its menu too.
+        if (shouldReportTerminalMouse(emulator.mouseTracking, event.modifiers ?? NO_MODIFIERS)) return;
+        dismissSelectionAction();
         setContextMenu({
           x: (event.x ?? 0) - origin.current.x,
           y: (event.y ?? 0) - origin.current.y,
-          hasSelection: Boolean(renderer.getSelectedText?.()),
+          selection: readSelection(),
         });
       }}
       onLayout={(event) => {
@@ -519,8 +808,9 @@ function TerminalSessionView({
         height: "100%",
         overflow: "hidden",
         backgroundColor: theme.background,
-        cursor: "text",
-        selectionColor: palette.appearance === "dark" ? "#b4cbff40" : "#253f6333",
+        cursor: hoveredLink !== null ? "pointer" : reportingCursor && tracking !== "none" ? "default" : "text",
+        selectionColor,
+        ...(pointerOwnedByProgram ? { userSelect: "none" as const } : {}),
       }}
     >
       {cellWidth === null ? (
@@ -547,8 +837,14 @@ function TerminalSessionView({
           {PROBE}
         </text>
       ) : null}
+      {selectAll !== null && frame !== null && cellWidth !== null ? (
+        <SelectAllWash frame={frame} range={selectAll} cellWidth={cellWidth} color={selectionColor} />
+      ) : null}
       {frame !== null && cellWidth !== null ? (
         <TerminalGrid frame={frame} cellWidth={cellWidth} theme={theme} focused={focused} />
+      ) : null}
+      {hoveredLink !== null && frame !== null && cellWidth !== null ? (
+        <LinkUnderline frame={frame} link={hoveredLink} cellWidth={cellWidth} fallback={theme.foreground} />
       ) : null}
       {scrollbar ? (
         <div
@@ -572,23 +868,134 @@ function TerminalSessionView({
           }}
           rootStyle={{ position: "absolute", left: contextMenu.x, top: contextMenu.y, width: 0, height: 0 }}
           sideOffset={0}
+          minWidth={MENU_MIN_WIDTH}
           testId="terminal-context-menu"
           trigger={() => <div />}
         >
-          {/* web terminalSelectionMenuItems: "Add to chat" puts the selection in this thread's composer. */}
-          <MenuItem disabled={!contextMenu.hasSelection} onSelect={addSelectionToChat} testId="terminal-add-to-chat">
+          {/* web terminalContextMenuItems: "Add to chat" puts the selection in this thread's composer. */}
+          <MenuItem
+            disabled={contextMenu.selection === null}
+            onSelect={() => contextMenu.selection && addSelectionToChat(contextMenu.selection)}
+            testId="terminal-add-to-chat"
+          >
             Add to chat
           </MenuItem>
-          <MenuItem disabled={!contextMenu.hasSelection} onSelect={() => void copySelection()}>
+          <MenuItem
+            disabled={contextMenu.selection === null}
+            onSelect={() => contextMenu.selection && copySelection(contextMenu.selection)}
+            testId="terminal-copy"
+          >
             Copy
           </MenuItem>
-          <MenuItem disabled={!canOperate} onSelect={paste}>
+          <MenuItem disabled={!canOperate} onSelect={paste} testId="terminal-paste">
             Paste
           </MenuItem>
-          <MenuItem onSelect={() => emulator.scrollToBottom()}>Jump to latest</MenuItem>
+          <MenuItem onSelect={selectAllText} testId="terminal-select-all">
+            Select all
+          </MenuItem>
+          <MenuItem
+            onSelect={() => {
+              emulator.scrollToBottom();
+              focusTerminal();
+            }}
+            testId="terminal-jump-to-latest"
+          >
+            Jump to latest
+          </MenuItem>
+        </Menu>
+      ) : null}
+      {selectionAction ? (
+        <Menu
+          open
+          onOpenChange={(open) => {
+            if (!open) setSelectionAction(null);
+          }}
+          rootStyle={{ position: "absolute", left: selectionAction.x, top: selectionAction.y, width: 0, height: 0 }}
+          sideOffset={0}
+          minWidth={MENU_MIN_WIDTH}
+          testId="terminal-selection-action"
+          trigger={() => <div />}
+        >
+          {/* web terminalSelectionMenuItems. */}
+          <MenuItem onSelect={() => addSelectionToChat(selectionAction.selection)} testId="terminal-selection-add-to-chat">
+            Add to chat
+          </MenuItem>
+          <MenuItem onSelect={() => copySelection(selectionAction.selection)} testId="terminal-selection-copy">
+            Copy
+          </MenuItem>
         </Menu>
       ) : null}
     </div>
+  );
+}
+
+/** ghostty's selection wash for "Select all": whole rows from the first to the last line with text. */
+function SelectAllWash({
+  frame,
+  range,
+  cellWidth,
+  color,
+}: {
+  frame: TerminalFrame;
+  range: SelectAllState;
+  cellWidth: number;
+  color: string;
+}) {
+  const top = Math.max(range.first - frame.viewportY, 0);
+  const bottom = Math.min(range.last - frame.viewportY, frame.rows.length - 1);
+  if (bottom < top) return null;
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: CONTENT_PADDING,
+        top: CONTENT_PADDING + top * CELL_HEIGHT,
+        width: frame.cols * cellWidth,
+        height: (bottom - top + 1) * CELL_HEIGHT,
+        backgroundColor: color,
+        pointerEvents: "none",
+      }}
+    />
+  );
+}
+
+/** renderer.ts hoveredLinkRange: a 1px rule two pixels above each covered cell's bottom, in the cell's colour. */
+function LinkUnderline({
+  frame,
+  link,
+  cellWidth,
+  fallback,
+}: {
+  frame: TerminalFrame;
+  link: TerminalLinkWithRange;
+  cellWidth: number;
+  fallback: string;
+}) {
+  const { start, end } = link.range;
+  const segments: { row: number; from: number; to: number; color: string }[] = [];
+  for (let row = start.y; row <= end.y && row < frame.rows.length; row++) {
+    const from = row === start.y ? start.x : 0;
+    const to = row === end.y ? end.x : frame.cols - 1;
+    const run = frame.rows[row]?.find((candidate) => from >= candidate.col && from < candidate.col + candidate.cells);
+    segments.push({ row, from, to, color: run?.fg ?? fallback });
+  }
+  return (
+    <>
+      {segments.map((segment) => (
+        <div
+          key={segment.row}
+          style={{
+            position: "absolute",
+            left: CONTENT_PADDING + segment.from * cellWidth,
+            top: CONTENT_PADDING + segment.row * CELL_HEIGHT + CELL_HEIGHT - 2,
+            width: (segment.to - segment.from + 1) * cellWidth,
+            height: 1,
+            backgroundColor: segment.color,
+            pointerEvents: "none",
+          }}
+        />
+      ))}
+    </>
   );
 }
 
