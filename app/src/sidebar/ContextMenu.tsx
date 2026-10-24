@@ -1,7 +1,8 @@
 // A right-click menu at a window position, for the ContextMenuItem trees web
 // hands to `localApi.contextMenu.show` (threadActionMenu.logic.ts). Submenus open
 // on hover to the right. A transparent full-window layer under the menu closes
-// it on any outside press, like a native context menu.
+// it on any outside press, like a native context menu. Sized like every level of
+// web's contextMenuFallback.ts (min-w-32 max-w-sm).
 import { DismissableLayer } from "@gpuix/react";
 import { FloatingLayer } from "@gpuix/react/floating";
 import type { ContextMenuItem } from "@t3tools/contracts";
@@ -81,7 +82,7 @@ function MenuRow<T extends string>({
           align="start"
           sideOffset={4}
           alignOffset={-4}
-          style={{ ...surfaceStyle(theme), display: "flex", flexDirection: "column", padding: 4, minWidth: 160 }}
+          style={{ ...surfaceStyle(theme), display: "flex", flexDirection: "column", padding: 4, minWidth: 128, maxWidth: 384 }}
         >
           <MenuItems items={item.children!} onSelect={onSelect} onClose={onClose} />
         </FloatingLayer>
@@ -157,7 +158,7 @@ export function ContextMenu<T extends string>({
       >
         <div
           testId={testId}
-          style={{ ...surfaceStyle(theme), display: "flex", flexDirection: "column", padding: 4, minWidth: 160 }}
+          style={{ ...surfaceStyle(theme), display: "flex", flexDirection: "column", padding: 4, minWidth: 128, maxWidth: 384 }}
         >
           <MenuItems items={items} onSelect={onSelect} onClose={onClose} />
         </div>
