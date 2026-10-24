@@ -1000,7 +1000,7 @@ function DeviceTabNameInput({ title, onFinish }: { title: string; onFinish: (tit
 }
 
 /** RightPanelResizeHandle: an 8px grab strip over the left border. */
-function ResizeHandle(props: { onDragStart: (x: number) => void; onDrag: (x: number) => void; onDragEnd: () => void }) {
+export function ResizeHandle(props: { onDragStart: (x: number) => void; onDrag: (x: number) => void; onDragEnd: () => void }) {
   const theme = useTheme();
   const [state, setState] = useState<"idle" | "hover" | "drag">("idle");
   return (

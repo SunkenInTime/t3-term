@@ -31,7 +31,7 @@ import { changeRequestRepositoryUrl, parseChangeRequestUrl } from "@t3tools/shar
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { useWindowSize } from "@gpuix/react";
 import type * as Cause from "effect/Cause";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { copyTextToClipboard } from "../chat/header/osActions.ts";
 import { requestConfirmDialog } from "../dialogs/confirmDialog.ts";
@@ -49,6 +49,7 @@ import {
   pullRequestEnvironmentConnectedAtom,
   pullRequestEnvironmentsAtom,
   pullRequestPanel,
+  pullRequestPanelWidthAtom,
   useEnvironmentQuery,
   usePullRequestStack,
   usePullRequestTurnRefresh,
@@ -57,6 +58,15 @@ import {
 } from "../state/pullRequests.ts";
 import { Icon } from "../ui/Icon.tsx";
 import { Tooltip } from "../ui/overlay.tsx";
+import { ContextMenu } from "../sidebar/ContextMenu.tsx";
+import { ResizeHandle } from "../panels/RightPanel.tsx";
+import {
+  RIGHT_PANEL_MAX_WIDTH_FRACTION,
+  RIGHT_PANEL_MIN_WIDTH,
+  RIGHT_PANEL_SIBLING_MIN_WIDTH,
+} from "../state/rightPanel.ts";
+import { sidebarOpenAtom } from "../state/ui.ts";
+import { sidebarWidthAtom } from "../ui/viewport.tsx";
 import { IconButton, Text } from "../ui/primitives.tsx";
 import { toast } from "../ui/toast.tsx";
 import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../ui/theme.ts";
@@ -161,6 +171,9 @@ export function PullRequestDetailPanel({
   onTogglePanel,
   onActivateSurface,
   onCloseSurface,
+  onCloseOtherSurfaces,
+  onCloseSurfacesToRight,
+  onCloseAllSurfaces,
   listEntry,
   refreshToken,
   onSelectPullRequest,
@@ -173,17 +186,33 @@ export function PullRequestDetailPanel({
   onTogglePanel: () => void;
   onActivateSurface: (surface: PullRequestSurface) => void;
   onCloseSurface: (surface: PullRequestSurface) => void;
+  onCloseOtherSurfaces: (surface: PullRequestSurface) => void;
+  onCloseSurfacesToRight: (surface: PullRequestSurface) => void;
+  onCloseAllSurfaces: () => void;
   listEntry: PullRequestListEntry | null;
   refreshToken: number;
   onSelectPullRequest: (reference: PullRequestRef) => void;
 }) {
   const theme = useTheme();
   const window = useWindowSize();
-  const width = Math.floor(window.width / 2);
+  // web RightPanelTabs: a saved width (default half the window), dragged from the left border
+  // between RIGHT_PANEL_MIN_WIDTH and 70% of the window, leaving the list its minimum.
+  const storedWidth = useAtomValue(pullRequestPanelWidthAtom);
+  const [dragWidth, setDragWidth] = useState<number | null>(null);
+  const drag = useRef<{ startX: number; startWidth: number } | null>(null);
+  const sidebarOpen = useAtomValue(sidebarOpenAtom);
+  const sidebarWidth = useAtomValue(sidebarWidthAtom);
+  const rowWidth = window.width - (sidebarOpen ? sidebarWidth : 0);
+  const maxWidth = Math.max(
+    RIGHT_PANEL_MIN_WIDTH,
+    Math.min(Math.floor(window.width * RIGHT_PANEL_MAX_WIDTH_FRACTION), Math.floor(rowWidth) - RIGHT_PANEL_SIBLING_MIN_WIDTH),
+  );
+  const width = Math.min(Math.max(dragWidth ?? storedWidth ?? Math.floor(window.width / 2), RIGHT_PANEL_MIN_WIDTH), maxWidth);
   return (
     <div
       testId="pr-detail-panel"
       style={{
+        position: "relative",
         display: "flex",
         flexDirection: "column",
         minHeight: 0,
@@ -206,15 +235,20 @@ export function PullRequestDetailPanel({
         }}
       >
         <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, flexGrow: 1, minWidth: 0, overflow: "hidden" }}>
-          {surfaces.map((surface) => (
+          {surfaces.map((surface, index) => (
             <PanelTab
               key={surface.id}
               surface={surface}
               environmentId={(surface.environmentId as EnvironmentId | undefined) ?? environmentId}
               active={surface.id === activeSurface.id}
               seed={surface.id === activeSurface.id ? listEntry : null}
+              isOnly={surfaces.length === 1}
+              isLast={index === surfaces.length - 1}
               onActivate={() => onActivateSurface(surface)}
               onClose={() => onCloseSurface(surface)}
+              onCloseOthers={() => onCloseOtherSurfaces(surface)}
+              onCloseToRight={() => onCloseSurfacesToRight(surface)}
+              onCloseAll={onCloseAllSurfaces}
             />
           ))}
           {/* Web's add-surface menu offers nothing on this page: every surface is unavailable. */}
@@ -247,6 +281,25 @@ export function PullRequestDetailPanel({
         refreshToken={refreshToken}
         onSelectPullRequest={onSelectPullRequest}
       />
+      {maximized ? null : (
+        <ResizeHandle
+          onDragStart={(x) => {
+            drag.current = { startX: x, startWidth: width };
+          }}
+          onDrag={(x) => {
+            const state = drag.current;
+            if (!state) return;
+            setDragWidth(Math.min(Math.max(state.startWidth + (state.startX - x), RIGHT_PANEL_MIN_WIDTH), maxWidth));
+          }}
+          onDragEnd={() => {
+            drag.current = null;
+            setDragWidth((current) => {
+              if (current !== null) appAtomRegistry.set(pullRequestPanelWidthAtom, current);
+              return null;
+            });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -256,18 +309,29 @@ function PanelTab({
   environmentId,
   active,
   seed,
+  isOnly,
+  isLast,
   onActivate,
   onClose,
+  onCloseOthers,
+  onCloseToRight,
+  onCloseAll,
 }: {
   surface: PullRequestSurface;
   environmentId: EnvironmentId;
   active: boolean;
   seed: PullRequestListEntry | null;
+  isOnly: boolean;
+  isLast: boolean;
   onActivate: () => void;
   onClose: () => void;
+  onCloseOthers: () => void;
+  onCloseToRight: () => void;
+  onCloseAll: () => void;
 }) {
   const theme = useTheme();
   const [hovered, setHovered] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   // Web seeds the tab glyph from the list row and then the cached detail.
   const detail = useEnvironmentQuery(
     pullRequestEnvironment.detail({
@@ -282,10 +346,15 @@ function PanelTab({
   ).data;
   const status = detail ?? seed;
   const presentation = status ? resolvePullRequestState({ state: status.state, isDraft: status.isDraft }) : null;
-  return (
+  const tab = (
     <div
       testId={`pr-panel-tab-${surface.number}`}
       onClick={onActivate}
+      // web RightPanelTabs: a right click opens the tab menu, a middle click closes the tab.
+      onAuxClick={(event) => {
+        if (event.isRightClick) setMenu({ x: event.x ?? 0, y: event.y ?? 0 });
+        else onClose();
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -330,6 +399,32 @@ function PanelTab({
         {`#${surface.number}`}
       </Text>
     </div>
+  );
+  return (
+    <>
+      {tab}
+      {/* web RightPanelTabs asks for a context menu at the pointer. */}
+      {menu ? (
+        <ContextMenu
+          testId={`pr-panel-tab-menu-${surface.number}`}
+          items={[
+            { id: "close", label: "Close" },
+            { id: "close-others", label: "Close others", disabled: isOnly },
+            { id: "close-to-right", label: "Close to the right", disabled: isLast },
+            { id: "close-all", label: "Close all" },
+          ]}
+          x={menu.x}
+          y={menu.y}
+          onSelect={(id) => {
+            if (id === "close") onClose();
+            else if (id === "close-others") onCloseOthers();
+            else if (id === "close-to-right") onCloseToRight();
+            else onCloseAll();
+          }}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+    </>
   );
 }
 
