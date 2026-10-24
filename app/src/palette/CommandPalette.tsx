@@ -96,6 +96,7 @@ import {
   sourceControlEnvironment,
 } from "../state/palette.ts";
 import { openRightPanelSurface } from "../state/git.ts";
+import { rightPanelActions, threadKeyOf } from "../state/rightPanel.ts";
 import { commandPaletteOpenAtom, findBarOpenAtom, routeAtom } from "../state/ui.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { ProjectGlyph } from "../sidebar/ProjectGlyph.tsx";
@@ -1020,7 +1021,8 @@ function CommandModePalette({
         title: "Show linked pull requests",
         disabled: visibleThreadPullRequests(activeThread.pullRequests).length === 0,
         icon: <ItemIcon name="link-2" />,
-        run: async () => openRightPanelSurface("pull-request"),
+        // web: the thread's "Linked pull requests" surface.
+        run: async () => rightPanelActions.open(threadKeyOf(activeThread.environmentId, activeThread.id), "pull-requests"),
       });
     }
   }

@@ -36,7 +36,8 @@ import {
 } from "../state/rightPanel.ts";
 import { selectThreadSessions, useEnvironmentScope, useTerminalMetadata, useThreadTerminalContext } from "../state/terminal.ts";
 import { rightPanelMaximizedAtom, rightPanelSurfaceAtom, rightPanelSurfaceRequestAtom, sidebarOpenAtom } from "../state/ui.ts";
-import { selectedPullRequestAtom } from "../state/gitPullRequests.ts";
+import { openPullRequestSurface, selectedPullRequestAtom } from "../state/gitPullRequests.ts";
+import { projectIndexAtom } from "../state/environment.ts";
 import { fileSavePendingAtom, fileSavePendingKey } from "../state/files.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { Icon, type IconName } from "../ui/Icon.tsx";
@@ -51,6 +52,8 @@ import { DiffSurface } from "./diff/DiffSurface.tsx";
 import { FileEntryIcon } from "./files/FileEntryIcon.tsx";
 import { FilesSurface } from "./files/FilesSurface.tsx";
 import { PullRequestSurface } from "./pr/PullRequestSurface.tsx";
+import { ThreadPullRequestsPanel } from "./pr/ThreadPullRequestsPanel.tsx";
+import { useThreadPullRequest } from "./pr/useThreadPullRequest.ts";
 import { addTerminalSurface, TerminalSurface } from "./terminal/TerminalSurface.tsx";
 import { FaviconImage } from "./browser/FaviconImage.tsx";
 import { PreviewView } from "./browser/PreviewView.tsx";
@@ -200,6 +203,14 @@ export function RightPanel({
   const mobile = useMobileViewport();
   const sidebarWidth = useAtomValue(sidebarWidthAtom);
   const shell = useAtomValue(environmentThreadShells.threadShellAtom({ environmentId, threadId } as never));
+  // The thread's own pull request, for the "Pull request" surface (the linked list is its own surface).
+  const projectIndex = useAtomValue(projectIndexAtom);
+  const threadProject = shell ? (projectIndex.get(`${environmentId}:${shell.projectId}`) ?? null) : null;
+  const currentPullRequest = useThreadPullRequest({
+    environmentId,
+    threadId,
+    gitCwd: shell?.worktreePath ?? threadProject?.workspaceRoot ?? null,
+  }).reference;
   const terminalContext = useThreadTerminalContext(environmentId, threadId);
   const canOperateTerminal = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
   const canReadTerminal = useEnvironmentScope(environmentId, AuthTerminalReadScope);
@@ -264,8 +275,9 @@ export function RightPanel({
       });
       return;
     }
-    const existing = state.surfaces.find((surface) => surface.kind === "pull-request" || surface.kind === "pull-requests");
+    const existing = state.surfaces.find((surface) => surface.kind === "pull-request");
     if (existing) rightPanelActions.activate(threadKey, existing.id);
+    else if (currentPullRequest) openPullRequestSurface({ environmentId, threadId }, currentPullRequest);
     else rightPanelActions.open(threadKey, "pull-requests");
   }
   useEffect(() => {
@@ -328,7 +340,10 @@ export function RightPanel({
       icon: "git-pull-request",
       shortcut: "P",
       available: Boolean(shell?.branchPullRequest ?? shell?.linkedPullRequest),
-      onClick: () => rightPanelActions.open(threadKey, "pull-requests"),
+      onClick: () =>
+        currentPullRequest
+          ? openPullRequestSurface({ environmentId, threadId }, currentPullRequest)
+          : rightPanelActions.open(threadKey, "pull-requests"),
     },
     {
       key: "pullRequests",
@@ -533,8 +548,10 @@ function SurfaceContent({
     case "diff":
       return <DiffSurface environmentId={environmentId} threadId={threadId} />;
     case "pull-request":
-    case "pull-requests":
       return <PullRequestSurface environmentId={environmentId} threadId={threadId} />;
+    case "pull-requests":
+      // web RightPanelSurfaceContent: the "Linked pull requests" surface is the thread's list.
+      return <ThreadPullRequestsPanel threadRef={{ environmentId, threadId }} />;
     case "preview":
       return <PreviewView key={surface.id} environmentId={environmentId} threadId={threadId} tabId={surface.resourceId} visible />;
     case "device":
