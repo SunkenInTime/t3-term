@@ -38,7 +38,8 @@ import {
 } from "../state/sidebar.ts";
 import { rightPanelOpenAtom, rightPanelSurfaceAtom } from "../state/ui.ts";
 import { Icon, type IconName } from "../ui/Icon.tsx";
-import { Menu, Tooltip } from "../ui/overlay.tsx";
+import { DROPDOWN_GLASS_DARK, Menu, Tooltip } from "../ui/overlay.tsx";
+import { ThreadSearchMatchExcerpt } from "../ui/ThreadSearchMatchExcerpt.tsx";
 import { Text } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme, type Palette } from "../ui/theme.ts";
 import {
@@ -497,7 +498,7 @@ function HoverCard({
             borderRadius: RADIUS.lg,
             borderWidth: 1,
             borderColor: alpha(theme.foreground, 0.1),
-            backgroundColor: "#141414",
+            backgroundColor: DROPDOWN_GLASS_DARK,
             boxShadow: { offsetX: 0, offsetY: 16, blurRadius: 40, spreadRadius: -18, color: "#0000008c" },
             pointerEvents: "none",
           }}
@@ -1213,35 +1214,6 @@ function SettleButton({ onActivate, testId }: { onActivate: () => void; testId?:
 
 // ── Search result row ───────────────────────────────────────────────────
 
-function SearchMatchExcerpt({ match, query }: { match: EnvironmentThreadSearchMatch; query: string }) {
-  const theme = useTheme();
-  const isUser = match.source === "user";
-  // gpuix has no inline runs: sibling <text> nodes are separate flex items,
-  // so the snippet is one truncating line and the query is not bolded.
-  void query;
-  const base = { fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans, whiteSpace: "nowrap" as const };
-  return (
-    <div style={{ display: "flex", flexDirection: "row", minWidth: 0, overflow: "hidden", height: 16 }}>
-      <text style={{ ...base, flexShrink: 0, color: isUser ? theme.infoForeground : theme.successForeground }}>
-        {isUser ? "You:" : "Agent:"}
-      </text>
-      <text
-        style={{
-          ...base,
-          paddingLeft: 3,
-          flexShrink: 1,
-          minWidth: 0,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          color: alpha(theme.mutedForeground, 0.85),
-        }}
-      >
-        {match.snippet}
-      </text>
-    </div>
-  );
-}
-
 export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
   readonly isSettled: boolean;
   readonly thread: EnvironmentThreadShell;
@@ -1321,7 +1293,11 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
               <RelativeTimeLabel timestamp={threadTimeTimestamp(thread)} color={alpha(theme.mutedForeground, 0.55)} />
             </div>
           </div>
-          {props.searchMatch ? <SearchMatchExcerpt match={props.searchMatch} query={props.searchQuery} /> : null}
+          {props.searchMatch ? (
+            <ThreadSearchMatchExcerpt
+              match={{ source: props.searchMatch.source, snippet: props.searchMatch.snippet, query: props.searchQuery }}
+            />
+          ) : null}
         </div>
       </div>
     </HoverCard>

@@ -159,7 +159,8 @@ export function resolveThreadStatusPill(thread: EnvironmentThreadShell): StatusP
   if (!thread.hasPendingUserInput && thread.interactionMode === "plan" && thread.hasActionableProposedPlan) {
     return { label: "Plan Ready", color: "#c4b5fde6" };
   }
-  if (latestRun?.status === "completed" && isAfterVisit(latestRun.completedAt, thread.lastVisitedAt)) {
+  // hasUnseenCompletion: a thread never visited shows no Completed pill (unlike Failed).
+  if (latestRun?.status === "completed" && thread.lastVisitedAt && isAfterVisit(latestRun.completedAt, thread.lastVisitedAt)) {
     return { label: "Completed", color: "#6ee7b7e6" };
   }
   return null;

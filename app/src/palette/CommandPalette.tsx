@@ -87,7 +87,9 @@ import {
   projectEnvironment,
 } from "../state/environment.ts";
 import { environmentPresentations } from "../state/navigation.ts";
-import { sidebarProjectGroupsAtom } from "../state/sidebar.ts";
+import { legacySidebarProjectsAtom } from "../state/legacySidebar.ts";
+import { sidebarClientSettingsAtom } from "../state/sidebar.ts";
+import { sortLogicalProjectsForSidebar } from "../web/components/Sidebar.logic.ts";
 import {
   commandPaletteDetailAtom,
   dispatchCommandPalette,
@@ -360,8 +362,19 @@ function CommandModePalette({
   const keybindings = useAtomValue(activeKeybindingsAtom);
   const route = useAtomValue(routeAtom);
   const projects = useAtomValue(environmentProjects.projectsAtom);
-  const projectGroups = useAtomValue(sidebarProjectGroupsAtom);
-  const threads = useAtomValue(environmentThreadShells.navigationThreadShellsAtom);
+  const groupedProjects = useAtomValue(legacySidebarProjectsAtom);
+  const clientSettings = useAtomValue(sidebarClientSettingsAtom);
+  // web useThreadShells(): every shell, subagent threads included, so a message
+  // match in a delegated thread is found like on web. Mounted only while open.
+  const threads = useAtomValue(environmentThreadShells.threadShellsAtom);
+  // CommandPaletteLookups.useSortedProjectGroups: the palette groups projects
+  // without folding scratch projects together and orders them by every thread's
+  // activity, which is not quite the sidebar's order.
+  const projectGroups = sortLogicalProjectsForSidebar(
+    groupedProjects.sidebarProjects,
+    threads,
+    clientSettings.sidebarProjectSortOrder,
+  );
   const environments = usePaletteEnvironments();
   const activeThread = useRouteThreadShell();
   const appearanceMode = useAtomValue(appearanceModeAtom);

@@ -284,3 +284,53 @@ export function Kbd({ children }: { children: string }) {
     </div>
   );
 }
+
+/**
+ * ScrollArea's `scrollFade` / `virtualized-scroll-fade`: content scrolling past
+ * an edge fades out over `size` px instead of clipping. Web masks the scroller;
+ * GPUI has no masks, so over an opaque surface a gradient of that surface
+ * (`color`) painted on top reads the same. Place it as the last children of a
+ * `position: relative` box around the scroller. `insetRight` keeps the
+ * scrollbar lane unfaded, as web does.
+ */
+export function ScrollFadeEdges({
+  top,
+  bottom,
+  color,
+  size = 24,
+  insetRight = 0,
+}: {
+  top: boolean;
+  bottom: boolean;
+  color: string;
+  size?: number;
+  insetRight?: number;
+}) {
+  const edge = (side: "top" | "bottom") => (
+    <div
+      key={side}
+      style={{
+        position: "absolute",
+        left: 0,
+        right: insetRight,
+        ...(side === "top" ? { top: 0 } : { bottom: 0 }),
+        height: size,
+        pointerEvents: "none",
+        background: {
+          type: "linear-gradient",
+          angle: side === "top" ? 180 : 0,
+          stops: [
+            { color: color.slice(0, 7), position: 0 },
+            { color: alpha(color.slice(0, 7), 0), position: 1 },
+          ],
+        },
+      }}
+    />
+  );
+  return (
+    <>
+      {top ? edge("top") : null}
+      {bottom ? edge("bottom") : null}
+    </>
+  );
+}

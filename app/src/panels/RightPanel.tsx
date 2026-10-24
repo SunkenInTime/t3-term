@@ -41,7 +41,7 @@ import { projectIndexAtom } from "../state/environment.ts";
 import { fileSavePendingAtom, fileSavePendingKey } from "../state/files.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { Icon, type IconName } from "../ui/Icon.tsx";
-import { Menu, MenuItem, MenuSeparator, Tooltip, surfaceStyle } from "../ui/overlay.tsx";
+import { Menu, MenuIconSlot, MenuItem, MenuSeparator, Tooltip, surfaceStyle } from "../ui/overlay.tsx";
 import { FloatingLayer } from "@gpuix/react/floating";
 import { useBrowserDefaults } from "../web/browser/browserDefaults.ts";
 import { IconButton, Kbd, Text } from "../ui/primitives.tsx";
@@ -315,7 +315,7 @@ export function RightPanel({
     {
       key: "browser",
       label: "Browser",
-      icon: "globe",
+      icon: "globe-2",
       shortcut: "B",
       // ChatView: isPreviewSupportedInRuntime() || useEnvironmentSupportsServerBrowser; t3-term has no desktop bridge.
       available: serverBrowser,
@@ -693,11 +693,13 @@ function AddSurfaceMenuItems({ actions, onClose }: { actions: readonly SurfaceAc
           <div key={action.label} style={{ display: "flex", flexDirection: "column" }} onMouseEnter={() => setBrowserSubmenuOpen(false)}>
           <MenuItem
             icon={action.icon}
+            compactIcon
             disabled={!action.available}
             onSelect={action.onClick}
             testId={`right-panel-add-${action.key}`}
             trailing={
-              <Text size="xs" color={alpha(theme.mutedForeground, 0.72)} style={{ marginLeft: 16 }}>
+              // MenuShortcut: `ms-auto font-medium text-secondary-label` (= muted), only the item's 8px gap before it.
+              <Text size="xs" weight={500} color={theme.mutedForeground}>
                 {action.shortcut}
               </Text>
             }
@@ -766,14 +768,14 @@ function BrowserProfileMenuItem({
           hover: { backgroundColor: theme.accent },
         }}
       >
-        <Icon name={action.icon} size={16} color={theme.mutedForeground} />
+        <MenuIconSlot name={action.icon} color={alpha(theme.mutedForeground, 0.8)} />
         <Text color={theme.foreground} style={{ flexGrow: 1, minWidth: 0 }}>
           {action.label}
         </Text>
-        <Text size="xs" color={alpha(theme.mutedForeground, 0.72)} style={{ marginLeft: 16 }}>
+        <Text size="xs" weight={500} color={theme.mutedForeground}>
           {action.shortcut}
         </Text>
-        <Icon name="chevron-right" size={16} color={theme.mutedForeground} />
+        <MenuIconSlot name="chevron-right" color={alpha(theme.mutedForeground, 0.8)} edge="end" />
       </div>
       {open ? (
         <FloatingLayer

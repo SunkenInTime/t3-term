@@ -124,7 +124,7 @@ export function PassiveTooltip({
           borderRadius: RADIUS.md,
           borderWidth: 1,
           borderColor: theme.border,
-          backgroundColor: theme.appearance === "dark" ? "#141414" : "#ffffff",
+          backgroundColor: theme.popover,
           pointerEvents: "none",
         }}
       >
