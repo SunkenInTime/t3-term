@@ -114,3 +114,9 @@ Bundled highlight languages: Rust, TS, TSX, JS, JSX, Python, Go, JSON, Bash, TOM
 - `simulateKeystrokes` costs one full frame per key (GPUI redraws a dirty window before each) and throws "Timed out after 2 seconds waiting for the GPUI key command" while the keys still land: wrap it in try/catch.
 - `focusElement` on an element inside a `<virtual-list>` scrolls that row's top to the viewport top even when it is already visible. `getElementBounds` returns null for the list itself.
 - `getScrollOffset`/`scrollTo` offsets are 0 at the start and negative as content scrolls, on both axes.
+## Findings from the pull request surfaces (gpuix 0.11.0, Windows)
+
+- **A filled box hides its ancestors from every pointer listener under it**, not only from hover: style.rs `should_occlude` makes any element with a non-transparent background (or `position: absolute`) block the hit test for hitboxes painted before it, ancestors included. A wrapper's `onMouseDown`/`onMouseUp` around a filled button never fires; put the handlers on the filled element itself (`PrButton`'s `pointer` prop). This, not Shift, is why a press on the PR list's Shift quick actions "got lost": the wrapper never heard it, with or without Shift held (checked with automation, both ways).
+- The same rule is why a diff root's `onMouseUp` never hears releases inside its rows (each row and gutter is filled): the number column ends its own drag.
+- Focus inside a `<virtual-list>` row scrolls that row to the top even after the row is laid out. Remounting a textarea with `autoFocus` a frame later did not take focus at all here; `renderer.focusElement` after layout does, and `DiffFocusKeeperContext` (panels/diff/DiffView.tsx) puts the list's scroll back afterwards.
+- `getFocusedElementId` (run by every `DismissableLayer` as it mounts) is a synchronous query with a 2 s timeout; under heavy machine load it threw inside a commit and took the PR page down. Avoid mounting a layer mid-gesture.

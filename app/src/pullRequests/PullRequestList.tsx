@@ -18,6 +18,7 @@ import { Text } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../ui/theme.ts";
 import { pullRequestEnvironment, useEnvironmentQuery } from "../state/pullRequests.ts";
 import { PullRequestSpeedActions } from "./PullRequestSpeedActions.tsx";
+import type { CloseSweepHandlers } from "./usePullRequestCloseSweep.ts";
 import { PullRequestStackPopover, wasStackClick } from "./PullRequestStack.tsx";
 import { PullRequestLinkContextMenu } from "./PullRequestLinkContextMenu.tsx";
 import {
@@ -257,10 +258,16 @@ function PullRequestRowImpl({
   onSelect,
   hostActions,
   onSpeedAction,
+  closing = false,
+  sweeping = false,
+  sweep,
 }: {
   entry: EnvironmentPullRequestEntry;
   hostActions?: ReadonlySet<PullRequestAction>;
   onSpeedAction?: (action: PullRequestAction) => void;
+  closing?: boolean;
+  sweeping?: boolean;
+  sweep?: CloseSweepHandlers;
   selected: boolean;
   showProvider: boolean;
   environmentLabel?: string;
@@ -436,7 +443,14 @@ function PullRequestRowImpl({
         </div>
       </div>
       {hostActions && hostActions.size > 0 ? (
-        <PullRequestSpeedActions entry={entry} hostActions={hostActions} {...(onSpeedAction ? { onActed: onSpeedAction } : {})} />
+        <PullRequestSpeedActions
+          entry={entry}
+          hostActions={hostActions}
+          closing={closing}
+          sweeping={sweeping}
+          {...(sweep ? { sweep } : {})}
+          {...(onSpeedAction ? { onActed: onSpeedAction } : {})}
+        />
       ) : null}
     </div>
   );
@@ -499,6 +513,7 @@ export function PullRequestListGroups({
   onSelect,
   hostActionsOf,
   onSpeedAction,
+  closeSweep,
 }: {
   groups: ReadonlyArray<PullRequestGroup<EnvironmentPullRequestEntry>>;
   /** Only when rows come from more than one server, so each says which. */
@@ -510,6 +525,12 @@ export function PullRequestListGroups({
   onSelect: (entry: PullRequestRowTarget) => void;
   hostActionsOf?: (entry: EnvironmentPullRequestEntry) => ReadonlySet<PullRequestAction>;
   onSpeedAction?: (action: PullRequestAction) => void;
+  /** The close sweep: its handlers and which rows it marks or is closing. */
+  closeSweep?: {
+    readonly handlers: CloseSweepHandlers;
+    readonly sweepingKeys: ReadonlySet<string>;
+    readonly closingKeys: ReadonlySet<string>;
+  };
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -538,6 +559,13 @@ export function PullRequestListGroups({
                 onSelect={onSelect}
                 {...(hostActionsOf ? { hostActions: hostActionsOf(entry) } : {})}
                 {...(onSpeedAction ? { onSpeedAction } : {})}
+                {...(closeSweep
+                  ? {
+                      sweep: closeSweep.handlers,
+                      sweeping: closeSweep.sweepingKeys.has(entryKey),
+                      closing: closeSweep.closingKeys.has(entryKey),
+                    }
+                  : {})}
               />
             );
           })}

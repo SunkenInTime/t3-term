@@ -3,9 +3,13 @@
 // quick actions (Close, Merge, Ready for review, Reopen), carried out at once with no confirm, as
 // web does. Every press goes through the write gate.
 //
-// Not ported: web's drag across rows to close several (the close sweep).
+// Close also starts web's close sweep (usePullRequestCloseSweep.ts): drag from it across rows to
+// close several. The button holds the pointer for the whole gesture, so it stays mounted (shown)
+// while armed even if Shift is let go.
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import type { EventPayload } from "@gpuix/native";
+import type { KeyEvent } from "@gpuix/react";
 import type { PullRequestAction, PullRequestDetail, PullRequestMergeMethod } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { useRef, useState } from "react";
@@ -22,6 +26,7 @@ import { PrButton } from "./prControls.tsx";
 import { PullRequestGlyph } from "./pullRequestPresentation.tsx";
 import { markRowControlClick } from "./PullRequestStack.tsx";
 import { runPullRequestWrite } from "./pullRequestWrites.ts";
+import type { CloseSweepHandlers } from "./usePullRequestCloseSweep.ts";
 
 const ACTIONS: Record<"close" | "merge" | "ready" | "reopen", { readonly label: string; readonly icon: IconName }> = {
   close: { label: "Close", icon: PullRequestGlyph.closed },
@@ -56,16 +61,33 @@ export function PullRequestSpeedActions({
   entry,
   hostActions,
   onActed,
+  closing = false,
+  sweeping = false,
+  sweep,
 }: {
   entry: EnvironmentPullRequestEntry;
   hostActions: ReadonlySet<PullRequestAction>;
   onActed?: (action: PullRequestAction) => void;
+  /** In a batch close that is running. */
+  closing?: boolean;
+  /** Marked by a close sweep in progress. */
+  sweeping?: boolean;
+  sweep?: CloseSweepHandlers;
 }) {
   const speedMode = useAtomValue(shiftOnlyHeldAtom);
   const [pending, setPending] = useState(false);
+  const [armed, setArmedState] = useState(false);
+  // Read by the move and release handlers, which can arrive before the press re-renders.
+  const armedRef = useRef(false);
+  const setArmed = (next: boolean) => {
+    armedRef.current = next;
+    setArmedState(next);
+  };
   const pendingRef = useRef(false);
   const actions = pullRequestQuickActions(entry, hostActions);
-  if (actions.length === 0 || (!speedMode && !pending)) return null;
+  // web: busy rows keep their actions on screen, spinning, whether or not Shift is held.
+  const busy = pending || closing || sweeping;
+  if (actions.length === 0 || (!speedMode && !busy && !armed)) return null;
 
   // Small surfaces resolve the merge method on the click, not for every visible row.
   const resolveMergeMethod = (detail: PullRequestDetail): PullRequestMergeMethod => {
@@ -113,17 +135,61 @@ export function PullRequestSpeedActions({
       {actions.map((action) => {
         const { label, icon } = ACTIONS[action];
         const stacked = action === "merge" && entry.stack !== undefined;
+        const sweepable = action === "close" && sweep !== undefined;
+        // The Close button holds the pointer from press to release (gpuix capture), so the
+        // release decides: after a drag it ends the sweep, otherwise it is this row's Close.
+        const sweepHandlers = sweepable
+          ? {
+              onMouseDown: (event: EventPayload) => {
+                if ((event.button ?? 0) !== 0 || busy) return;
+                setArmed(true);
+                sweep.start(entry, { x: Number(event.x ?? 0), y: Number(event.y ?? 0) });
+              },
+              onMouseMove: (event: EventPayload) => {
+                if (!armedRef.current || event.pressedButton !== 0) return;
+                sweep.move({ x: Number(event.x ?? 0), y: Number(event.y ?? 0) });
+              },
+              onMouseUp: (event: EventPayload) => {
+                if (!armedRef.current) return;
+                setArmed(false);
+                markRowControlClick(event);
+                if (!sweep.end()) void perform("close");
+              },
+              // web: Escape cancels the sweep. The press focused this button, so Escape lands here
+              // before the page's own Escape (going back).
+              onKeyDown: (event: KeyEvent) => {
+                if (event.key !== "escape" || !armedRef.current) return;
+                event.preventDefault();
+                event.stopPropagation();
+                sweep.cancel();
+              },
+            }
+          : null;
         return (
-          <Tooltip key={action} content={stacked ? "Open this pull request to merge its stack" : `${label} immediately`}>
+          <Tooltip
+            key={action}
+            content={
+              stacked
+                ? "Open this pull request to merge its stack"
+                : sweepable
+                  ? "Close immediately, or drag across rows to close several"
+                  : `${label} immediately`
+            }
+          >
             <div style={{ display: "flex" }}>
               <PrButton
+                {...(sweepHandlers ? { pointer: sweepHandlers, style: { userSelect: "none" } } : {})}
                 variant={action === "close" ? "destructive-outline" : "outline"}
-                icon={pending ? "loader" : icon}
-                disabled={pending || stacked}
-                onClick={(event) => {
-                  markRowControlClick(event);
-                  void perform(action);
-                }}
+                icon={busy ? "loader" : icon}
+                disabled={busy || stacked}
+                {...(sweepable
+                  ? {}
+                  : {
+                      onClick: (event: EventPayload) => {
+                        markRowControlClick(event);
+                        void perform(action);
+                      },
+                    })}
                 testId={`pr-speed-${action}-${entry.number}`}
               >
                 {label}

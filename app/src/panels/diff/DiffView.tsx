@@ -8,7 +8,7 @@
 // arrives later without moving anything.
 import type { EventPayload } from "@gpuix/native";
 import { useGpuixRequired } from "@gpuix/react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { ContextMenuItem } from "@t3tools/contracts";
 
@@ -46,6 +46,7 @@ import {
 } from "./diffModel.ts";
 import { DiffCommentAnnotation } from "./DiffCommentAnnotation.tsx";
 import { linePoint, useDiffComments, type DiffComments, type DiffCommentsConfig } from "./useDiffComments.ts";
+import type { SelectedLineRange } from "../../web/reviewCommentContext.ts";
 
 const WINDOW = 160;
 
@@ -113,10 +114,10 @@ export interface DiffViewProps {
   readonly annotations?: ReadonlyMap<string, ReadonlyArray<DiffExternalAnnotation>>;
   readonly renderAnnotation?: (file: DiffFileModel, annotation: DiffExternalAnnotation) => ReactNode;
   /**
-   * With `comments` off: the gutter's "+" on one line calls this instead of opening the
-   * composer comment form (the pull request review comment flow).
+   * With `comments` off: line numbers select ranges (press, drag, Shift+press) and the finished
+   * range goes to the caller, who paints it back through `selected` (the pull request Code tab).
    */
-  readonly onLineNumberClick?: (file: DiffFileModel, side: "additions" | "deletions", lineNumber: number) => void;
+  readonly lineSelection?: DiffLineSelection | null;
   /** Extra controls at the end of a file header (the viewed checkbox). */
   readonly renderHeaderExtras?: (file: DiffFileModel) => ReactNode;
   /** Paint every row in a plain column that grows with its content, for a short excerpt inside an outer scroller. */
@@ -132,6 +133,12 @@ export interface DiffViewProps {
    * separators are labels only (a turn diff has no full file contents to show).
    */
   readonly onExpandGap?: ((file: DiffFileModel, expandIndex: number, direction: GapDirection) => void) | null;
+}
+
+export interface DiffLineSelection {
+  readonly enabled: boolean;
+  readonly selected: { readonly path: string; readonly range: SelectedLineRange } | null;
+  readonly onSelectionEnd: (file: DiffFileModel, range: SelectedLineRange) => void;
 }
 
 /** pierre's expand directions: "up" grows from the gap's start, "down" from its end. */
@@ -160,8 +167,6 @@ interface RowInteraction {
      */
     readonly hover: (key: string, side: "old" | "new", via: "gutter" | "button") => void;
     readonly unhover: (key: string, via: "gutter" | "button") => void;
-    /** The gutter "+" when composer comments are off and the caller takes line presses. */
-    readonly lineClick: ((filePath: string, side: "additions" | "deletions", lineNumber: number) => void) | null;
     readonly renderAnnotation: ((filePath: string, annotation: DiffExternalAnnotation) => ReactNode) | null;
     readonly renderHeaderExtras: ((file: DiffFileModel) => ReactNode) | null;
     readonly fileMenu: DiffFileMenu | null;
@@ -180,6 +185,13 @@ function pressConsumed(event: EventPayload): boolean {
   const consumed = consumedPress;
   return consumed !== null && consumed.x === Number(event.x ?? 0) && consumed.y === Number(event.y ?? 0) && Date.now() - consumed.at < 500;
 }
+
+/**
+ * Runs a focus change inside the diff's list and then puts the scroll back. gpuix scrolls a
+ * virtual-list row to the top when something inside it takes focus, which would hide the lines a
+ * comment draft was opened for (they sit just above its row).
+ */
+export const DiffFocusKeeperContext = createContext<((focus: () => void) => void) | null>(null);
 
 export function DiffView(props: DiffViewProps) {
   const theme = useTheme();
@@ -207,7 +219,21 @@ export function DiffView(props: DiffViewProps) {
     () => (findOpen ? collectDiffMatches(props.files, findParams) : []),
     [findOpen, props.files, findParams],
   );
-  const comments = useDiffComments(props.files, props.comments ?? null);
+  const lineSelection = props.lineSelection ?? null;
+  const comments = useDiffComments(
+    props.files,
+    props.comments ?? null,
+    lineSelection === null
+      ? null
+      : {
+          enabled: lineSelection.enabled,
+          selected: lineSelection.selected,
+          onSelectionEnd: (path, range) => {
+            const file = props.files.find((candidate) => candidate.path === path);
+            if (file) lineSelection.onSelectionEnd(file, range);
+          },
+        },
+  );
   const [hovered, setHovered] = useState<{ key: string; side: "old" | "new"; via: "gutter" | "button" } | null>(null);
   const hover = (key: string, side: "old" | "new", via: "gutter" | "button") =>
     setHovered((current) =>
@@ -215,12 +241,6 @@ export function DiffView(props: DiffViewProps) {
     );
   const unhover = (key: string, via: "gutter" | "button") =>
     setHovered((current) => (current?.key === key && current.via === via ? null : current));
-  const lineClick = props.onLineNumberClick
-    ? (filePath: string, side: "additions" | "deletions", lineNumber: number) => {
-        const file = props.files.find((candidate) => candidate.path === filePath);
-        if (file) props.onLineNumberClick?.(file, side, lineNumber);
-      }
-    : null;
   const renderAnnotation = props.renderAnnotation
     ? (filePath: string, annotation: DiffExternalAnnotation) => {
         const file = props.files.find((candidate) => candidate.path === filePath);
@@ -234,13 +254,12 @@ export function DiffView(props: DiffViewProps) {
     comments,
     hover,
     unhover,
-    lineClick,
     renderAnnotation,
     renderHeaderExtras,
     fileMenu,
     expandGap,
   });
-  interactionRef.current = { comments, hover, unhover, lineClick, renderAnnotation, renderHeaderExtras, fileMenu, expandGap };
+  interactionRef.current = { comments, hover, unhover, renderAnnotation, renderHeaderExtras, fileMenu, expandGap };
   const interaction = useMemo<RowInteraction>(
     () => ({
       get current() {
@@ -457,7 +476,20 @@ export function DiffView(props: DiffViewProps) {
     return first.file;
   })();
 
+  const keepScrollAcrossFocus = (focus: () => void) => {
+    const id = listRef.current?.id;
+    const top = id == null ? null : renderer.getListScrollTop?.(id);
+    focus();
+    if (id == null || !top) return;
+    // The list applies the focus scroll on its next layout; restore after it, twice in case a
+    // slow frame lands between.
+    const restore = () => renderer.scrollToItem?.(id, top[0]!, top[1]!);
+    setTimeout(restore, 16);
+    setTimeout(restore, 120);
+  };
+
   return (
+    <DiffFocusKeeperContext.Provider value={props.inline ? null : keepScrollAcrossFocus}>
     <div
       ref={rootRef as never}
       testId="diff-view"
@@ -558,7 +590,7 @@ export function DiffView(props: DiffViewProps) {
               palette={palette}
               onToggleFile={props.onToggleFile}
               onOpenFile={props.onOpenFile}
-              hoveredSide={(comments.enabled || lineClick) && hovered?.key === row.key ? hovered.side : null}
+              hoveredSide={comments.enabled && hovered?.key === row.key ? hovered.side : null}
               selected={comments.selectedLines}
               interaction={interaction}
               draftText={row.type === "annotation" && row.annotation.entries.some((entry) => entry.kind === "draft") ? comments.draftText : ""}
@@ -599,7 +631,7 @@ export function DiffView(props: DiffViewProps) {
               palette={palette}
               onToggleFile={props.onToggleFile}
               onOpenFile={props.onOpenFile}
-              hoveredSide={(comments.enabled || lineClick) && hovered?.key === row.key ? hovered.side : null}
+              hoveredSide={comments.enabled && hovered?.key === row.key ? hovered.side : null}
               selected={comments.selectedLines}
               interaction={interaction}
               draftText={row.type === "annotation" && row.annotation.entries.some((entry) => entry.kind === "draft") ? comments.draftText : ""}
@@ -624,6 +656,7 @@ export function DiffView(props: DiffViewProps) {
         </div>
       ) : null}
     </div>
+    </DiffFocusKeeperContext.Provider>
   );
 }
 
@@ -660,15 +693,38 @@ const DiffRowView = memo(function DiffRowView(props: {
     case "annotation":
       if (row.annotation.entries.every((entry) => entry.kind === "external")) {
         const render = props.interaction.current.renderAnnotation;
+        const gutter = gutterWidth(row.file.numberDigits, props.ch);
+        // pierre's annotation slot sits in the code column; a range still selected for the draft
+        // under its last line keeps its bar down the gutter beside it.
+        const annotationSide = row.annotation.side;
+        const selected = [...props.selected].some((line) =>
+          annotationSide === "deletions" ? line.oldLine === row.annotation.lineNumber && line.kind !== "addition" : line.newLine === row.annotation.lineNumber && line.kind !== "deletion",
+        );
+        const half = Math.floor(props.width / 2);
+        const columnWidth = row.half === "full" ? props.width : row.half === "left" ? half : props.width - half;
+        const content = (
+          <div style={{ display: "flex", flexDirection: "row", width: columnWidth, flexShrink: 0, backgroundColor: palette.bg }}>
+            <div style={{ position: "relative", width: gutter, flexShrink: 0, backgroundColor: selected ? palette.selectedGutter : palette.bg }}>
+              {selected ? <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, backgroundColor: palette.modified, pointerEvents: "none" }} /> : null}
+            </div>
+            <div style={{ width: 2, flexShrink: 0, backgroundColor: palette.bg }} />
+            <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
+              {render
+                ? row.annotation.entries.map((entry) => (
+                    <div key={entry.id} style={{ display: "flex", flexDirection: "column" }}>
+                      {render(row.file.path, { key: entry.id, side: row.annotation.side, lineNumber: row.annotation.lineNumber })}
+                    </div>
+                  ))
+                : null}
+            </div>
+          </div>
+        );
+        if (row.half === "full") return content;
+        const blank = <div style={{ width: row.half === "left" ? props.width - half : half, flexShrink: 0, backgroundColor: palette.bg }} />;
         return (
-          <div style={{ display: "flex", flexDirection: "column", width: props.width }}>
-            {render
-              ? row.annotation.entries.map((entry) => (
-                  <div key={entry.id} style={{ display: "flex", flexDirection: "column" }}>
-                    {render(row.file.path, { key: entry.id, side: row.annotation.side, lineNumber: row.annotation.lineNumber })}
-                  </div>
-                ))
-              : null}
+          <div style={{ display: "flex", flexDirection: "row", width: props.width }}>
+            {row.half === "left" ? content : blank}
+            {row.half === "left" ? blank : content}
           </div>
         );
       }
@@ -821,7 +877,11 @@ function LineCellView(props: {
   const rowCount = Math.max(props.rows ?? 0, visual.length);
   const height = rowCount * CODE_LINE_HEIGHT;
   return (
-    <div style={{ position: "relative", display: "flex", flexDirection: "row", width: props.width, height, flexShrink: 0, backgroundColor: lineBg }}>
+    <div
+      // The diff root never hears a release inside the list's rows, so each line ends a gutter drag itself.
+      onMouseUp={() => props.interaction.interaction.current.comments.pointerUp()}
+      style={{ position: "relative", display: "flex", flexDirection: "row", width: props.width, height, flexShrink: 0, backgroundColor: lineBg }}
+    >
       <GutterCell
         interaction={props.interaction}
         line={line}
@@ -878,12 +938,7 @@ function LineCellView(props: {
             else current.unhover(props.interaction.rowKey, "button");
           }}
           onPress={() => {
-            const current = props.interaction.interaction.current;
-            if (!current.comments.enabled && current.lineClick) {
-              current.lineClick(props.interaction.filePath, point.side === "deletions" ? "deletions" : "additions", point.lineNumber);
-              return;
-            }
-            current.comments.utility(props.interaction.filePath, point);
+            props.interaction.interaction.current.comments.utility(props.interaction.filePath, point);
           }}
         />
       ) : null}
@@ -967,6 +1022,9 @@ function GutterCell(props: {
         if (point) current.comments.numberEnter(interaction.filePath, point);
       }}
       onMouseLeave={() => interaction.interaction.current.unhover(interaction.rowKey, "gutter")}
+      // A row's filled cells hide it from its ancestors' release listeners (gpuix occludes any
+      // hitbox under a filled box), so the number column hears its own release.
+      onMouseUp={() => interaction.interaction.current.comments.pointerUp()}
       onMouseDown={(event: EventPayload) => {
         if (pressConsumed(event) || !point || (event.button ?? 0) !== 0) return;
         interaction.interaction.current.comments.numberDown(interaction.filePath, point, event.modifiers?.shift === true);
