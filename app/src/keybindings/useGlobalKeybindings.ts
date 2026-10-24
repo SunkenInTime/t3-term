@@ -14,8 +14,8 @@ import { noteUserInput } from "../notifications/platform.ts";
 import type { KeyEvent } from "@gpuix/react";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { KeybindingCommand, ScopedThreadRef } from "@t3tools/contracts";
-import { US_SHIFTED_TO_UNSHIFTED_KEYS } from "@t3tools/shared/keybindings";
+import type { KeybindingCommand, ResolvedKeybindingsConfig, ScopedThreadRef } from "@t3tools/contracts";
+import { matchesKeybindingShortcut, US_SHIFTED_TO_UNSHIFTED_KEYS } from "@t3tools/shared/keybindings";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { cycleAppearanceMode } from "../state/appearance.ts";
@@ -81,6 +81,7 @@ import {
   startScratchThread,
 } from "../palette/actions.ts";
 import {
+  HOST_PLATFORM,
   resolveChatShortcutCommand,
   resolveShortcutCommand,
   threadJumpIndexFromCommand,
@@ -157,20 +158,42 @@ export function readShortcutContext(overrides?: Partial<ShortcutMatchContext>): 
   };
 }
 
+/**
+ * Whether any binding's chord is this keystroke, whatever its `when` clause. Reading the
+ * context can ask the renderer for its element tree (focusContext.ts), so keys that are
+ * no shortcut at all skip it.
+ */
+function isAnyBindingChord(event: ShortcutEventLike, keybindings: ResolvedKeybindingsConfig): boolean {
+  for (const binding of keybindings) {
+    if (matchesKeybindingShortcut(event, binding.shortcut, HOST_PLATFORM)) return true;
+    // shortcutForContext: with composerRequiresModifier, Mod+Enter's alternate send is Mod+Shift+Enter.
+    if (
+      binding.command === "composer.sendAlternate" &&
+      matchesKeybindingShortcut(event, { ...binding.shortcut, shiftKey: true }, HOST_PLATFORM)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function resolveKeyEventCommand(
   event: KeyEvent,
   overrides?: Partial<ShortcutMatchContext>,
 ): KeybindingCommand | null {
-  const options = { context: readShortcutContext(overrides) };
+  const shortcutEvent = toShortcutEvent(event);
   const keybindings = appAtomRegistry.get(activeKeybindingsAtom);
   const route = appAtomRegistry.get(routeAtom);
-  if (route.kind !== "thread" && route.kind !== "draft") {
-    return resolveShortcutCommand(toShortcutEvent(event), keybindings, options);
-  }
   // resolveChatShortcutCommand: project scripts are bound on the thread's own server,
   // everything else on the app's.
-  const scriptKeybindings = readServerConfig(route.environmentId)?.keybindings ?? [];
-  return resolveChatShortcutCommand(toShortcutEvent(event), keybindings, scriptKeybindings, options);
+  const scriptKeybindings =
+    route.kind === "thread" || route.kind === "draft" ? (readServerConfig(route.environmentId)?.keybindings ?? null) : null;
+  if (!isAnyBindingChord(shortcutEvent, keybindings) && !(scriptKeybindings && isAnyBindingChord(shortcutEvent, scriptKeybindings))) {
+    return null;
+  }
+  const options = { context: readShortcutContext(overrides) };
+  if (scriptKeybindings === null) return resolveShortcutCommand(shortcutEvent, keybindings, options);
+  return resolveChatShortcutCommand(shortcutEvent, keybindings, scriptKeybindings, options);
 }
 
 // ── Handler registry ────────────────────────────────────────────────────
@@ -516,11 +539,20 @@ function handleThreadUndoShortcut(event: KeyEvent): boolean {
   }
   const isModifier = MODIFIER_KEYS[key] !== undefined;
   if (!isModifier) heldUndoKey = null;
-  const context = readShortcutContext();
+  const shortcutEvent = toShortcutEvent(event);
+  const keybindings = appAtomRegistry.get(activeKeybindingsAtom);
+  // Only an undo chord needs the context (and the element tree it may read).
+  const isUndoChord = keybindings.some(
+    (binding) => binding.command === "thread.undo" && matchesKeybindingShortcut(shortcutEvent, binding.shortcut, HOST_PLATFORM),
+  );
+  const context = isUndoChord ? readShortcutContext() : null;
   const claimed = appAtomRegistry.get(sidebarVisibleAtom) && threadUndoClaimsShortcut();
-  const command = resolveShortcutCommand(toShortcutEvent(event), appAtomRegistry.get(activeKeybindingsAtom), {
-    context: { ...context, editableFocus: context.editableFocus === true && !claimed },
-  });
+  const command =
+    context === null
+      ? null
+      : resolveShortcutCommand(shortcutEvent, keybindings, {
+          context: { ...context, editableFocus: context.editableFocus === true && !claimed },
+        });
   if (command !== "thread.undo") {
     if (!isModifier) releaseThreadUndoShortcut();
     return false;
