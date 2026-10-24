@@ -95,6 +95,9 @@ export async function bootstrapConnections(args: Args): Promise<Boot> {
       if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       return { environmentId: result.value, error: null };
     }
+    // An explicit --url names the server to use. Falling through to local discovery
+    // would mint a session on whatever T3 install happens to be on this machine.
+    if (args.url) return { environmentId: null, error: `--url ${args.url} needs --token or --pair` };
     if (args.local) return await connectLocalServer();
     return { environmentId: null, error: null };
   } catch (error) {
