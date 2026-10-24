@@ -10,7 +10,7 @@ import { collectComposerContextReferences, replaceComposerContextReferences } fr
 import { buildNewThreadLink, PROMPT_LINK_MAX_PROMPT_LENGTH } from "@t3tools/shared/promptLinks";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
-import { memo, use, useState, type ReactNode } from "react";
+import { createContext, memo, use, useMemo, useState, type ReactNode } from "react";
 
 import { environmentSession, environmentThreadShells } from "../../state/environment.ts";
 import { timelineAssets } from "../../state/timeline.ts";
@@ -25,11 +25,36 @@ import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../web/t
 import { isFileAttachment, isImageAttachment, isVideoAttachment, type ChatAttachment, type ChatFileAttachment } from "../../web/types.ts";
 import { rightPanelActions, threadKeyOf } from "../../state/rightPanel.ts";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
+import type { ChipPayload } from "../markdown/MarkdownChips.tsx";
+import { userMessageContextChip } from "./userMessageContextChips.ts";
+import { WorkflowOpeningBlock } from "./WorkflowOpeningBlock.tsx";
+import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
 import { MessageCopyButton, MicroIconButton, useHover } from "./parts.tsx";
 import { TimelineRowActivityCtx, TimelineRowCtx, type TimelineRow } from "./rowContext.ts";
-import { openExternalUrl } from "./system.ts";
 
 type MessageRow = Extract<TimelineRow, { kind: "message" }>;
+
+// The bubble is max-w-[80%] with p-3 and shrinks to its text, so its markdown
+// lays out against the row's width rather than its own content-sized box.
+const BubbleTextWidth = createContext<number | undefined>(undefined);
+let lastRowWidth = 0;
+
+function useRowWidth(): [number, (event: { width?: number }) => void] {
+  const [width, setWidth] = useState(lastRowWidth);
+  return [
+    width,
+    (event) => {
+      const next = event.width ?? 0;
+      if (next <= 0) return;
+      lastRowWidth = next;
+      if (Math.abs(next - width) > 0.5) setWidth(next);
+    },
+  ];
+}
+
+function bubbleTextWidth(rowWidth: number): number | undefined {
+  return rowWidth > 0 ? Math.max(40, rowWidth * 0.8 - 24) : undefined;
+}
 
 const NO_SHELL_ATOM = Atom.make(null);
 const EMPTY_URLS_ATOM = Atom.make<ReadonlyArray<ReturnType<typeof timelineAssets.createUrl> extends Atom.Atom<infer R> ? R : never>>([]);
@@ -53,7 +78,31 @@ function useAttachmentUrls(environmentId: EnvironmentId, resources: ReadonlyArra
   });
 }
 
+/** Image attachment URLs by attachment id (chips and the grid open them in the image viewer). */
+function useAttachmentUrlMap(environmentId: EnvironmentId, _messageId: MessageId, images: ReadonlyArray<ChatAttachment>): ReadonlyMap<string, string> {
+  const resources = selectMessageImageResources(images as never);
+  const urls = useAttachmentUrls(environmentId, resources);
+  const key = urls.join("\u0000");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => {
+    const map = new Map<string, string>();
+    resources.forEach((resource, index) => {
+      const url = urls[index];
+      if (resource._tag === "attachment" && url) map.set(resource.attachmentId, url);
+    });
+    for (const image of images) {
+      const preview = "previewUrl" in image ? image.previewUrl : undefined;
+      if (!map.has(image.id) && preview) map.set(image.id, preview);
+    }
+    return map;
+  }, [key, images]);
+}
+
 export function UserMessageRow({ row }: { row: MessageRow }) {
+  const ctx = use(TimelineRowCtx);
+  if (ctx.workflowOpening?.messageId === row.message.id) {
+    return <WorkflowOpeningBlock opening={ctx.workflowOpening} environmentId={ctx.activeThreadEnvironmentId} onOpenThread={ctx.onOpenThread} />;
+  }
   return resolveUserMessagePresentation(row.message).attribution === "automation" ? (
     <AutomationMessageRow row={row} />
   ) : (
@@ -156,22 +205,25 @@ function AutomationMessageRow({ row }: { row: MessageRow }) {
   const [hovered, hover] = useHover();
   const { text } = resolveUserMessagePresentation(row.message);
   const summary = text.trim().split(/\r?\n/, 1)[0] ?? "";
+  const [rowWidth, onRowLayout] = useRowWidth();
   return (
-    <div {...hover} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-      {row.message.inputIntent === "steer" || row.message.inputIntent === "promoted_queued_to_steer" ? (
-        <UserMessageIntentMarker intent={row.message.inputIntent} />
-      ) : null}
-      <div {...hover} style={{ display: "flex", flexDirection: "column", minWidth: 0, maxWidth: "80%", ...(expanded ? { width: "80%" } : {}), borderRadius: RADIUS["2xl"], backgroundColor: theme.messageSurface }}>
-        <FoldedMessageHeader icon="calendar-clock" label="Automation" summary={summary} expanded={expanded} onToggle={() => setExpanded((value) => !value)} />
-        {expanded ? (
-          <div style={{ paddingLeft: 12, paddingRight: 12, paddingBottom: 12 }}>
-            <CollapsibleUserMessageBody text={text} />
-          </div>
+    <BubbleTextWidth value={bubbleTextWidth(rowWidth)}>
+      <div {...hover} onLayout={onRowLayout} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, width: "100%" }}>
+        {row.message.inputIntent === "steer" || row.message.inputIntent === "promoted_queued_to_steer" ? (
+          <UserMessageIntentMarker intent={row.message.inputIntent} />
         ) : null}
+        <div {...hover} style={{ display: "flex", flexDirection: "column", minWidth: 0, maxWidth: "80%", ...(expanded ? { width: "80%" } : {}), borderRadius: RADIUS["2xl"], backgroundColor: theme.messageSurface }}>
+          <FoldedMessageHeader icon="calendar-clock" label="Automation" summary={summary} expanded={expanded} onToggle={() => setExpanded((value) => !value)} />
+          {expanded ? (
+            <div style={{ paddingLeft: 12, paddingRight: 12, paddingBottom: 12 }}>
+              <CollapsibleUserMessageBody text={text} />
+            </div>
+          ) : null}
+        </div>
+        <UserMessageProjectedStatus row={row} />
+        {expanded ? <UserMessageMeta row={row} visible={hovered} copyText={text} promptLink={promptLinkFor(text)} /> : null}
       </div>
-      <UserMessageProjectedStatus row={row} />
-      {expanded ? <UserMessageMeta row={row} visible={hovered} copyText={text} promptLink={promptLinkFor(text)} /> : null}
-    </div>
+    </BubbleTextWidth>
   );
 }
 
@@ -197,9 +249,22 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
   const resolvedContext = resolveUserMessageContext(row.message);
   // Context chips render as their labels; gpuix markdown has no inline components.
   const plainText = replaceComposerContextReferences(resolvedContext.text, (reference) => reference.label);
-  // Web renders context references as inline chips; gpuix markdown has no inline
-  // components, so a chip becomes inline code, the closest native pill.
-  const chippedText = replaceComposerContextReferences(resolvedContext.text, (reference) => `\`${reference.label.replaceAll("`", "")}\``);
+  // UserMessageContextChips: each `t3-context:` reference renders as its chip.
+  const imageUrls = useAttachmentUrlMap(ctx.activeThreadEnvironmentId, row.message.id, images);
+  const contextChip = useMemo(
+    () => (reference: { kind: string; contextId: string; label: string }) =>
+      userMessageContextChip(reference, {
+        environmentId: ctx.threadRef.environmentId,
+        threadId: ctx.threadRef.threadId,
+        workspaceRoot: ctx.workspaceRoot,
+        recordsById: resolvedContext.recordsById,
+        imageUrls,
+        files: new Map(files.map((file) => [file.id, file])),
+      }),
+    // recordsById is rebuilt per render from the message; its identity follows the message.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [row.message, ctx.threadRef, ctx.workspaceRoot, imageUrls],
+  );
   // Files a chip already shows are not listed again (web's chippedAttachmentIds).
   const chippedAttachmentIds = new Set(
     collectComposerContextReferences(resolvedContext.text).flatMap((occurrence) => {
@@ -211,9 +276,11 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
   const unchippedFiles = files.filter((file) => !isVideoAttachment(file) && !chippedAttachmentIds.has(file.id));
   const foldSummary = plainText.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? "";
   const promptLink = promptLinkFor(plainText);
+  const [rowWidth, onRowLayout] = useRowWidth();
 
   return (
-    <div {...hover} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+    <BubbleTextWidth value={bubbleTextWidth(rowWidth)}>
+    <div {...hover} onLayout={onRowLayout} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, width: "100%" }}>
       {userMessage.attribution === "t3code" ? (
         <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)} style={{ marginRight: 4 }}>
           Sent by T3 Code
@@ -252,7 +319,7 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
                 files={[...unchippedFiles, ...unknownAttachments]}
                 onOpen={(file) => rightPanelActions.openAttachment(threadKeyOf(ctx.threadRef.environmentId, ctx.threadRef.threadId), file)}
               /> : null}
-            {resolvedContext.text.trim().length > 0 ? <CollapsibleUserMessageBody text={chippedText} collapsible={!folded} /> : null}
+            {resolvedContext.text.trim().length > 0 ? <CollapsibleUserMessageBody text={resolvedContext.text} collapsible={!folded} contextChip={contextChip} /> : null}
           </div>
         ) : null}
       </div>
@@ -275,6 +342,7 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
         />
       ) : null}
     </div>
+    </BubbleTextWidth>
   );
 });
 
@@ -293,7 +361,18 @@ function UserImageGrid({ images, videos }: { images: ReadonlyArray<ChatAttachmen
         return (
           <div
             key={image.id}
-            onClick={url ? () => openExternalUrl(url) : undefined}
+            onClick={
+              url
+                ? () => {
+                    // ExpandedImageDialog over the message's images, starting at this one.
+                    const gallery = images.flatMap((entry) => {
+                      const src = urlById.get(entry.id) ?? ("previewUrl" in entry ? (entry.previewUrl ?? null) : null);
+                      return src ? [{ src, name: entry.name }] : [];
+                    });
+                    openExpandedImage({ images: gallery, index: Math.max(0, gallery.findIndex((entry) => entry.src === url)) });
+                  }
+                : undefined
+            }
             style={{
               display: "flex",
               alignItems: "center",
@@ -382,15 +461,28 @@ const COLLAPSED_HEIGHT = 176;
 const FADE_HEIGHT = 28;
 
 /** Long messages collapse to 176px with a fade and a "Show full message" toggle. */
-const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody({ text, collapsible = true }: { text: string; collapsible?: boolean }) {
+const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody({
+  text,
+  collapsible = true,
+  contextChip,
+}: {
+  text: string;
+  collapsible?: boolean;
+  contextChip?: (reference: { kind: string; contextId: string; label: string }) => ChipPayload | null;
+}) {
   const theme = useTheme();
   const [expanded, setExpanded] = useState(false);
   const canCollapse = collapsible && text.trim().length > 0 && shouldCollapseUserMessage(text);
   const isCollapsed = canCollapse && !expanded;
+  const maxWidth = use(BubbleTextWidth);
+  // The bubble shrinks to its text; definite widths down the chain keep Taffy
+  // from laying the markdown out once per auto-width ancestor.
+  const [fitWidth, setFitWidth] = useState<number | undefined>(undefined);
+  const width = fitWidth !== undefined ? { width: fitWidth } : {};
   return (
-    <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-      <div style={{ position: "relative", minWidth: 0, ...(isCollapsed ? { height: COLLAPSED_HEIGHT, overflow: "hidden" } : {}) }}>
-        <ChatMarkdown text={text} tone="user" lineBreaks />
+    <div style={{ display: "flex", flexDirection: "column", minWidth: 0, ...width }}>
+      <div style={{ position: "relative", minWidth: 0, ...width, ...(isCollapsed ? { height: COLLAPSED_HEIGHT, overflow: "hidden" } : {}) }}>
+        <ChatMarkdown text={text} tone="user" lineBreaks parseRawHtml={false} onFitWidth={setFitWidth} contextChip={contextChip} {...(maxWidth !== undefined ? { maxWidth } : {})} />
         {isCollapsed ? (
           <div
             style={{

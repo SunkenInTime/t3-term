@@ -62,7 +62,7 @@ export default embeddedManifest;
 const outfile = process.argv[2] ?? join(root, "dist", process.platform === "win32" ? "t3-term.exe" : "t3-term");
 try {
   const result = await Bun.build({
-    entrypoints: [join(root, "src/entry.ts"), join(root, "src/panels/code/highlightWorker.ts")],
+    entrypoints: [join(root, "src/entry.ts"), join(root, "src/panels/code/highlightWorker.ts"), join(root, "src/chat/markdown/diagramWorker.ts")],
     compile: { outfile },
     minify: true,
     // React picks its development or production build from NODE_ENV. Without
