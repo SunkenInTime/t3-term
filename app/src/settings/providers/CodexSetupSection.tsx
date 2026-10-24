@@ -7,9 +7,10 @@
 // Differences from web, because t3-term is not a browser page:
 //   - There is no page URL to come back to, so sign-in sends no `returnUrl` and the
 //     "Use T3 desktop for automatic return" handoff link (built from that URL) is left out.
-//   - Web's desktop app receives the OAuth callback itself; t3-term can't, so it behaves
-//     like the hosted web app: a loopback server takes the callback (callbackMode
-//     "server"), a remote one asks for the redirect URL to be pasted.
+//   - Like web's desktop app, t3-term receives the OAuth callback for a remote server
+//     itself (providerAuthReceiver.ts) and completes the sign-in; a loopback server
+//     takes the callback (callbackMode "server"). Over SSH, where the browser is on
+//     another machine, a remote server asks for the redirect URL to be pasted.
 //   - Like a browser on the primary machine, a remote environment hands the sign-in to
 //     a connected loopback primary environment (the ChatGPT handoff).
 // Install, sign-in, reconnect, import and sign-out go through dryRun.ts.
@@ -38,6 +39,7 @@ import { Button, Text, type ButtonSize, type ButtonVariant } from "../../ui/prim
 import { RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { BrandIcon } from "../brandIcons.tsx";
 import { TextField } from "../controls.tsx";
+import { cancelProviderAuthCallback, canReceiveProviderAuthCallback, receiveProviderAuthCallback } from "./providerAuthReceiver.ts";
 import { openExternal } from "../openExternal.ts";
 import { useEnvironmentQuery } from "../query.ts";
 import { RedactedText } from "../RedactedText.tsx";
@@ -377,9 +379,11 @@ function ManagedCodexSetup({
   const cancelInstall = useProviderActionCommand(serverEnvironment.cancelProviderInstall, "Cancel Codex install", options);
   const reconnectProfile = useProviderActionCommand(serverEnvironment.chatGptReconnectProfile, "Reconnect ChatGPT profile", options);
   const importProfile = useProviderActionCommand(serverEnvironment.chatGptImportProfile, "Import ChatGPT profile", options);
-  // No desktop bridge receives the callback, so a remote server needs the redirect pasted.
-  const clientCallback = !handoff && !local;
-  const remoteWeb = clientCallback;
+  // web: `!handoff && (!local || desktopBridge.receiveProviderAuthCallback)`; t3-term's
+  // receiver stands in for the bridge's, so only without it is a paste needed.
+  const nativeReceiver = canReceiveProviderAuthCallback();
+  const clientCallback = !handoff && (!local || nativeReceiver);
+  const remoteWeb = clientCallback && !nativeReceiver;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const primaryEnvironment = useEnvironment(primaryEnvironmentId);
   const primaryHttpBaseUrl = useEnvironmentHttpBaseUrl(primaryEnvironmentId);
@@ -537,12 +541,40 @@ function ManagedCodexSetup({
     }
   }, [pending, installActive, installation?.phase, installed]);
 
-  const openPage = (authorizationUrl: string) => openExternal(authorizationUrl);
+  const receivingCallback = useRef<string | null>(null);
+  const flowId = auth?.flowId;
+  const openPage = async (authorizationUrl: string) => {
+    try {
+      if (nativeReceiver && clientCallback && flowId) {
+        if (receivingCallback.current === authorizationUrl) {
+          openExternal(authorizationUrl);
+          return;
+        }
+        receivingCallback.current = authorizationUrl;
+        const receivedUrl = await receiveProviderAuthCallback(authorizationUrl);
+        if (receivingCallback.current !== authorizationUrl) return;
+        receivingCallback.current = null;
+        await run(() => completeAuth({ environmentId, input: { instanceId, flowId, callbackUrl: receivedUrl } }));
+      } else {
+        openExternal(authorizationUrl);
+      }
+    } catch {
+      receivingCallback.current = null;
+      setError("Could not finish sign-in on this computer. Try again or paste the redirect URL below.");
+    }
+  };
+  useEffect(() => {
+    if (!clientCallback || !url || !nativeReceiver) return;
+    return () => {
+      if (receivingCallback.current === url) receivingCallback.current = null;
+      cancelProviderAuthCallback(url);
+    };
+  }, [clientCallback, url, nativeReceiver]);
   useEffect(() => {
     if (!openRequested.current || auth?.phase !== "waiting" || !auth.flowId || !url || openedFlow.current === auth.flowId) return;
     openedFlow.current = auth.flowId;
     openRequested.current = false;
-    if (!remoteWeb) openPage(url);
+    if (!remoteWeb) void openPage(url);
   }, [auth?.phase, auth?.flowId, url, remoteWeb]);
 
   const runtimeDescription =
@@ -589,7 +621,7 @@ function ManagedCodexSetup({
       disabled={handoffQuery.data?.phase === "finished" ? pending || !transferFailed : !url || auth?.phase !== "waiting"}
       onClick={() => {
         if (handoffQuery.data?.phase === "finished") void transferProfile(handoffQuery.data.profile);
-        else if (url) openPage(url);
+        else if (url) void openPage(url);
       }}
     >
       {finishingSignIn
