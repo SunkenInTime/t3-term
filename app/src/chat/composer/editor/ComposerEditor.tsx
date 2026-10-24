@@ -150,6 +150,13 @@ export interface ComposerEditorHandle {
    * reach the editor before React re-renders it, land after it in order.
    */
   appendTyped(text: string): void;
+  /** True when GPUI delivered this keystroke to the editor itself. */
+  receivedKeystroke(keystrokeId: number): boolean;
+  /**
+   * Handles a key as if the editor had received it: a key dispatched while focus was still
+   * on its way here (a burst after type-to-focus) arrives only at the window.
+   */
+  handleKey(event: KeyEvent): void;
   /** Element id of the focusable editor, for renderer.focusElement. */
   readonly id: number | null;
 }
@@ -219,6 +226,16 @@ function skillMetaFor(skills: ReadonlyArray<ServerProviderSkill>): (name: string
 function renderer(): { simulateKeystrokes?: (keys: string) => void } | null {
   const slot = Reflect.get(globalThis, "__gpuixRenderHost") as { renderer?: { simulateKeystrokes?: (keys: string) => void } } | undefined;
   return slot?.renderer ?? null;
+}
+
+/**
+ * The text a key event types, or null. It can be more than one code point: in terminal
+ * mode kitty sends an IME's committed text (a CJK word) or an emoji with modifiers as one
+ * key's associated text, and gpuix reports it as keyChar.
+ */
+export function typedText(keyChar: string | undefined): string | null {
+  if (!keyChar || /\p{Cc}/u.test(keyChar)) return null;
+  return keyChar;
 }
 
 /** The last copy, pasted from memory while the OS clipboard tool is still taking it. */
@@ -504,8 +521,18 @@ export const ComposerEditor = memo(
       const focusedId = gpuix.getFocusedElementId?.();
       return focusedId === undefined || focusedId === null || focusedId === editorIdRef.current?.id;
     };
+    // Keystrokes this element received from GPUI, so the window handler can tell which keys
+    // of a burst were dispatched before focus landed here (they never reached this element).
+    const receivedKeystrokesRef = useRef<number[]>([]);
     const onKeyDown = (event: KeyEvent) => {
       if (!fromEditor(event)) return;
+      if (event.keystrokeId !== undefined) {
+        receivedKeystrokesRef.current.push(event.keystrokeId);
+        if (receivedKeystrokesRef.current.length > 64) receivedKeystrokesRef.current.shift();
+      }
+      handleKey(event);
+    };
+    const handleKey = (event: KeyEvent) => {
       markFocused(true);
       const p = propsRef.current;
       const key = event.key ?? "";
@@ -647,9 +674,9 @@ export const ComposerEditor = memo(
       }
 
       // Text: a produced character, without Ctrl/Cmd unless AltGr (Ctrl+Alt on Windows) made it.
-      const char = event.keyChar;
+      const char = typedText(event.keyChar);
       const altGr = !IS_MAC && mods.ctrl && mods.alt;
-      if (char && char.length > 0 && !mods.cmd && (!mods.ctrl || altGr) && char !== "\t" && char !== "\n" && char !== "\r" && char >= " " && char !== "\u007f") {
+      if (char !== null && !mods.cmd && (!mods.ctrl || altGr)) {
         handled();
         if (p.readOnly) return;
         typeText(char);
@@ -812,6 +839,8 @@ export const ComposerEditor = memo(
           select(caret(docEnd(stateRef.current!.doc)));
         },
         readSnapshot: snapshot,
+        receivedKeystroke: (id) => receivedKeystrokesRef.current.includes(id),
+        handleKey: (event) => handleKey(event),
         appendTyped: (text) => {
           const current = stateRef.current!;
           const end = docEnd(current.doc);

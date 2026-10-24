@@ -205,7 +205,7 @@ import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
 import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
 import { filterTerminalContextsWithText, type TerminalContextDraft } from "../../web/lib/terminalContext.ts";
-import { ComposerEditor, type ComposerEditorHandle, type ComposerEditorKeyContext } from "./editor/ComposerEditor.tsx";
+import { ComposerEditor, type ComposerEditorHandle, type ComposerEditorKeyContext, typedText } from "./editor/ComposerEditor.tsx";
 import type { ComposerChipEnvironment } from "./editor/ComposerInlineChip.tsx";
 import {
   reviewCommentContextId,
@@ -1679,6 +1679,21 @@ function ComposerBody({
   const typeToFocus = (event: KeyEvent, eventRenderer: unknown) => {
     const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
     const focusedId = (eventRenderer as { getFocusedElementId?: () => number | null } | undefined)?.getFocusedElementId?.();
+    // A burst typed with nothing focused: the first key focused the editor, but GPUI had
+    // already dispatched the rest with no focus, so they reach only this window handler.
+    // Each goes to the editor, in order, unless the editor received it itself.
+    const editor = editorRef.current;
+    if (
+      editor &&
+      focusedId !== null &&
+      focusedId !== undefined &&
+      focusedId === editor.id &&
+      event.keystrokeId !== undefined &&
+      !editor.receivedKeystroke(event.keystrokeId)
+    ) {
+      editor.handleKey(event);
+      return true;
+    }
     // Anything focused (a field, the terminal, this editor) keeps its own keys.
     if (focusedId !== null && focusedId !== undefined) return false;
     if (
@@ -1698,8 +1713,9 @@ function ComposerBody({
       return true;
     }
     if (mods.ctrl || mods.cmd || mods.alt || event.isHeld) return false;
-    const char = event.keyChar && [...event.keyChar].length === 1 ? event.keyChar : null;
-    if (char === null || char < " ") return false;
+    // Any typed text, including a multi-code-point commit (terminal-mode IME, emoji).
+    const char = typedText(event.keyChar);
+    if (char === null) return false;
     return appendToEditor(char);
   };
   const typeToFocusRef = useRef(typeToFocus);
