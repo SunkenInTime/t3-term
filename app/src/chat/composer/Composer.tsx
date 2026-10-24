@@ -684,6 +684,9 @@ function ComposerBody({
   const holdingUserInput = incomingRequests.pendingUserInputs[0]
     ? typingGuard.heldRequestIds.has(incomingRequests.pendingUserInputs[0].requestId)
     : false;
+  // The send reads these after its awaits, when this render's values are stale.
+  const liveRequestsRef = useRef(incomingRequests);
+  liveRequestsRef.current = incomingRequests;
   const requests = {
     ...incomingRequests,
     activePendingApproval:
@@ -1368,6 +1371,8 @@ function ComposerBody({
       approvalsToDecline,
       respondToApproval: async (requestId, decision) =>
         (await requests.onRespondToApproval(requestId, decision)) as never,
+      readPendingApprovalIds: () => liveRequestsRef.current.pendingApprovals.map((approval) => approval.requestId),
+      readRespondingApprovalIds: () => liveRequestsRef.current.respondingRequestIds,
       ...(input.sourceProposedPlan ? { sourceProposedPlan: input.sourceProposedPlan } : {}),
       ...(input.background ? { background: { projectId } } : {}),
       running: isRunning,

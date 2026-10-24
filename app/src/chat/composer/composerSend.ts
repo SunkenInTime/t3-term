@@ -50,12 +50,14 @@ import {
   addOptimisticMessage,
   clearComposerContent,
   deleteComposerDraft,
+  readComposerDraft,
   draftIdOfKey,
   removeOptimisticMessages,
   composerAttachmentEnvironment,
   restoreComposerContent,
 } from "../../state/composer.ts";
 import { buildComposerMessageContext } from "../../web/lib/composerContextRecords.ts";
+import { approvalRedirectNotice } from "../../web/components/chat/composerSend.logic.ts";
 import type { TerminalContextDraft } from "../../web/lib/terminalContext.ts";
 import type { ReviewCommentContext } from "../../web/reviewCommentContext.ts";
 import {
@@ -265,6 +267,9 @@ export interface ComposerSendInput {
   /** Shown approvals a redirecting send declines first (web: approvalsToDecline). */
   readonly approvalsToDecline?: ReadonlyArray<ThreadPendingApproval>;
   readonly respondToApproval?: ApprovalResponder;
+  /** The thread's pending approvals and those being answered, read live (web refs). */
+  readonly readPendingApprovalIds?: () => ReadonlyArray<string>;
+  readonly readRespondingApprovalIds?: () => ReadonlyArray<string>;
   /** Implements a proposed plan (web: sourceProposedPlan). */
   readonly sourceProposedPlan?: { readonly threadId: ThreadId; readonly planId: string };
   /**
@@ -293,6 +298,34 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
     reviewComments: input.reviewComments ?? [],
     threadContexts: input.threadContexts ?? [],
   });
+  // web useComposerSend: a message sent over approvals declines them first, and only goes
+  // out if it is still the message the user sent, no approval was already being answered,
+  // and no new approval arrived meanwhile. Otherwise the draft stays for the next send.
+  const approvalsToDecline = input.approvalsToDecline ?? [];
+  if (approvalsToDecline.length > 0 && input.respondToApproval) {
+    const attachmentIdsAtSend = input.attachments.map((attachment) => attachment.id).join("\n");
+    const draftChangedSinceSend = () => {
+      const live = readComposerDraft(input.draftKey);
+      return live.prompt !== input.prompt || live.attachments.map((attachment) => attachment.id).join("\n") !== attachmentIdsAtSend;
+    };
+    const changedBeforeDecline = draftChangedSinceSend();
+    const pendingIdsBeforeDecline = input.readPendingApprovalIds?.() ?? approvalsToDecline.map((approval) => approval.requestId);
+    const responding = input.readRespondingApprovalIds?.() ?? [];
+    const approvalResponding = approvalsToDecline.some((approval) => responding.includes(approval.requestId));
+    const declined =
+      !changedBeforeDecline &&
+      !approvalResponding &&
+      (await declinePendingApprovals(approvalsToDecline, input.respondToApproval).catch(() => false));
+    const draftChanged = changedBeforeDecline || draftChangedSinceSend();
+    const approvalArrived = (input.readPendingApprovalIds?.() ?? []).some((id) => !pendingIdsBeforeDecline.includes(id));
+    if (!declined || draftChanged || approvalArrived) {
+      appAtomRegistry.set(sendingAtom, false);
+      const notice = approvalRedirectNotice({ draftChanged, declined, approvalResponding, approvalArrived });
+      if (notice !== null) toast({ type: "info", title: notice, description: "Send again when it's ready." });
+      else if (!declined) toast({ type: "error", title: "Couldn't decline the pending approval.", description: "Send again when it's ready." });
+      return false;
+    }
+  }
   // Clear first, like web: the prompt leaves the composer the moment the user sends.
   clearComposerContent(input.draftKey);
   const createdAt = new Date().toISOString();
@@ -332,10 +365,6 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
   }
   let failure: string | null = null;
   try {
-    if (input.approvalsToDecline && input.approvalsToDecline.length > 0 && input.respondToApproval) {
-      const declined = await declinePendingApprovals(input.approvalsToDecline, input.respondToApproval);
-      if (!declined) throw new Error("Couldn't decline the pending approval. Send again when it's ready.");
-    }
     if (input.target.kind === "thread") {
       const { threadId } = input.target;
       if (input.runtimeMode !== input.target.currentRuntimeMode) {
