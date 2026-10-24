@@ -30,6 +30,7 @@ import * as Duration from "effect/Duration";
 import { useRef, useState, type ReactNode } from "react";
 
 import { serverEnvironment } from "../../state/environment.ts";
+import { selectSettingsPageTarget, settingsPageTargetAtom } from "../navigation.ts";
 import {
   EMPTY_SERVER_PROVIDERS,
   readEnvironmentScope,
@@ -118,6 +119,7 @@ function failureMessage(result: { _tag: string }, fallback: string): string {
 
 export function ProviderSettings() {
   const { environment, scope } = useSettingsScope();
+  const pageTarget = selectSettingsPageTarget(useAtomValue(settingsPageTargetAtom), "providers");
   if (!environment) {
     return (
       <SettingsPageContainer>
@@ -133,12 +135,25 @@ export function ProviderSettings() {
       : [];
   return (
     <SettingsPageContainer>
-      <AccessGatedProviderSettings key={environment.environmentId} environment={environment} projectIds={projectIds} />
+      <AccessGatedProviderSettings
+        key={`${environment.environmentId}:${pageTarget?.nonce ?? 0}`}
+        environment={environment}
+        projectIds={projectIds}
+        targetInstanceId={pageTarget?.target.instanceId}
+      />
     </SettingsPageContainer>
   );
 }
 
-function AccessGatedProviderSettings({ environment, projectIds }: { environment: EnvironmentPresentation; projectIds: readonly ProjectId[] }) {
+function AccessGatedProviderSettings({
+  environment,
+  projectIds,
+  targetInstanceId,
+}: {
+  environment: EnvironmentPresentation;
+  projectIds: readonly ProjectId[];
+  targetInstanceId: ProviderInstanceId | undefined;
+}) {
   const sessionState = useEnvironmentSessionState(environment.environmentId);
   const operateAccess = resolveRemoteOperateAccess({ session: sessionState.data, isPending: sessionState.isPending, hasError: sessionState.hasError });
   const access = classifyProviderEnvironmentAccess({
@@ -168,6 +183,7 @@ function AccessGatedProviderSettings({ environment, projectIds }: { environment:
       environmentLabel={environment.label}
       readOnly={access.kind === "read-only"}
       projectIds={projectIds}
+      targetInstanceId={targetInstanceId}
     />
   );
 }
@@ -357,11 +373,13 @@ function EnvironmentProviderSettings({
   environmentLabel,
   readOnly,
   projectIds,
+  targetInstanceId,
 }: {
   environmentId: EnvironmentId;
   environmentLabel: string;
   readOnly: boolean;
   projectIds: readonly ProjectId[];
+  targetInstanceId: ProviderInstanceId | undefined;
 }) {
   const theme = useTheme();
   const windowHeight = useWindowSize().height;
@@ -380,7 +398,7 @@ function EnvironmentProviderSettings({
   const updateProvider = useAtomCommand(serverEnvironment.updateProvider, { reportFailure: false });
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isAddOpen, setIsAddOpen] = useState(false);
-  const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(null);
+  const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | null>(targetInstanceId ?? null);
   const [updatingIds, setUpdatingIds] = useState<ReadonlySet<ProviderInstanceId>>(() => new Set());
   const refreshingRef = useRef(false);
   const updatingRef = useRef<Set<ProviderInstanceId>>(new Set());
@@ -425,8 +443,11 @@ function EnvironmentProviderSettings({
     });
   };
 
-  const rows = buildInstanceRows(settings, serverProviders, undefined);
-  const selectedRow = rows.find((row) => row.instanceId === selectedInstanceId) ?? rows[0] ?? null;
+  const rows = buildInstanceRows(settings, serverProviders, targetInstanceId);
+  // web: a link to an instance this device no longer has selects nothing and says so.
+  const targetInstanceMissing =
+    targetInstanceId !== undefined && selectedInstanceId === targetInstanceId && !rows.some((row) => row.instanceId === targetInstanceId);
+  const selectedRow = rows.find((row) => row.instanceId === selectedInstanceId) ?? (targetInstanceMissing ? null : (rows[0] ?? null));
 
   const persistInstance = async (
     instanceId: ProviderInstanceId,
@@ -610,7 +631,9 @@ function EnvironmentProviderSettings({
               />
             ) : (
               <div style={{ padding: 24 }}>
-                <Text color={theme.mutedForeground}>No providers configured.</Text>
+                <Text color={theme.mutedForeground}>
+                  {targetInstanceMissing ? "This provider instance is no longer available on this device." : "No providers configured."}
+                </Text>
               </div>
             )}
           </div>

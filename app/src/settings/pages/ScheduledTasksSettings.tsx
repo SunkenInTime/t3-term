@@ -36,6 +36,7 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
+import { selectSettingsPageTarget, settingsPageTargetAtom } from "../navigation.ts";
 import { requestConfirmDialog } from "../../dialogs/confirmDialog.ts";
 import { usePaginatedBranches } from "../../state/composerQueries.ts";
 import { useClientSettings } from "../../state/clientSettings.ts";
@@ -198,10 +199,13 @@ function errorText(error: unknown) {
 export function ScheduledTasksSettings() {
   const theme = useTheme();
   const { scope, environments, connectedEnvironments, environment } = useSettingsScope();
+  const pageTarget = selectSettingsPageTarget(useAtomValue(settingsPageTargetAtom), "scheduled-tasks");
+  const target = pageTarget?.target;
   const [editor, setEditor] = useState<{ environmentId: EnvironmentId; task: ScheduledTask | null } | null>(null);
   const openForEdit = (environmentId: EnvironmentId, task: ScheduledTask) => setEditor({ environmentId, task });
   const defaultEnvironment = environment ?? connectedEnvironments[0];
   const canCreate = useAtomValue(serverEnvironment.upsertScheduledTask.permissionAtom(defaultEnvironment?.environmentId ?? null));
+  const targetEnvironmentId = target?.environmentId ?? defaultEnvironment?.environmentId;
   return (
     <>
     <SettingsPageContainer virtual>
@@ -234,11 +238,22 @@ export function ScheduledTasksSettings() {
             <Text color={theme.mutedForeground}>Connect an environment to manage scheduled tasks.</Text>
           </div>
         ) : environments.length > 1 ? (
-          <ScheduledTaskEnvironmentList onEdit={openForEdit} />
+          <ScheduledTaskEnvironmentList
+            key={`${targetEnvironmentId}:${target?.taskId ?? ""}:${pageTarget?.nonce ?? 0}`}
+            environmentId={targetEnvironmentId}
+            taskId={target?.taskId}
+            onEdit={openForEdit}
+          />
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
             {environments.map((entry) => (
-              <ScheduledTaskEnvironmentSection key={entry.environmentId} environment={entry} showEnvironmentHeading={false} onEdit={openForEdit} />
+              <ScheduledTaskEnvironmentSection
+                key={`${entry.environmentId}:${target?.taskId ?? ""}:${pageTarget?.nonce ?? 0}`}
+                environment={entry}
+                showEnvironmentHeading={false}
+                taskId={targetEnvironmentId === entry.environmentId ? target?.taskId : undefined}
+                onEdit={openForEdit}
+              />
             ))}
           </div>
         )}
@@ -261,7 +276,15 @@ const scheduledTasksListAtom = environmentAtomList("t3term-scheduled-tasks-list"
   serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
 );
 
-function ScheduledTaskEnvironmentList({ onEdit }: { readonly onEdit: (environmentId: EnvironmentId, task: ScheduledTask) => void }) {
+function ScheduledTaskEnvironmentList({
+  environmentId,
+  taskId,
+  onEdit,
+}: {
+  readonly environmentId: EnvironmentId | undefined;
+  readonly taskId: ScheduledTaskId | undefined;
+  readonly onEdit: (environmentId: EnvironmentId, task: ScheduledTask) => void;
+}) {
   const theme = useTheme();
   const { scope, environments } = useSettingsScope();
   const connectedIds = environments.flatMap((environment) =>
@@ -279,6 +302,16 @@ function ScheduledTaskEnvironmentList({ onEdit }: { readonly onEdit: (environmen
       error: query?._tag === "Failure" ? formatEnvironmentQueryError(query.cause) : null,
     };
   });
+  // web: a task link opens its editor once, as soon as the task has loaded.
+  const linkedState = states.find((state) => state.environment.environmentId === environmentId);
+  const linkedTask = linkedState?.tasks?.find((task) => task.id === taskId);
+  const openedLink = useRef(false);
+  useEffect(() => {
+    if (!openedLink.current && environmentId && linkedTask) {
+      openedLink.current = true;
+      onEdit(environmentId, linkedTask);
+    }
+  }, [environmentId, linkedTask, onEdit]);
   const loaded = states.filter((state) => state.connected && state.error === null && state.tasks);
   const populated = loaded.filter((state) => state.tasks && state.tasks.length > 0);
   const summaries: Record<string, string[]> = {
@@ -328,6 +361,9 @@ function ScheduledTaskEnvironmentList({ onEdit }: { readonly onEdit: (environmen
           </div>
         );
       })}
+      {taskId && linkedState?.tasks && linkedState.error === null && !linkedTask ? (
+        <SettingsRow title="Task unavailable" description="This task no longer exists or is outside the selected project scope." />
+      ) : null}
       {populated.length === 0 && loaded.length > 0 ? <SettingsRow title="No scheduled tasks" description="No tasks match this environment and project selection." /> : null}
       {Object.entries(summaries).map(([label, entries]) => {
         if (entries.length === 0) return null;
@@ -349,10 +385,12 @@ function ScheduledTaskEnvironmentList({ onEdit }: { readonly onEdit: (environmen
 function ScheduledTaskEnvironmentSection({
   environment,
   showEnvironmentHeading,
+  taskId,
   onEdit,
 }: {
   readonly environment: EnvironmentPresentation;
   readonly showEnvironmentHeading: boolean;
+  readonly taskId?: ScheduledTaskId | undefined;
   readonly onEdit: (environmentId: EnvironmentId, task: ScheduledTask) => void;
 }) {
   const theme = useTheme();
@@ -360,6 +398,14 @@ function ScheduledTaskEnvironmentSection({
   const connected = environment.connection.phase === "connected" && environment.serverConfig !== null;
   const tasksQuery = useEnvironmentQuery(connected ? serverEnvironment.scheduledTasksLive({ environmentId: environment.environmentId, input: {} }) : null);
   const tasks = tasksQuery.data?.tasks.filter((task) => matchesScheduledTaskScope(scope, environment.environmentId, task.projectId));
+  const linkedTask = tasks?.find((task) => task.id === taskId);
+  const openedLink = useRef(false);
+  useEffect(() => {
+    if (!openedLink.current && linkedTask) {
+      openedLink.current = true;
+      onEdit(environment.environmentId, linkedTask);
+    }
+  }, [environment.environmentId, linkedTask, onEdit]);
   return (
     <SettingsSection
       title={environment.label}
@@ -372,10 +418,19 @@ function ScheduledTaskEnvironmentSection({
         <SettingsRow title="Could not load scheduled tasks" description={tasksQuery.error} />
       ) : !tasks ? (
         <SettingsRow title="Loading scheduled tasks…" />
-      ) : tasks.length === 0 ? (
-        <SettingsRow title="No scheduled tasks" description="No tasks match this environment and project selection." />
       ) : (
-        tasks.map((task) => <ScheduledTaskRow key={task.id} environmentId={environment.environmentId} task={task} onEdit={() => onEdit(environment.environmentId, task)} />)
+        <>
+          {taskId && !linkedTask ? (
+            <SettingsRow title="Task unavailable" description="This task no longer exists or is outside the selected project scope." />
+          ) : null}
+          {tasks.length === 0 ? (
+            <SettingsRow title="No scheduled tasks" description="No tasks match this environment and project selection." />
+          ) : (
+            tasks.map((task) => (
+              <ScheduledTaskRow key={task.id} environmentId={environment.environmentId} task={task} onEdit={() => onEdit(environment.environmentId, task)} />
+            ))
+          )}
+        </>
       )}
     </SettingsSection>
   );
@@ -1086,6 +1141,7 @@ function ScheduledTaskEditorDialog({ initialEnvironmentId, task, onClose }: { re
           <div style={{ display: "flex" }}>
             <SettingsModelPicker
               testId="scheduled-task-model"
+              environmentId={environmentId}
               entries={instanceEntries}
               modelOptionsByInstance={modelOptionsByInstance}
               activeInstanceId={activeInstanceId}

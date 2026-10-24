@@ -9,6 +9,7 @@ import {
   ProviderDriverKind,
   type BackgroundActivityProfile,
   type SidebarProjectGroupingMode,
+  type ProviderInstanceId,
 } from "@t3tools/contracts";
 import {
   DEFAULT_UNIFIED_SETTINGS,
@@ -72,7 +73,7 @@ import {
   useSettingsSearchTarget,
 } from "../layout.tsx";
 import { SettingsModelPicker, SettingsTraitsPicker } from "../ModelPicker.tsx";
-import { openSettingsPage } from "../navigation.ts";
+import { openProviderSettings, openSettingsPage } from "../navigation.ts";
 import { ProjectDefaultsSettings, ScopedSwitch, useScopedModelDisabledReason } from "../ProjectDefaultsSettings.tsx";
 import {
   useScopedSettings,
@@ -1230,13 +1231,16 @@ export function GeneralSettingsPanel() {
               <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: 6 }}>
                 <SettingsModelPicker
                   testId="settings-text-generation-model"
+                  environmentId={environmentId}
                   entries={textGenerationModelInstanceEntries}
                   activeInstanceId={textGenInstanceId}
                   model={textGenModel}
                   modelOptionsByInstance={textGenerationModelOptionsByInstance}
                   {...(mixedTextGenerationModel ? { triggerLabel: "Mixed" } : {})}
                   getModelDisabledReason={textGenerationModelDisabledReason}
-                  onOpenProviderSetup={() => openSettingsPage("providers")}
+                  {...(environmentId
+                    ? { onOpenProviderSetup: (instanceId: ProviderInstanceId) => openProviderSettings({ environmentId, instanceId }) }
+                    : {})}
                   onInstanceModelChange={(instanceId, model) => {
                     const reason = textGenerationModelDisabledReason(instanceId, model);
                     if (reason) {
@@ -1255,6 +1259,7 @@ export function GeneralSettingsPanel() {
                   <SettingsTraitsPicker
                     testId="settings-text-generation-traits"
                     provider={textGenProvider}
+                    instanceId={textGenInstanceId}
                     models={textGenInstanceEntry.models}
                     model={textGenModel}
                     modelOptions={textGenModelOptions}
