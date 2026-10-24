@@ -6,6 +6,8 @@
 // Web overlaps the drawer 17px under the composer (the composer paints over it). gpuix
 // paints anchored layers last, so this panel stops at the composer's top edge instead:
 // anchor it with no gap, width = composer width − 44, and it has no bottom border.
+import type { PullRequestState } from "@t3tools/contracts";
+import { resolvePullRequestState } from "../../pullRequests/pullRequestPresentation.tsx";
 import {
   resolveProviderSkillSourceKind,
   type ProviderSkillSourceKind,
@@ -233,6 +235,7 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         <ComposerCommandMenuEntryIcon pathValue={item.path} kind={item.pathKind} />
       ) : null}
       {item.type === "thread" ? <Icon name="messages-square" size={16} color={theme.mutedForeground} /> : null}
+      {item.type === "pull-request" ? <PullRequestRowIcon state={item.pullRequest.state} isDraft={item.pullRequest.isDraft} /> : null}
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, flexGrow: 1, flexBasis: 0, minWidth: 0 }}>
         <div style={{ display: "flex", flexDirection: "row", flexShrink: 0, maxWidth: "45%", minWidth: 0, pointerEvents: "none" }}>
           {slashSkill ? (
@@ -351,4 +354,11 @@ function MenuScrollFade({ edge, color }: { edge: "top" | "bottom"; color: string
       }}
     />
   );
+}
+
+/** web pullRequestPresentation.Icon in a # row: the state glyph in its tone, 16px. */
+function PullRequestRowIcon({ state, isDraft }: { state: PullRequestState; isDraft: boolean }) {
+  const theme = useTheme();
+  const presentation = resolvePullRequestState({ state, isDraft });
+  return <Icon name={presentation.icon} size={16} color={presentation.tone(theme)} />;
 }

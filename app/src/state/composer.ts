@@ -451,10 +451,14 @@ export function referencedThreadContexts(draft: ComposerDraft, prompt = draft.pr
  * web composerDraftStore.addReviewComment: stores the comment (replacing one with the same
  * id) and appends its inline reference to the prompt the first time it is added.
  */
-export function addComposerReviewComment(key: string, comment: ReviewCommentContext): void {
+export function addComposerReviewComment(
+  key: string,
+  comment: ReviewCommentContext,
+  options?: { readonly appendReference?: boolean },
+): void {
   updateComposerDraft(key, (draft) => {
     const existing = draft.reviewComments ?? [];
-    const alreadyPresent = existing.some((entry) => entry.id === comment.id);
+    const alreadyPresent = options?.appendReference === false || existing.some((entry) => entry.id === comment.id);
     return {
       ...draft,
       prompt: alreadyPresent

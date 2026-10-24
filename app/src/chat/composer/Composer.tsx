@@ -58,6 +58,8 @@ import {
 } from "@t3tools/contracts";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { createModelSelection } from "@t3tools/shared/model";
+import { sourceControlRepositorySelector } from "@t3tools/shared/sourceControl";
+import { buildPullRequestReferenceContext } from "../../web/components/pullRequest/pullRequestDetail.logic.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { proposedPlanTitle } from "@t3tools/shared/proposedPlanText";
 import * as Option from "effect/Option";
@@ -88,6 +90,7 @@ import {
   registerComposerInsertionHandler,
   citationCommentRequestAtom,
   addComposerThreadContext,
+  addComposerReviewComment,
   removeComposerAttachment,
   setComposerInteractionMode,
   setComposerModelOptions,
@@ -239,6 +242,7 @@ import {
 import type { ComposerChipEnvironment } from "./editor/ComposerInlineChip.tsx";
 import {
   reviewCommentContextId,
+  reviewCommentContextReference,
   terminalContextReference,
   threadContextRecord,
   threadContextReference,
@@ -833,6 +837,12 @@ function ComposerBody({
     environmentId,
     gitCwd: cwd,
     activeThreadId: threadId,
+    pullRequestProjectId: serverConfig?.environment.capabilities.pullRequests === true ? (project?.id ?? null) : null,
+    pullRequestRepository:
+      serverConfig?.environment.capabilities.pullRequests === true
+        ? sourceControlRepositorySelector(project?.repositoryIdentity)
+        : null,
+    threadPullRequests: shell?.pullRequests,
     planModeUiEnabled,
     compactSlashCommandAvailable,
     selectedProvider,
@@ -984,6 +994,17 @@ function ComposerBody({
       const replacement = `/${item.command.name} `;
       const end = extendReplacementRangeForTrailingSpace(current, active.rangeEnd, replacement);
       applyPromptReplacement(active.rangeStart, end, replacement);
+      return;
+    }
+    if (item.type === "pull-request") {
+      // web onSelectComposerItem: a # match becomes a pull-request reference chip, with its
+      // review-comment record kept for the send.
+      if (active.kind !== "pull-request") return;
+      const comment = buildPullRequestReferenceContext(item.pullRequest);
+      const replacement = `${formatInlineContextReference(reviewCommentContextReference(comment))} `;
+      const end = extendReplacementRangeForTrailingSpace(current, active.rangeEnd, replacement);
+      applyPromptReplacement(active.rangeStart, end, replacement);
+      addComposerReviewComment(promptKey, comment, { appendReference: false });
       return;
     }
     if (item.type === "thread") {
