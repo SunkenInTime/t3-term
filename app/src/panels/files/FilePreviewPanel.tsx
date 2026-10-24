@@ -2,10 +2,18 @@
 //
 // Workspace files open in FileEditor (editable, autosaved, line comments to the
 // composer) when the connection may write them, else in the read-only SourceView.
-// Not ported, by platform: rendered HTML/PDF (sandboxed iframes) and video and audio
-// players; there is no browser surface here. HTML shows its source; the others show a notice.
+// Not available in gpuix: rendered HTML/PDF (sandboxed iframes) and video and audio
+// players. HTML shows its source; PDFs, video and audio show ExternalPreview, which
+// opens them in the system browser. HTML files also get web's "Open file in preview
+// browser" action (PDFs too on web; the server browser leaves PDFs to the client).
 import { useAtom, useAtomValue } from "@effect/atom-react";
-import { AuthFilesystemWriteScope, type EnvironmentId, type ScopedThreadRef, type ThreadId } from "@t3tools/contracts";
+import {
+  AuthFilesystemWriteScope,
+  AuthPreviewOperateScope,
+  type EnvironmentId,
+  type ScopedThreadRef,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { filePreviewDelimiter } from "@t3tools/shared/delimitedPreview";
 import {
@@ -41,9 +49,12 @@ import { threadKeyOf } from "../../state/rightPanel.ts";
 import { ChatMarkdown } from "../../chat/timeline/ChatMarkdown.tsx";
 import { TimelineRowCtx, type TimelineRowSharedState } from "../../chat/timeline/rowContext.ts";
 import { FileEditor } from "./FileEditor.tsx";
+import { ExternalPreview, openAssetInBrowser } from "./ExternalPreview.tsx";
+import { useEnvironmentSupportsServerBrowser } from "../../state/preview.ts";
 import { DelimitedTablePreview } from "./DelimitedTablePreview.tsx";
 import { useFileSaveCoordinator } from "./useFileSaveCoordinator.ts";
 import { useAssetUrlState } from "./fileAssets.ts";
+import { toast } from "../../ui/toast.tsx";
 import FileBrowserPanel from "./FileBrowserPanel.tsx";
 import { OpenInEditorButton } from "./OpenInEditorButton.tsx";
 import { FileBreadcrumbs } from "./FileBreadcrumbs.tsx";
@@ -170,17 +181,6 @@ function WorkspaceImagePreview(props: {
   );
 }
 
-function UnsupportedPreview(props: { readonly kind: string }) {
-  const theme = useTheme();
-  return (
-    <div style={{ display: "flex", flexGrow: 1, minHeight: 0, alignItems: "center", justifyContent: "center", paddingLeft: 24, paddingRight: 24 }}>
-      <Text size="xs" color={theme.mutedForeground} style={{ textAlign: "center", lineHeight: 19.5 }}>
-        {`${props.kind} previews are not available in t3-term yet.`}
-      </Text>
-    </div>
-  );
-}
-
 /** web EditableFileSurface: the editor plus its autosave session. */
 function EditableFileSurface(props: {
   readonly environmentId: EnvironmentId;
@@ -301,6 +301,9 @@ export default function FilePreviewPanel({
   const isMedia = isImage || isVideo || isAudio;
   const isPdf = relativePath !== null && /\.pdf$/i.test(relativePath);
   const isHostFile = relativePath !== null && isHostPath(relativePath);
+  const isHtml = relativePath !== null && !isPdf && /\.html?$/i.test(relativePath.split(/[?#]/, 1)[0] ?? "");
+  const canOperatePreview = useEnvironmentScope(environmentId, AuthPreviewOperateScope);
+  const previewAvailable = useEnvironmentSupportsServerBrowser(environmentId);
   const file = useProjectFileQuery(environmentId, cwd, relativePath, relativePath !== null);
   const fileAccess = useFilesystemReadAccess(environmentId);
   const canWriteFiles = useEnvironmentScope(environmentId, AuthFilesystemWriteScope);
@@ -348,6 +351,32 @@ export default function FilePreviewPanel({
   };
   const absolutePath =
     breadcrumbPath === "" ? cwd : relativePath ? resolvePathLinkTarget(relativePath, cwd) : null;
+  // PDFs, HTML, video and audio go through a signed asset URL: web plays and frames them
+  // from it, and here the Browser and the system browser open it.
+  const assetKind = isVideo || isAudio ? ("media-file" as const) : isPdf || isHtml ? ("workspace-file" as const) : null;
+  const assetResource =
+    previewPath !== null && absolutePath !== null && assetKind !== null
+      ? workspaceAssetResource({
+          kind: assetKind === "workspace-file" && isHostFile ? "media-file" : assetKind,
+          threadRef,
+          draft: false,
+          workspaceRoot: cwd,
+          absolutePath,
+        })
+      : null;
+  const assetUrl = useAssetUrlState(environmentId, assetResource);
+  const assetHref = assetUrl._tag === "Success" ? assetUrl.url : null;
+  // web canOpenInBrowser: HTML and PDF files, when the thread's Browser is available. Here
+  // only HTML: the server browser hands PDFs to the desktop client to display ("This PDF
+  // is displayed in the connected client"), and t3-term has no PDF renderer to take it.
+  const canOpenInBrowser = canOperatePreview && previewPath !== null && previewAvailable && isHtml;
+  const openInBrowser = () => {
+    if (assetHref === null) {
+      toast({ type: "error", title: "Unable to open file in browser", description: "The file's address is not ready yet." });
+      return;
+    }
+    void openAssetInBrowser(threadRef, assetHref);
+  };
   useWorkspaceMutationRefresh({
     // An unsaved edit must not be replaced by a re-read of the old contents.
     enabled: relativePath !== null && (isFolder || (!isMedia && !isPdf)) && !selectedFilePending,
@@ -367,9 +396,18 @@ export default function FilePreviewPanel({
 
   const content = (() => {
     if (isFolder || !relativePath) return null;
-    if (isVideo) return <UnsupportedPreview kind="Video" />;
-    if (isAudio) return <UnsupportedPreview kind="Audio" />;
-    if (isPdf) return <UnsupportedPreview kind="PDF" />;
+    if (isVideo || isAudio || isPdf) {
+      return (
+        <ExternalPreview
+          key={relativePath}
+          kind={isPdf ? "pdf" : isVideo ? "video" : "audio"}
+          name={relativePath.split(/[\\/]/).at(-1) ?? relativePath}
+          url={assetHref}
+          failed={assetUrl._tag === "Failure"}
+          onOpenInBrowser={canOpenInBrowser ? openInBrowser : undefined}
+        />
+      );
+    }
     if (isImage && absolutePath) {
       return (
         <WorkspaceImagePreview
@@ -495,6 +533,9 @@ export default function FilePreviewPanel({
               pressed={wordWrap}
               onPress={() => wordWrapPref.set(!wordWrap)}
             />
+          ) : null}
+          {canOpenInBrowser ? (
+            <FileSurfaceAction testId="files-open-in-browser" label="Open file in preview browser" icon="globe-2" onPress={openInBrowser} />
           ) : null}
           {!isHostFile && previewPath !== null ? (
             <FileSurfaceAction
