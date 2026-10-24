@@ -4,14 +4,21 @@
 // component renders the right panel's terminal surface (`mode: "panel"`).
 import { useWindowSize } from "@gpuix/react";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { useRef, useState, type ReactNode } from "react";
+import type { EnvironmentId, KeybindingCommand, ThreadId } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+
+import { activeKeybindingsAtom } from "../state/keybindings.ts";
+import { shortcutLabelForCommand } from "../web/keybindings.ts";
 
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Dialog, Tooltip } from "../ui/overlay.tsx";
 import { Button, Text } from "../ui/primitives.tsx";
 import { alpha, RADIUS, useTheme } from "../ui/theme.ts";
 import { MAX_TERMINALS_PER_GROUP, type ThreadTerminalGroup } from "../state/terminal.ts";
+import { registerShortcutHandler } from "../keybindings/useGlobalKeybindings.ts";
+import { TERMINAL_SHORTCUT_COMMANDS, takePendingDrawerShortcut } from "./drawerShortcuts.ts";
 import { TerminalView, type TerminalShortcutCommand } from "./TerminalView.tsx";
 
 const MIN_DRAWER_HEIGHT = 180;
@@ -19,11 +26,8 @@ const MAX_DRAWER_HEIGHT_RATIO = 0.75;
 /** Header plus the composer overlay the drawer must not push into the header. */
 const CHAT_COLUMN_RESERVED_HEIGHT = 52 + 176;
 
-const isMac = process.platform === "darwin";
-
-export function shortcutLabel(key: string, shift = false): string {
-  return isMac ? `${shift ? "⇧" : ""}⌘${key.toUpperCase()}` : `Ctrl+${shift ? "Shift+" : ""}${key.toUpperCase()}`;
-}
+/** web ChatView terminalShortcutLabelOptions: the chords as a focused terminal resolves them. */
+const TERMINAL_LABEL_OPTIONS = { context: { terminalFocus: true, terminalOpen: true } };
 
 export interface TerminalLaunchLocation {
   readonly cwd: string;
@@ -126,15 +130,22 @@ export function ThreadTerminalDrawer(props: ThreadTerminalDrawerProps) {
       runtimeEnv: props.runtimeEnv,
     };
 
+  const keybindings = useAtomValue(activeKeybindingsAtom);
+  const chord = (command: KeybindingCommand) => shortcutLabelForCommand(keybindings, command, TERMINAL_LABEL_OPTIONS);
+  const withChord = (label: string, command: KeybindingCommand) => {
+    const shortcut = chord(command);
+    return shortcut ? `${label} (${shortcut})` : label;
+  };
+  const closeShortcut = chord("terminal.close");
   const labels = {
     split: atSplitLimit
       ? `Split Terminal Horizontally (max ${MAX_TERMINALS_PER_GROUP} per group)`
-      : `Split Terminal Horizontally (${shortcutLabel("d")})`,
+      : withChord("Split Terminal Horizontally", "terminal.split"),
     splitVertical: atSplitLimit
       ? `Split Terminal Vertically (max ${MAX_TERMINALS_PER_GROUP} per group)`
-      : `Split Terminal Vertically (${shortcutLabel("d", true)})`,
-    new: `New Terminal (${shortcutLabel("n")})`,
-    close: `Close Terminal (${shortcutLabel("w")})`,
+      : withChord("Split Terminal Vertically", "terminal.splitVertical"),
+    new: withChord("New Terminal", "terminal.new"),
+    close: withChord("Close Terminal", "terminal.close"),
   };
   const split = () => {
     if (props.canOperate && !atSplitLimit) props.onSplitTerminal();
@@ -154,6 +165,29 @@ export function ThreadTerminalDrawer(props: ThreadTerminalDrawerProps) {
     else if (command === "new") newTerminal();
     else requestClose(activeTerminalId);
   };
+
+  // An unfocused terminal chord (a binding without `when: terminalFocus`) acts on
+  // the drawer, as in web; a split or new asked for while it was closed runs now.
+  const onShortcutRef = useRef(onShortcut);
+  onShortcutRef.current = onShortcut;
+  const canOperateRef = useRef(props.canOperate);
+  canOperateRef.current = props.canOperate;
+  const threadKey = scopedThreadKey(scopeThreadRef(props.environmentId, props.threadId));
+  useEffect(() => {
+    if (isPanel) return;
+    const pending = takePendingDrawerShortcut(threadKey);
+    if (pending !== null) onShortcutRef.current(pending);
+    const unregister = Object.entries(TERMINAL_SHORTCUT_COMMANDS).map(([command, action]) =>
+      registerShortcutHandler(command as KeybindingCommand, (_command, event) => {
+        if (!canOperateRef.current) return false;
+        if (!(action === "close" && event.isHeld)) onShortcutRef.current(action!);
+        return true;
+      }),
+    );
+    return () => {
+      for (const off of unregister) off();
+    };
+  }, [isPanel, threadKey]);
 
   const testId = props.testIdPrefix ?? (isPanel ? "panel-terminal" : "terminal-drawer");
   const resizeStrip = isPanel ? null : (
@@ -350,6 +384,7 @@ export function ThreadTerminalDrawer(props: ThreadTerminalDrawerProps) {
                   activeTerminalId={activeTerminalId}
                   showHeader={showGroupHeaders}
                   labelOf={labelOf}
+                  closeShortcut={closeShortcut}
                   canOperate={props.canOperate}
                   onActivate={props.onActiveTerminalChange}
                   onClose={requestClose}
@@ -458,6 +493,7 @@ function SidebarGroup(props: {
   activeTerminalId: string;
   showHeader: boolean;
   labelOf: (terminalId: string) => string;
+  closeShortcut: string | null;
   canOperate: boolean;
   onActivate: (terminalId: string) => void;
   onClose: (terminalId: string) => void;
@@ -503,6 +539,7 @@ function SidebarGroup(props: {
           <SidebarTerminalRow
             key={terminalId}
             label={props.labelOf(terminalId)}
+            closeShortcut={terminalId === props.activeTerminalId ? props.closeShortcut : null}
             active={terminalId === props.activeTerminalId}
             canOperate={props.canOperate}
             onActivate={() => props.onActivate(terminalId)}
@@ -517,6 +554,8 @@ function SidebarGroup(props: {
 
 function SidebarTerminalRow(props: {
   label: string;
+  /** web: the active row's close button names the close chord. */
+  closeShortcut: string | null;
   active: boolean;
   canOperate: boolean;
   onActivate: () => void;
@@ -547,7 +586,7 @@ function SidebarTerminalRow(props: {
     >
       <TabCloseButton
         visible={props.canOperate && hovered}
-        label={`Close ${props.label}`}
+        label={`Close ${props.label}${props.closeShortcut ? ` (${props.closeShortcut})` : ""}`}
         onClose={props.onClose}
         icon={<Icon name="square-terminal" size={12} color={props.active || hovered ? theme.foreground : theme.mutedForeground} />}
       />

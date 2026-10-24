@@ -25,6 +25,17 @@ mkdirSync(outDir, { recursive: true });
 // it here and drain stderr into <out-dir>/app-stderr.log.
 // T3TERM_BIN runs a compiled binary instead of the source.
 const appArgs = (process.env.T3TERM_ARGS ?? "").split(" ").filter(Boolean);
+// Without --url, t3-term discovers the T3 server of $T3CODE_HOME, which in agent
+// shells is a live install, and mints a session on it. Automation must name its
+// server; T3TERM_NO_LOCAL=1 opts into running with no server at all.
+if (!(appArgs.includes("--url") && (appArgs.includes("--token") || appArgs.includes("--pair"))) && process.env.T3TERM_NO_LOCAL !== "1") {
+  console.error("shot.ts: set T3TERM_ARGS to --url <server> --token <token> (or T3TERM_NO_LOCAL=1). Refusing to auto-connect to the local T3 install.");
+  process.exit(2);
+}
+if (!process.env.T3TERM_HOME) {
+  console.error("shot.ts: set T3TERM_HOME to a scratch folder so runs don't write to ~/.t3-term.");
+  process.exit(2);
+}
 const [command, ...commandArgs] = process.env.T3TERM_BIN
   ? [process.env.T3TERM_BIN, ...appArgs]
   : ["bun", "src/main.tsx", ...appArgs];

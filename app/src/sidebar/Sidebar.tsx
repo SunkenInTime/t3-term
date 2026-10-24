@@ -25,7 +25,6 @@ import {
   canOperateEnvironmentAtom,
   commandPaletteModeRequestAtom,
   connectedEnvironmentIdsAtom,
-  newThreadContextRequestAtom,
   primaryEnvironmentIdAtom,
   projectByKeyAtom,
   projectDisplayNameByKeyAtom,
@@ -699,8 +698,15 @@ function renderListMarker(
 /** The thread list's visible window in content pixels, from ScrollFadeRegion. */
 const ListViewportContext = createContext<{ top: number; height: number } | null>(null);
 
+// Rows kept mounted beyond each edge of the viewport, in viewport heights.
+// GPUI rebuilds every mounted row on every frame, so each one is paid for on
+// every keystroke anywhere in the window: a full viewport each side cost about
+// 1 ms more per frame than half of one. Half a viewport still covers what GPUI
+// scrolls in one frame before React catches up.
+const CULL_MARGIN = 0.5;
+
 /**
- * The list's items, with those more than a viewport above or below the visible
+ * The list's items, with those more than CULL_MARGIN viewports above or below the visible
  * window replaced by an empty box of their last measured height. GPUI builds
  * every child of a plain scroller each frame (about 0.25 ms per thread row), so
  * without this every frame of the window grew with the thread count: 100 rows
@@ -749,7 +755,7 @@ function CulledListItems({
       height !== undefined &&
       viewport !== null &&
       viewport.height > 0 &&
-      (top + height < viewport.top - viewport.height || top > viewport.top + 2 * viewport.height);
+      (top + height < viewport.top - CULL_MARGIN * viewport.height || top > viewport.top + (1 + CULL_MARGIN) * viewport.height);
     const shift = offsets?.get(key);
     return (
       <div
@@ -951,8 +957,6 @@ function SidebarEmptyState({ noProjects, scopedName }: { noProjects: boolean; sc
 
 // ── Context menus (web: handleThreadContextMenu / handleDraftContextMenu) ──
 
-let newThreadContextNonce = 0;
-
 function SidebarContextMenuHost() {
   const menu = useAtomValue(sidebarContextMenuAtom);
   const setMenu = useAtomSet(sidebarContextMenuAtom);
@@ -1119,10 +1123,10 @@ function SelectionContextMenu({ x, y, onClose }: { x: number; y: number; onClose
           if (!checkThreadOperations(selectedThreads)) return;
           const { deletedThreadKeys, firstFailure } = await deleteSelectedThreadEntries({
             entries: threadKeys.map((threadKey) => ({ threadKey })),
-            delete: async ({ threadKey }) => {
+            delete: async ({ threadKey }, deletedThreadKeys) => {
               const thread = appAtomRegistry.get(sidebarThreadListAtom).threadByKey.get(threadKey);
               if (!thread) return null;
-              return deleteThread(scopeThreadRef(thread.environmentId, thread.id));
+              return deleteThread(scopeThreadRef(thread.environmentId, thread.id), { deletedThreadKeys });
             },
           });
           if (firstFailure !== null) reportResult(firstFailure, "Failed to delete threads");
@@ -1233,15 +1237,12 @@ async function handleThreadAction(
       }
       return;
     case "new-thread-on-branch":
-      appAtomRegistry.set(newThreadContextRequestAtom, {
-        environmentId: thread.environmentId,
-        projectId: thread.projectId,
+      startNewThread(scopeProjectRef(thread.environmentId, thread.projectId), {
         branch: thread.branch,
         worktreePath: thread.worktreePath,
         envMode: thread.worktreePath ? "worktree" : "local",
-        nonce: ++newThreadContextNonce,
+        startFromOrigin: false,
       });
-      appAtomRegistry.set(routeAtom, { kind: "draft", environmentId: thread.environmentId, projectId: thread.projectId });
       return;
     case "settle":
       attemptSettle(threadRef);
