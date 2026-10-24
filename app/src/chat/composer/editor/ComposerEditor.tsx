@@ -825,7 +825,12 @@ export const ComposerEditor = memo(
           const value = serializeDocCached(current.doc);
           const md = posToMarkdown(current.doc, from);
           const lead = options?.ensureLeadingBoundary && md > 0 && !/\s/.test(value[md - 1] ?? "") ? " " : "";
-          insertMarkdown(`${lead}${text}`, { kind: "other", at });
+          // web inlineContextReferenceReplacement: the inserted trailing space takes the place
+          // of one already after the caret, so a reference never leaves a double space.
+          const block = current.doc.blocks[from.block]!;
+          const swallow = isCollapsed(at) && text.endsWith(" ") && block.kind === "paragraph" && block.text[from.offset] === " ";
+          const range = swallow ? { anchor: from, head: { block: from.block, offset: from.offset + 1 } } : at;
+          insertMarkdown(`${lead}${text}`, { kind: "other", at: range });
         },
       }),
       // The handle reads refs; one identity is enough.
