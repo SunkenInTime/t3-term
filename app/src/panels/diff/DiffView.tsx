@@ -270,6 +270,16 @@ export function DiffView(props: DiffViewProps) {
     [props.files, props.layout, props.collapsed, annotations],
   );
 
+  // A programmatic scroll reports no visible range, so the sticky header would keep the old
+  // top row; read the list's anchor once the scroll has landed.
+  const refreshVisibleSoon = () => {
+    setTimeout(() => {
+      const first = topIndex(-1);
+      if (first < 0) return;
+      setVisible((current) => (current.start === first ? current : { start: first, end: first + (current.end - current.start) }));
+    }, 50);
+  };
+
   const rowIndexByLine = useMemo(() => {
     const byLine = new Map<DiffLine, number>();
     rows.forEach((row, index) => {
@@ -358,6 +368,7 @@ export function DiffView(props: DiffViewProps) {
     if (!inView) {
       reset(Math.max(0, index - Math.floor(WINDOW / 4)));
       renderer.scrollToItem?.(listRef.current.id, index, -Math.max(0, Math.round(height / 2 - CODE_LINE_HEIGHT / 2)));
+      refreshVisibleSoon();
     }
     if (!props.wrap && ch > 0) {
       const codeWidth = contentWidth - gutterWidth(match.file.numberDigits, ch) - 2 - 2 * ch;
@@ -382,6 +393,7 @@ export function DiffView(props: DiffViewProps) {
     handledReveal.current = reveal.requestId;
     reset(Math.max(0, index - Math.floor(WINDOW / 4)));
     renderer.scrollToItem?.(listRef.current.id, index, 0);
+    refreshVisibleSoon();
   }, [props.reveal?.requestId, props.reveal?.path, rows, renderer]);
 
   useEffect(() => {
