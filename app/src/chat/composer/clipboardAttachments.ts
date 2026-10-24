@@ -111,20 +111,29 @@ async function readLinux(): Promise<string[]> {
  * Paths of the files on the clipboard, or of a picture on it saved as a PNG under
  * $T3TERM_HOME/pasted. Empty when the clipboard holds neither.
  */
-export async function readClipboardAttachmentPaths(): Promise<string[]> {
+export async function readClipboardAttachmentPaths(options?: { readonly imagesOnly?: boolean }): Promise<string[]> {
+  let paths: string[];
   try {
     switch (process.platform) {
       case "win32":
-        return await readWindows();
+        paths = await readWindows();
+        break;
       case "darwin":
-        return await readMac();
+        paths = await readMac();
+        break;
       default:
-        return await readLinux();
+        paths = await readLinux();
     }
   } catch {
     return [];
   }
+  // web shouldHandleComposerAttachmentPaste: next to text, only a picture (or copied files
+  // that include one) beats the text; other copied files leave the text paste alone.
+  if (options?.imagesOnly && !paths.some((path) => IMAGE_EXTENSION.test(path))) return [];
+  return paths;
 }
+
+const IMAGE_EXTENSION = /\.(png|jpe?g|gif|webp|heic|heif|bmp|tiff?)$/i;
 
 /** Writes pasted text that is too long for the prompt into a file to attach (web foldPastedText). */
 export function writePastedTextFile(name: string, text: string): string {

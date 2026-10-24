@@ -191,13 +191,21 @@ export interface ComposerEditorProps {
   readonly testId?: string;
   /** web onChange(value, cursor, expandedCursor, cursorAdjacentToMention). */
   readonly onChange: (value: string, cursor: number, suppressTrigger: boolean) => void;
-  /** Composer-level keys (menus, send, mode); true when it handled the key. */
-  readonly onKeyCommand: (event: KeyEvent, context: ComposerEditorKeyContext) => boolean;
+  /**
+   * Composer-level keys (menus, send, mode); true when it handled the key, "pass" when the key
+   * is a window shortcut the editor must leave alone (it goes on to the window dispatcher).
+   */
+  readonly onKeyCommand: (event: KeyEvent, context: ComposerEditorKeyContext) => boolean | "pass";
   /**
    * A paste's text before it goes in; true when the composer took it (web foldPastedText
    * attaches a long paste as a file). Not called for paste-as-text (Shift).
    */
   readonly onPasteText?: (text: string) => boolean;
+  /**
+   * A text paste went into the prompt; `before` is the prompt it replaced. The clipboard may
+   * also hold a picture, which web attaches instead of the text.
+   */
+  readonly onPastedTextInline?: (before: string) => void;
   /** A paste found no text: the clipboard may hold a picture or files. */
   readonly onPasteNonText?: () => void;
   /** web isPathQueryActive: a paste continuing an @path query stays text. */
@@ -447,12 +455,19 @@ export const ComposerEditor = memo(
     };
 
     /** web handlePaste. */
-    const pasteText = (raw: string, asText = false) => {
+    const pasteText = (raw: string, asText = false, ownCopy = false) => {
       const current = stateRef.current!;
       const pasted = raw.replace(/\r\n?/g, "\n");
       if (pasted.length === 0) return;
       // web onComposerPaste → foldPastedText: the composer may take a long paste as a file.
       if (!asText && propsRef.current.onPasteText?.(pasted)) return;
+      const before = serializeDocCached(current.doc);
+      insertPasted(current, pasted);
+      // Text copied here a moment ago is still on its way to the OS clipboard, whose old
+      // contents say nothing about this paste.
+      if (!ownCopy) propsRef.current.onPastedTextInline?.(before);
+    };
+    const insertPasted = (current: EditorState, pasted: string) => {
       const headBlock = current.doc.blocks[current.selection.head.block]!;
       if (selectionInOneCodeBlock(current.doc, current.selection) || headBlock.kind === "code") {
         const removed = deleteSelection(current.doc, current.selection);
@@ -493,7 +508,7 @@ export const ComposerEditor = memo(
       if (propsRef.current.readOnly) return;
       // A copy still on its way to the OS clipboard (the tool takes a moment) pastes from memory.
       if (lastCopy && Date.now() - lastCopy.at < 1500) {
-        pasteText(lastCopy.text, asText);
+        pasteText(lastCopy.text, asText, true);
         return;
       }
       // In a terminal GPUI's clipboard is the terminal's, and it only holds what this app
@@ -631,7 +646,9 @@ export const ComposerEditor = memo(
         return;
       }
 
-      if (p.onKeyCommand(event, { inCodeBlock: inCode, snapshot })) {
+      const command = p.onKeyCommand(event, { inCodeBlock: inCode, snapshot });
+      if (command === "pass") return;
+      if (command) {
         handled();
         return;
       }

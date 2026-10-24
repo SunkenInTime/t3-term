@@ -3,7 +3,8 @@
 // a checkout on another branch). Inert unless set:
 //
 //   T3TERM_DEV_COMPOSER_BANNERS=goal,child-input,background,branch,limit,feedback-sent,feedback-failed,
-//     feedback-uploading,tasks,chatgpt-sharing,terminal-context,provider-warning,provider-error,provider-unauthenticated,provider-unsupported
+//     feedback-uploading,tasks,chatgpt-sharing,terminal-context,provider-warning,provider-error,provider-unauthenticated,provider-unsupported,
+//     resume-compaction (offers Compact / Full as if the session had gone stale; a send then really compacts)
 //
 // Each flag only replaces the data the banner reads in the open thread; buttons on the
 // banners still run their real commands, so don't click them against a real thread.

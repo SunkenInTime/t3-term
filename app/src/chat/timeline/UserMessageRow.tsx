@@ -33,6 +33,7 @@ import { SNAP_SHOT_FRAME, SnapShotAttachmentDetails } from "./SnapShotAttachment
 
 /** Context kinds whose chip opens a details popup anchored at the press. */
 const POPUP_CONTEXT_KINDS = new Set(["terminal", "element", "review-comment", "preview-annotation"]);
+import { sentImagePreviewPath } from "../../state/composer.ts";
 import { resolvePreviewAnnotationImage } from "../../web/components/chat/TimelineUserMessageRow.logic.ts";
 import { WorkflowOpeningBlock } from "./WorkflowOpeningBlock.tsx";
 import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
@@ -398,14 +399,14 @@ function UserImageGrid({ images, videos }: { images: ReadonlyArray<ChatAttachmen
   return (
     <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 8, maxWidth: 210, marginBottom: 8 }}>
       {images.map((image) => {
-        const url = urlById.get(image.id) ?? ("previewUrl" in image ? (image.previewUrl ?? null) : null);
+        const url = sentImagePreviewPath(image.id) ?? urlById.get(image.id) ?? ("previewUrl" in image ? (image.previewUrl ?? null) : null);
         // A SnapShot window capture takes both columns at h-28 w-52 and carries its source app's details.
         const snapShot = url && isImageAttachment(image) && image.source?.kind === "snap-shot" ? image.source : null;
         const tile = snapShot ? SNAP_SHOT_FRAME : { width: cellWidth, height: Math.round((cellWidth * 3) / 4) };
         const openImage = () => {
           // ExpandedImageDialog over the message's images, starting at this one.
           const gallery = images.flatMap((entry) => {
-            const src = urlById.get(entry.id) ?? ("previewUrl" in entry ? (entry.previewUrl ?? null) : null);
+            const src = sentImagePreviewPath(entry.id) ?? urlById.get(entry.id) ?? ("previewUrl" in entry ? (entry.previewUrl ?? null) : null);
             return src ? [{ src, name: entry.name }] : [];
           });
           openExpandedImage({ images: gallery, index: Math.max(0, gallery.findIndex((entry) => entry.src === url)) });

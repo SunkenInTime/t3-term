@@ -4,8 +4,8 @@
 // the approval / question banners and the editor from this.
 //
 // Differences from web: answers live in module atoms instead of zustand stores, the
-// composer prompt is the t3-term draft (`state/composer.ts`), and question attachments
-// (SnapShots) are not supported, so every question draft has zero attachments.
+// composer prompt is the t3-term draft (`state/composer.ts`), and each question's
+// attachments live in a composer draft of their own (questionAttachments.ts).
 import { useAtomValue } from "@effect/atom-react";
 import {
   derivePendingThreadRequests,
@@ -33,6 +33,15 @@ import { appAtomRegistry } from "../../runtime/runtime.ts";
 import { composerTargetKey, readComposerDraft, setComposerPrompt } from "../../state/composer.ts";
 import { environmentThreads, threadEnvironment } from "../../state/environment.ts";
 import { toast } from "../../ui/toast.tsx";
+import {
+  clearAnsweredQuestionAttachments,
+  collectQuestionAttachments,
+  environmentSupportsQuestionAttachments,
+  pruneQuestionAttachmentDrafts,
+  questionAttachmentDraftKey,
+  questionAttachmentStatusAtom,
+  questionAttachmentStatusKey,
+} from "./questionAttachments.ts";
 import {
   buildPendingUserInputAnswers,
   carryDisplacedCustomAnswerIntoPrompt,
@@ -107,6 +116,8 @@ const NO_THREAD_STATE_ATOM = Atom.make(AsyncResult.initial()) as unknown as Retu
   typeof environmentThreads.stateAtom
 >;
 
+const NO_QUESTION_ATTACHMENT_STATUS = Atom.make<Readonly<Record<string, { count: number; blocked: boolean }>>>({});
+
 function reportFailure(result: AtomCommandResult<unknown, unknown>, fallback: string): void {
   if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
   const error = squashAtomCommandFailure(result);
@@ -133,6 +144,7 @@ export function usePendingThreadRequests(input: {
   const state = Option.getOrNull(AsyncResult.value(result));
   const projection = state ? Option.getOrNull(state.data) : null;
   const projectedThreadId = projection?.thread.id ?? null;
+  const threadSynced = (state as { status?: string } | null)?.status === "live";
 
   // The projection changes on every streamed event. Re-derive only when the request
   // inputs change, and hand out shared empties so nothing re-renders while idle.
@@ -190,9 +202,50 @@ export function usePendingThreadRequests(input: {
     updateQuestionIndex((existing) =>
       pruneResolvedUserInputDrafts(existing, environmentId, threadId, pendingRequestIds),
     );
-  }, [environmentId, threadId, projectedThreadId, pendingUserInputs]);
+    // Files are the user's work: only drop them once the thread is in sync (a cached
+    // projection can be missing a request that is still pending).
+    if (threadSynced) pruneQuestionAttachmentDrafts(
+      environmentId,
+      threadId,
+      new Set(
+        pendingUserInputs.flatMap((request) =>
+          request.questions.map((question) => questionAttachmentDraftKey(environmentId, threadId, request.requestId, question.id)),
+        ),
+      ),
+    );
+  }, [environmentId, threadId, projectedThreadId, pendingUserInputs, threadSynced]);
 
-  const activePendingDraftAnswers = activePendingUserInput ? activePendingAnswerDrafts : EMPTY_PENDING_USER_INPUT_ANSWERS;
+  // web: a question's attachments count as an answer, and an upload still going holds it.
+  const questionAttachmentStatus = useAtomValue(
+    activePendingUserInput && threadId
+      ? questionAttachmentStatusAtom(
+          questionAttachmentStatusKey(
+            environmentId,
+            threadId,
+            activePendingUserInput.requestId,
+            activePendingUserInput.questions.map((question) => question.id),
+          ),
+        )
+      : NO_QUESTION_ATTACHMENT_STATUS,
+  );
+  const supportsQuestionAttachments = environmentSupportsQuestionAttachments(environmentId);
+  const activePendingDraftAnswers = useMemo(() => {
+    if (!activePendingUserInput) return EMPTY_PENDING_USER_INPUT_ANSWERS;
+    if (Object.values(questionAttachmentStatus).every((status) => status.count === 0)) return activePendingAnswerDrafts;
+    return Object.fromEntries(
+      activePendingUserInput.questions.map((question) => {
+        const status = questionAttachmentStatus[question.id];
+        return [
+          question.id,
+          {
+            ...activePendingAnswerDrafts[question.id],
+            attachmentCount: status?.count ?? 0,
+            attachmentsBlocked: ((status?.count ?? 0) > 0 && !supportsQuestionAttachments) || status?.blocked === true,
+          },
+        ];
+      }),
+    );
+  }, [activePendingUserInput, activePendingAnswerDrafts, questionAttachmentStatus, supportsQuestionAttachments]);
   const activePendingProgress = activePendingUserInput
     ? derivePendingUserInputProgress(
         activePendingUserInput.questions,
@@ -250,15 +303,30 @@ export function usePendingThreadRequests(input: {
       if (!pendingInput || pendingInput.responseCapability === "not_resumable") return;
       const responseKey = JSON.stringify([environmentId, threadId, requestId]);
       if (userInputResponsesInFlight.current.has(responseKey)) return;
+      const questionIds = pendingInput.questions.map((question) => question.id);
+      const collected = collectQuestionAttachments(environmentId, threadId, requestId, questionIds);
+      if ("error" in collected) {
+        toast({ type: "error", title: collected.error });
+        return;
+      }
       userInputResponsesInFlight.current.add(responseKey);
       setRespondingUserInputRequestIds((existing) => addId(existing, requestId));
       const result = await runAtomCommand(
         appAtomRegistry,
         threadEnvironment.respondToUserInput,
-        { environmentId, input: { threadId, requestId, answers } },
+        {
+          environmentId,
+          input: {
+            threadId,
+            requestId,
+            answers,
+            ...(Object.keys(collected.attachments).length > 0 ? { attachmentsByQuestionId: collected.attachments as never } : {}),
+          },
+        },
         { reportFailure: false },
       );
       reportFailure(result, "Failed to submit user input.");
+      if (result._tag === "Success") clearAnsweredQuestionAttachments(environmentId, threadId, requestId, questionIds);
       userInputResponsesInFlight.current.delete(responseKey);
       setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
       return result;
