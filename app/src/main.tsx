@@ -8,28 +8,40 @@
 //   t3-term                                                   the T3 server on this machine, plus saved environments
 //   t3-term --no-local                                        saved environments only
 //   t3-term --open 'https://app.t3.codes/new?prompt=...'     open a T3 Code prompt link (also t3code://..., /new?...)
+//   t3-term <folder>                                          open a new thread in that folder's project
+// With --open or a folder and no connection arguments, a t3-term already running
+// for this T3TERM_HOME takes the request and this one exits (activation/activation.ts).
 import { isTerminal, render } from "@gpuix/react";
 
+import { activationRequestFromArgs, forwardToRunningInstance, handleActivationRequest, startActivationServer } from "./activation/activation.ts";
 import { App } from "./app/App.tsx";
 import { handleMarkdownCopy } from "./chat/markdown/copy.ts";
 import { bootstrapConnections, parseArgs } from "./connect/bootstrap.ts";
 import { installPerfProbe, perfOnEvent, perfProbeEnabled } from "./dev/perfProbe.ts";
 import { handleGlobalKeyDown, handleGlobalKeyUp } from "./keybindings/useGlobalKeybindings.ts";
 import { noteUserInput } from "./notifications/platform.ts";
-import { openPromptLink } from "./promptLinks/promptLinkTarget.ts";
 import { noteWindowInput } from "./runtime/windowActivity.ts";
 import { startClientTracing } from "./runtime/clientTracingTarget.ts";
 
 const args = parseArgs(process.argv.slice(2));
 if (args.help) {
   console.log(
-    "usage: t3-term [--url <http-url> (--token <bearer> | --pair <code>)] [--pair <pairing-url>] [--no-local] [--terminal | --window] [--open <t3 code link>]",
+    "usage: t3-term [--url <http-url> (--token <bearer> | --pair <code>)] [--pair <pairing-url>] [--no-local] [--terminal | --window] [--open <t3 code link> | <folder>]",
   );
   process.exit(0);
 }
 
+const activation = activationRequestFromArgs(args);
+if (activation !== null && args.url === undefined && args.pair === undefined) {
+  const forwarded = await forwardToRunningInstance(activation);
+  if (forwarded !== null) {
+    if (!forwarded.ok) console.error(forwarded.message);
+    process.exit(forwarded.ok ? 0 : 1);
+  }
+}
 const boot = await bootstrapConnections(args);
-if (args.open !== undefined) openPromptLink(args.open);
+startActivationServer();
+if (activation !== null) void handleActivationRequest(activation);
 
 const background = process.env.GPUIX_BACKGROUND === "1";
 // T3TERM_WINDOW=<width>x<height> opens the window at another size (screenshots of narrow layouts).
