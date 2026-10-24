@@ -21,6 +21,7 @@ import { ChangedFilesCard } from "./ChangedFilesCard.tsx";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
 import { MessageCopyButton, MicroIconButton, useHover } from "./parts.tsx";
 import { ProposedPlanCard } from "./ProposedPlanCard.tsx";
+import { HtmlRenderCard } from "./HtmlRenderRow.tsx";
 import { TimelineRowCtx, type TimelineRow } from "./rowContext.ts";
 
 export const AssistantTimelineRow = memo(function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
@@ -202,8 +203,9 @@ export function ProposedPlanTimelineRow({ row }: { row: Extract<TimelineRow, { k
 }
 
 /**
- * HtmlRenderFrame / McpAppFrame host live HTML in an iframe. gpuix has no web
- * view, so the row keeps the frame's place and names what it holds.
+ * McpAppFrame hosts an MCP app in an iframe that talks to the host over
+ * postMessage (tool calls, context updates). gpuix has no web view, and a
+ * server browser tab has no such host bridge, so the row names what it holds.
  */
 function EmbeddedFramePlaceholder({ icon, title, detail }: { icon: "app-window" | "blocks"; title: string; detail: string }) {
   const theme = useTheme();
@@ -237,7 +239,8 @@ function EmbeddedFramePlaceholder({ icon, title, detail }: { icon: "app-window" 
 }
 
 export function HtmlRenderTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "html-render" }> }) {
-  return <EmbeddedFramePlaceholder icon="app-window" title={row.htmlRender.title || "HTML preview"} detail="Interactive HTML preview. Open this thread in T3 Code to view it." />;
+  const ctx = use(TimelineRowCtx);
+  return <HtmlRenderCard threadRef={ctx.threadRef} reference={row.htmlRender} />;
 }
 
 export function McpAppTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mcp-app" }> }) {
