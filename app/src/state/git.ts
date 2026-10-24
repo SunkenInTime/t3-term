@@ -38,6 +38,9 @@ interface GitPrefs {
   preferredEditor?: EditorId | null;
   lastInvokedScriptByProjectId?: Record<string, string>;
   diffFileTreeOpen?: boolean;
+  /** web diffPanelStore persists both maps (localStorage `t3code:diff-panel-state:v1`). */
+  diffSelectionByThreadKey?: Record<string, DiffPanelSelection>;
+  diffBranchBaseRefByThreadKey?: Record<string, string | null>;
 }
 
 const prefsPath = () => NodePath.join(termHome(), "git-prefs.json");
@@ -100,12 +103,44 @@ export type DiffPanelSelection =
 
 const DEFAULT_DIFF_SELECTION: DiffPanelSelection = { kind: "branch", baseRef: null };
 
-export const diffSelectionAtom = Atom.family((_threadKey: string) =>
-  Atom.make<DiffPanelSelection>(DEFAULT_DIFF_SELECTION).pipe(Atom.keepAlive),
-);
-const branchBaseRefAtom = Atom.family((_threadKey: string) =>
-  Atom.make<string | null>(null).pipe(Atom.keepAlive),
-);
+function isDiffPanelSelection(value: unknown): value is DiffPanelSelection {
+  if (typeof value !== "object" || value === null) return false;
+  const kind = (value as { kind?: unknown }).kind;
+  if (kind === "unstaged") return true;
+  if (kind === "branch") {
+    const baseRef = (value as { baseRef?: unknown }).baseRef;
+    return baseRef === null || typeof baseRef === "string";
+  }
+  return kind === "turn" && typeof (value as { turnId?: unknown }).turnId === "string";
+}
+
+export const diffSelectionAtom = Atom.family((threadKey: string) => {
+  const stored = readPrefs().diffSelectionByThreadKey?.[threadKey];
+  return Atom.make<DiffPanelSelection>(
+    isDiffPanelSelection(stored)
+      ? // A restored turn must not replay the file reveal that was pending when it was saved.
+        stored.kind === "turn"
+        ? { ...stored, filePath: stored.filePath ?? null, revealRequestId: 0 }
+        : stored
+      : DEFAULT_DIFF_SELECTION,
+  ).pipe(Atom.keepAlive);
+});
+const branchBaseRefAtom = Atom.family((threadKey: string) => {
+  const stored = readPrefs().diffBranchBaseRefByThreadKey?.[threadKey];
+  return Atom.make<string | null>(typeof stored === "string" ? stored : null).pipe(Atom.keepAlive);
+});
+
+/** Selection and remembered base ref survive restarts, like web's persisted diffPanelStore. */
+function persistDiffSelection(threadKey: string): void {
+  const prefs = readPrefs();
+  writePrefs({
+    diffSelectionByThreadKey: { ...prefs.diffSelectionByThreadKey, [threadKey]: appAtomRegistry.get(diffSelectionAtom(threadKey)) },
+    diffBranchBaseRefByThreadKey: {
+      ...prefs.diffBranchBaseRefByThreadKey,
+      [threadKey]: appAtomRegistry.get(branchBaseRefAtom(threadKey)),
+    },
+  });
+}
 
 export function diffSelectionFor(ref: ScopedThreadRef) {
   return diffSelectionAtom(scopedThreadKey(ref));
@@ -121,6 +156,7 @@ export function selectDiffGitScope(ref: ScopedThreadRef, scope: "branch" | "unst
       ? { kind: "branch", baseRef: appAtomRegistry.get(branchBaseRefAtom(key)) }
       : { kind: "unstaged" },
   );
+  persistDiffSelection(key);
 }
 
 export function selectDiffBaseRef(ref: ScopedThreadRef, baseRef: string | null): void {
@@ -128,6 +164,7 @@ export function selectDiffBaseRef(ref: ScopedThreadRef, baseRef: string | null):
   const normalized = baseRef?.trim() ? baseRef.trim() : null;
   appAtomRegistry.set(branchBaseRefAtom(key), normalized);
   appAtomRegistry.set(diffSelectionAtom(key), { kind: "branch", baseRef: normalized });
+  persistDiffSelection(key);
 }
 
 export function selectDiffTurn(ref: ScopedThreadRef, turnId: RunId, filePath?: string): void {
@@ -139,6 +176,7 @@ export function selectDiffTurn(ref: ScopedThreadRef, turnId: RunId, filePath?: s
     filePath: filePath?.trim() || null,
     revealRequestId: previous.kind === "turn" ? previous.revealRequestId + 1 : 1,
   });
+  persistDiffSelection(key);
 }
 
 /** Session-only folds, keyed by thread + review section (web's useDiffPanelSessionStore). */

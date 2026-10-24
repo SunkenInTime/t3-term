@@ -37,8 +37,8 @@ function revealLabel(config: ServerConfig): string {
   return "Reveal in Files";
 }
 
-/** web buildFileContextMenuItems + FileBrowserPanel's two chat rows. */
-export function fileTreeMenuItems(config: ServerConfig | null | undefined): ContextMenuItem<FileTreeMenuAction>[] {
+/** web buildFileContextMenuItems (fileContextMenu.ts): Open, Reveal, Open with. The diff's filename menu. */
+export function fileContextMenuItems(config: ServerConfig | null | undefined): ContextMenuItem<FileTreeMenuAction>[] {
   const items: ContextMenuItem<FileTreeMenuAction>[] = [];
   const editors = config?.availableEditors ?? [];
   if (editors.includes("file-manager")) items.push({ id: "open", label: "Open", icon: "pencil" });
@@ -56,8 +56,12 @@ export function fileTreeMenuItems(config: ServerConfig | null | undefined): Cont
       })),
     });
   }
-  items.push({ id: "copy-mention", label: "Copy mention" }, { id: "add-to-chat", label: "Add to chat" });
   return items;
+}
+
+/** web buildFileContextMenuItems + FileBrowserPanel's two chat rows. */
+export function fileTreeMenuItems(config: ServerConfig | null | undefined): ContextMenuItem<FileTreeMenuAction>[] {
+  return [...fileContextMenuItems(config), { id: "copy-mention", label: "Copy mention" }, { id: "add-to-chat", label: "Add to chat" }];
 }
 
 /** Appends text to a composer draft the way web insertTextAtEnd does (ensureLeadingBoundary). */
