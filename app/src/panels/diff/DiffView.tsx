@@ -95,6 +95,32 @@ export interface DiffViewProps {
   readonly comments?: DiffCommentsConfig | null;
   /** Scrolls a file's header to the top once per request (the file tree's reveal). */
   readonly reveal?: { readonly path: string; readonly requestId: number } | null;
+  /**
+   * The pull request Code tab's own annotations (review threads, pending comments, its draft),
+   * keyed by file path and drawn by `renderAnnotation` under their lines.
+   */
+  readonly annotations?: ReadonlyMap<string, ReadonlyArray<DiffExternalAnnotation>>;
+  readonly renderAnnotation?: (file: DiffFileModel, annotation: DiffExternalAnnotation) => ReactNode;
+  /**
+   * With `comments` off: the gutter's "+" on one line calls this instead of opening the
+   * composer comment form (the pull request review comment flow).
+   */
+  readonly onLineNumberClick?: (file: DiffFileModel, side: "additions" | "deletions", lineNumber: number) => void;
+  /** Extra controls at the end of a file header (the viewed checkbox). */
+  readonly renderHeaderExtras?: (file: DiffFileModel) => ReactNode;
+  /** Paint every row in a plain column that grows with its content, for a short excerpt inside an outer scroller. */
+  readonly inline?: boolean;
+  /** Inline only: no file header rows, for a diff drawn under a row that already names the file. */
+  readonly hideFileHeaders?: boolean;
+  /** The last rows came on screen: time to ask for the next page of a paged diff. */
+  readonly onReachEnd?: () => void;
+}
+
+/** One annotation a caller draws itself (see `renderAnnotation`). */
+export interface DiffExternalAnnotation {
+  readonly key: string;
+  readonly side: "additions" | "deletions";
+  readonly lineNumber: number;
 }
 
 /** What a row does on gutter input; one stable object read through a ref. */
@@ -107,6 +133,10 @@ interface RowInteraction {
      */
     readonly hover: (key: string, side: "old" | "new", via: "gutter" | "button") => void;
     readonly unhover: (key: string, via: "gutter" | "button") => void;
+    /** The gutter "+" when composer comments are off and the caller takes line presses. */
+    readonly lineClick: ((filePath: string, side: "additions" | "deletions", lineNumber: number) => void) | null;
+    readonly renderAnnotation: ((filePath: string, annotation: DiffExternalAnnotation) => ReactNode) | null;
+    readonly renderHeaderExtras: ((file: DiffFileModel) => ReactNode) | null;
   };
 }
 
@@ -142,8 +172,21 @@ export function DiffView(props: DiffViewProps) {
     );
   const unhover = (key: string, via: "gutter" | "button") =>
     setHovered((current) => (current?.key === key && current.via === via ? null : current));
-  const interactionRef = useRef<RowInteraction["current"]>({ comments, hover, unhover });
-  interactionRef.current = { comments, hover, unhover };
+  const lineClick = props.onLineNumberClick
+    ? (filePath: string, side: "additions" | "deletions", lineNumber: number) => {
+        const file = props.files.find((candidate) => candidate.path === filePath);
+        if (file) props.onLineNumberClick?.(file, side, lineNumber);
+      }
+    : null;
+  const renderAnnotation = props.renderAnnotation
+    ? (filePath: string, annotation: DiffExternalAnnotation) => {
+        const file = props.files.find((candidate) => candidate.path === filePath);
+        return file ? props.renderAnnotation?.(file, annotation) : null;
+      }
+    : null;
+  const renderHeaderExtras = props.renderHeaderExtras ?? null;
+  const interactionRef = useRef<RowInteraction["current"]>({ comments, hover, unhover, lineClick, renderAnnotation, renderHeaderExtras });
+  interactionRef.current = { comments, hover, unhover, lineClick, renderAnnotation, renderHeaderExtras };
   const interaction = useMemo<RowInteraction>(
     () => ({
       get current() {
@@ -152,9 +195,27 @@ export function DiffView(props: DiffViewProps) {
     }),
     [],
   );
+  // The caller's annotations ride the same rows as composer comments, as entries of their own kind.
+  const annotations = useMemo(() => {
+    if (!props.annotations || props.annotations.size === 0) return comments.annotations;
+    const merged = new Map<string, DiffLineAnnotation[]>();
+    for (const [path, list] of comments.annotations ?? new Map<string, ReadonlyArray<DiffLineAnnotation>>()) merged.set(path, [...list]);
+    for (const [path, list] of props.annotations) {
+      const target = merged.get(path) ?? [];
+      for (const annotation of list) {
+        target.push({
+          side: annotation.side,
+          lineNumber: annotation.lineNumber,
+          entries: [{ id: annotation.key, kind: "external", rangeLabel: "", text: "" }],
+        });
+      }
+      merged.set(path, target);
+    }
+    return merged;
+  }, [comments.annotations, props.annotations]);
   const rows = useMemo(
-    () => buildDiffRows(props.files, props.layout, props.collapsed, comments.annotations),
-    [props.files, props.layout, props.collapsed, comments.annotations],
+    () => buildDiffRows(props.files, props.layout, props.collapsed, annotations),
+    [props.files, props.layout, props.collapsed, annotations],
   );
 
   // The file tree's reveal: put the file's header at the top of the list.
@@ -180,7 +241,7 @@ export function DiffView(props: DiffViewProps) {
     const from = Math.max(0, Math.min(visible.start, start));
     const to = Math.min(rows.length, Math.max(visible.end, start + WINDOW));
     const files = new Set<DiffFileModel>();
-    for (let index = from; index < to; index += 1) {
+    for (let index = props.inline ? 0 : from; index < (props.inline ? rows.length : to); index += 1) {
       const row = rows[index];
       if (row && row.type !== "header" && row.type !== "end") files.add(row.file);
     }
@@ -242,10 +303,40 @@ export function DiffView(props: DiffViewProps) {
         if (deltaX === 0) return;
         setScrollX((current) => Math.max(0, Math.min(maxScrollX, current - deltaX)));
       }}
-      style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, minWidth: 0, position: "relative", backgroundColor: palette.bg }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        width: "100%",
+        ...(props.inline ? { flexShrink: 0 } : { flexGrow: 1, minHeight: 0 }),
+        minWidth: 0,
+        position: "relative",
+        backgroundColor: palette.bg,
+      }}
     >
       {probe}
-      {width > 0 ? (
+      {width > 0 && props.inline ? (
+        <div style={{ display: "flex", flexDirection: "column", width: "100%" }}>
+          {(props.hideFileHeaders ? rows.filter((row) => row.type !== "header") : rows).map((row) => (
+            <DiffRowView
+              key={row.key}
+              row={row}
+              layout={props.layout}
+              wrap={props.wrap}
+              width={width}
+              ch={ch}
+              scrollX={clampedScrollX}
+              tokens={tokens.get(row.file) ?? null}
+              palette={palette}
+              onToggleFile={props.onToggleFile}
+              onOpenFile={props.onOpenFile}
+              hoveredSide={(comments.enabled || lineClick) && hovered?.key === row.key ? hovered.side : null}
+              selected={comments.selectedLines}
+              interaction={interaction}
+              draftText={row.type === "annotation" && row.annotation.entries.some((entry) => entry.kind === "draft") ? comments.draftText : ""}
+            />
+          ))}
+        </div>
+      ) : width > 0 ? (
         <virtual-list
           ref={listRef}
           itemCount={rows.length}
@@ -259,6 +350,7 @@ export function DiffView(props: DiffViewProps) {
             const last = first + (reportedLast - reportedFirst);
             setVisible((current) => (current.start === first && current.end === last ? current : { start: first, end: last }));
             onVisibleRange(reportedFirst, reportedLast);
+            if (props.onReachEnd && last >= rows.length - 4) props.onReachEnd();
           }}
           style={{ width: "100%", flexGrow: 1, minHeight: 0, scrollbarColor: theme.scrollbar }}
         >
@@ -275,7 +367,7 @@ export function DiffView(props: DiffViewProps) {
               palette={palette}
               onToggleFile={props.onToggleFile}
               onOpenFile={props.onOpenFile}
-              hoveredSide={comments.enabled && hovered?.key === row.key ? hovered.side : null}
+              hoveredSide={(comments.enabled || lineClick) && hovered?.key === row.key ? hovered.side : null}
               selected={comments.selectedLines}
               interaction={interaction}
               draftText={row.type === "annotation" && row.annotation.entries.some((entry) => entry.kind === "draft") ? comments.draftText : ""}
@@ -283,9 +375,16 @@ export function DiffView(props: DiffViewProps) {
           ))}
         </virtual-list>
       ) : null}
-      {stickyFile ? (
+      {stickyFile && !props.inline ? (
         <div style={{ position: "absolute", left: 0, right: 0, top: 0, height: HEADER_HEIGHT, backgroundColor: palette.bg }}>
-          <FileHeader file={stickyFile} collapsed={false} palette={palette} onToggleFile={props.onToggleFile} onOpenFile={props.onOpenFile} />
+          <FileHeader
+            file={stickyFile}
+            collapsed={false}
+            palette={palette}
+            onToggleFile={props.onToggleFile}
+            onOpenFile={props.onOpenFile}
+            {...(props.renderHeaderExtras ? { extras: props.renderHeaderExtras(stickyFile) } : {})}
+          />
         </div>
       ) : null}
     </div>
@@ -319,6 +418,20 @@ const DiffRowView = memo(function DiffRowView(props: {
   });
   switch (row.type) {
     case "annotation":
+      if (row.annotation.entries.every((entry) => entry.kind === "external")) {
+        const render = props.interaction.current.renderAnnotation;
+        return (
+          <div style={{ display: "flex", flexDirection: "column", width: props.width }}>
+            {render
+              ? row.annotation.entries.map((entry) => (
+                  <div key={entry.id} style={{ display: "flex", flexDirection: "column" }}>
+                    {render(row.file.path, { key: entry.id, side: row.annotation.side, lineNumber: row.annotation.lineNumber })}
+                  </div>
+                ))
+              : null}
+          </div>
+        );
+      }
       return (
         <AnnotationRowView
           row={row}
@@ -330,8 +443,19 @@ const DiffRowView = memo(function DiffRowView(props: {
           selected={props.selected.size > 0}
         />
       );
-    case "header":
-      return <FileHeader file={row.file} collapsed={row.collapsed} palette={palette} onToggleFile={props.onToggleFile} onOpenFile={props.onOpenFile} />;
+    case "header": {
+      const extras = props.interaction.current.renderHeaderExtras;
+      return (
+        <FileHeader
+          file={row.file}
+          collapsed={row.collapsed}
+          palette={palette}
+          onToggleFile={props.onToggleFile}
+          onOpenFile={props.onOpenFile}
+          {...(extras ? { extras: extras(row.file) } : {})}
+        />
+      );
+    }
     case "separator":
       return <SeparatorRow text={row.text} direction={row.direction} first={row.first} last={row.last} split={row.split} palette={palette} width={props.width} />;
     case "end":
@@ -494,7 +618,14 @@ function LineCellView(props: {
             if (hovered) current.hover(props.interaction.rowKey, props.side, "button");
             else current.unhover(props.interaction.rowKey, "button");
           }}
-          onPress={() => props.interaction.interaction.current.comments.utility(props.interaction.filePath, point)}
+          onPress={() => {
+            const current = props.interaction.interaction.current;
+            if (!current.comments.enabled && current.lineClick) {
+              current.lineClick(props.interaction.filePath, point.side === "deletions" ? "deletions" : "additions", point.lineNumber);
+              return;
+            }
+            current.comments.utility(props.interaction.filePath, point);
+          }}
         />
       ) : null}
     </div>
@@ -645,7 +776,7 @@ function AnnotationRowView(props: {
           >
             <DiffCommentAnnotation
               testId={`diff-comment-${entry.kind}`}
-              kind={entry.kind}
+              kind={entry.kind === "draft" ? "draft" : "comment"}
               rangeLabel={entry.rangeLabel}
               text={entry.kind === "draft" ? props.draftText : entry.text}
               onTextChange={(text) => props.interaction.current.comments.setDraftText(text)}
@@ -812,6 +943,7 @@ const FileHeader = memo(function FileHeader(props: {
   palette: DiffPalette;
   onToggleFile: (path: string) => void;
   onOpenFile: (path: string) => void;
+  extras?: ReactNode;
 }) {
   const theme = useTheme();
   const { file, palette } = props;
@@ -885,6 +1017,14 @@ const FileHeader = memo(function FileHeader(props: {
           <text style={{ color: palette.addition, fontSize: 11, lineHeight: 16, fontFamily: FONTS.mono }}>{`+${file.additions}`}</text>
         ) : null}
       </div>
+      {props.extras ? (
+        <div
+          onClick={(event: EventPayload) => consumeClick(event)}
+          style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 }}
+        >
+          {props.extras}
+        </div>
+      ) : null}
     </div>
   );
 });

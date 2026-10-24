@@ -542,7 +542,7 @@ export function PullRequestsPage() {
     setStatsByRow((previous) => mergePullRequestDiffStats(previous, stats));
   }
 
-  const { hosts, displayGroups, shownCount, listedPullRequestsBySurface } = usePullRequestDisplayGroups({
+  const { hosts, displayGroups, shownCount, listedPullRequestsBySurface, hostActionsOf } = usePullRequestDisplayGroups({
     answered,
     host: search.host,
     groups,
@@ -778,6 +778,8 @@ export function PullRequestsPage() {
           showProvider={showProvider}
           metaWidth={metaWidth}
           onSelect={selectEntry}
+          hostActionsOf={hostActionsOf}
+          onSpeedAction={() => refreshListAndStats()}
         />
       )}
       {listQuery.error && shownCount > 0 ? <ListErrorBanner error={listQuery.error} onRetry={() => listQuery.refresh()} /> : null}

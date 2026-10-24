@@ -17,7 +17,8 @@ export const linkedPullRequestDetailAtom = createLinkedPullRequestSummaryAtomFam
   pullRequestEnvironment.refreshes,
 );
 
-export type PullRequestDetailTab = "summary" | "timeline" | "code";
+export type { PullRequestDetailTab } from "./pullRequests.ts";
+import type { PullRequestDetailTab } from "./pullRequests.ts";
 
 /**
  * The pull request the right panel shows for a thread. Null falls back to the
