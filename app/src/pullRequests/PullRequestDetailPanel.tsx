@@ -31,7 +31,9 @@ import { changeRequestRepositoryUrl, parseChangeRequestUrl } from "@t3tools/shar
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { useWindowSize } from "@gpuix/react";
 import type * as Cause from "effect/Cause";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { PullRequestMarkdownContext } from "./pullRequestMarkdownContext.ts";
+import { PullRequestLinkContextMenu } from "./PullRequestLinkContextMenu.tsx";
 
 import { copyTextToClipboard } from "../chat/header/osActions.ts";
 import { requestConfirmDialog } from "../dialogs/confirmDialog.ts";
@@ -1055,6 +1057,10 @@ export function PullRequestDetailView({
   const openOnHostText =
     hostClient === UNKNOWN_SOURCE_CONTROL_CLIENT ? "Open on host" : `Open on ${hostClient.label}`;
   const repositoryUrl = detail === null ? null : changeRequestRepositoryUrl(detail.url);
+  const markdownContext = useMemo(
+    () => ({ repositoryUrl, threadRef, environmentId }),
+    [repositoryUrl, threadRef?.environmentId, threadRef?.threadId, environmentId],
+  );
   const checkoutCommand = handoffSummary
     ? pullRequestCheckoutCommand(
         handoffSummary.provider,
@@ -1149,6 +1155,7 @@ export function PullRequestDetailView({
     ) : null;
 
   return (
+    <PullRequestMarkdownContext.Provider value={markdownContext}>
     <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, minWidth: 0 }}>
       {threadPickerOpen && detail ? (
         <PullRequestThreadLinks
@@ -1199,6 +1206,7 @@ export function PullRequestDetailView({
                     url={detail.url}
                     tone={statePresentation.tone(theme)}
                     label={openOnHostText}
+                    provider={detail.provider}
                   />
                   <Tooltip content={detail.title} side="top">
                     <div style={{ display: "flex", minWidth: 0, flexShrink: 1 }}>
@@ -1233,6 +1241,7 @@ export function PullRequestDetailView({
                     url={detail.url}
                     tone={statePresentation.tone(theme)}
                     label={openOnHostText}
+                    provider={detail.provider}
                   />
                 </>
               )
@@ -1546,6 +1555,7 @@ export function PullRequestDetailView({
         ) : null}
       </div>
     </div>
+    </PullRequestMarkdownContext.Provider>
   );
 }
 
@@ -1558,18 +1568,38 @@ function dryRunDescription(result: { readonly cause: Cause.Cause<unknown> }): { 
 /** Height of the title, meta and branch rows that fold away once the reader scrolls. */
 const FOLD_HEIGHT = 108;
 
-function NumberLink({ number, url, tone, label }: { number: number; url: string; tone: string; label: string }) {
+function NumberLink({
+  number,
+  url,
+  tone,
+  label,
+  provider,
+}: {
+  number: number;
+  url: string;
+  tone: string;
+  label: string;
+  provider: string;
+}) {
+  // web PullRequestDetailCrumbs: a right click on the number offers Copy link and Open on host.
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
     <Tooltip content={label} side="top">
       <div
         testId="pr-detail-number"
         onClick={() => openExternalUrl(url)}
+        onAuxClick={(event) => {
+          if (event.isRightClick) setMenu({ x: event.x ?? 0, y: event.y ?? 0 });
+        }}
         style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 2, flexShrink: 0, cursor: "pointer" }}
       >
         <Text size="xs" weight={500} color={tone}>
           {`#${number}`}
         </Text>
         <Icon name="external-link" size={10} color={tone} />
+        {menu ? (
+          <PullRequestLinkContextMenu url={url} provider={provider} position={menu} onClose={() => setMenu(null)} />
+        ) : null}
       </div>
     </Tooltip>
   );
