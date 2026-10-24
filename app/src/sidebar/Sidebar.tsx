@@ -13,7 +13,7 @@ import { canSnooze, threadWokeAt } from "@t3tools/client-runtime/state/thread-se
 import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import { makeThreadSearchKey, threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { THREAD_JUMP_KEYBINDING_COMMANDS, type ProjectId, type ScopedThreadRef } from "@t3tools/contracts";
+import { THREAD_JUMP_KEYBINDING_COMMANDS, type ContextMenuItem, type ProjectId, type ScopedThreadRef } from "@t3tools/contracts";
 import { startNewThread } from "../palette/actions.ts";
 import { useGpuixRequired } from "@gpuix/react";
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactElement, type ReactNode } from "react";
@@ -51,6 +51,10 @@ import {
   threadSearchResultsAtom,
   threadShellKey,
   updateSidebarPersistedState,
+  clearThreadSelection,
+  getThreadKeysToDeselectAfterDelete,
+  removeFromThreadSelection,
+  threadSelectionAtom,
   type SidebarProjectGroup,
   type SidebarProviderEntry,
   type SidebarThreadList,
@@ -68,6 +72,9 @@ import {
   type ThreadActionMenuId,
 } from "../web/components/threadActionMenu.logic.ts";
 import {
+  buildBulkTitleRegenerationContextMenuItem,
+  buildBulkUnpinContextMenuItem,
+  deleteSelectedThreadEntries,
   resolveSidebarDropVerb,
   searchSidebarThreads,
   shouldCreateNewThreadInCurrentProject,
@@ -83,7 +90,8 @@ import { requestCustomSnooze } from "../dialogs/CustomSnoozeDialog.tsx";
 import { SidebarChromeFooter, SidebarChromeHeader, useStageIdentification } from "./SidebarChrome.tsx";
 import { SidebarDraftBlock } from "./SidebarDraftBlock.tsx";
 import { SidebarDragBoundary, SidebarSectionHeader, SidebarSectionPlaceholder } from "./SidebarListMarkers.tsx";
-import { useSidebarThreadDrag, type SidebarScrollMetrics } from "./useSidebarThreadDrag.ts";
+import { settleThreadKeys, useSidebarThreadDrag, type SidebarScrollMetrics } from "./useSidebarThreadDrag.ts";
+import { requestConfirmDialog } from "../dialogs/confirmDialog.ts";
 import { SidebarThreadHeader } from "./SidebarThreadHeader.tsx";
 import { SidebarSearchResultRow, SidebarThreadRow, type SidebarSweepAction } from "./SidebarThreadRow.tsx";
 import { StageBackdrop } from "./StageBackdrop.tsx";
@@ -97,8 +105,10 @@ import {
   attemptUnsettle,
   attemptUnsnooze,
   copyToClipboard,
+  deleteThread,
   markThreadUnread,
   navigateToThread,
+  readThreadShell,
   regenerateThreadTitle,
   reportResult,
   setThreadAutoSettle,
@@ -388,6 +398,13 @@ New thread in current project: Shift+click${newThreadInProjectShortcut ? ` (${ne
         key: "show-more",
         kind: "other",
         element: <ShowMoreSettled count={Math.min(list.hiddenSettledCount, SETTLED_TAIL_PAGE_COUNT)} />,
+      });
+    }
+    if (dragView !== null && dragView.overflow > 0) {
+      listEntries.push({
+        key: "drag-overflow",
+        kind: "other",
+        element: <div style={{ height: dragView.overflow, flexShrink: 0 }} />,
       });
     }
   }
@@ -943,10 +960,188 @@ function SidebarContextMenuHost() {
   const close = () => setMenu(null);
   return menu.kind === "thread" ? (
     <ThreadContextMenu threadKey={menu.threadKey} x={menu.x} y={menu.y} onClose={close} />
+  ) : menu.kind === "selection" ? (
+    <SelectionContextMenu x={menu.x} y={menu.y} onClose={close} />
   ) : (
     <DraftContextMenu draftId={menu.draftId} x={menu.x} y={menu.y} onClose={close} />
   );
 }
+
+/** Sidebar.tsx canOperateThreads / checkThreadOperations. */
+function canOperateThreads(threads: ReadonlyArray<Pick<EnvironmentThreadShell, "environmentId">>): boolean {
+  return threads.every((thread) => appAtomRegistry.get(canOperateEnvironmentAtom(thread.environmentId)));
+}
+
+function checkThreadOperations(threads: ReadonlyArray<Pick<EnvironmentThreadShell, "environmentId">>): boolean {
+  if (canOperateThreads(threads)) return true;
+  toast({
+    type: "error",
+    title: "Thread action unavailable",
+    description: "This connection cannot change one or more selected threads.",
+  });
+  return false;
+}
+
+type SelectionMenuId = "unpin" | "settle" | "snooze" | `snooze:${string}` | "regenerate-title" | "mark-unread" | "delete";
+
+/** Sidebar.tsx handleMultiSelectContextMenu: bulk actions over the selected rows. */
+function SelectionContextMenu({ x, y, onClose }: { x: number; y: number; onClose: () => void }) {
+  const list = useAtomValue(sidebarThreadListAtom);
+  const selection = useAtomValue(threadSelectionAtom);
+  const serverConfigs = useAtomValue(environmentServerConfigsAtom);
+  const settings = useAtomValue(sidebarClientSettingsAtom);
+  const threadKeys = [...selection.selectedThreadKeys].filter((threadKey) => list.threadByKey.has(threadKey));
+  if (threadKeys.length === 0) return null;
+  const count = threadKeys.length;
+  const selectionNow = new Date();
+  const selectedThreads = threadKeys.flatMap((threadKey) => {
+    const thread = list.threadByKey.get(threadKey);
+    return thread ? [thread] : [];
+  });
+  const capabilitiesOf = (thread: EnvironmentThreadShell) => serverConfigs.get(thread.environmentId)?.environment.capabilities;
+  const settlingThreads = selectedThreads.filter((thread) => thread.settledOverride !== "settled");
+  const canSnoozeSelection = selectedThreads.every(
+    (thread) => capabilitiesOf(thread)?.threadSnooze === true && canSnooze(thread, { now: selectionNow.toISOString() }),
+  );
+  const titleRegenerationThreads = selectedThreads.filter((thread) => capabilitiesOf(thread)?.threadTitleRegeneration === true);
+  const regeneratableTitleThreads = titleRegenerationThreads.filter((thread) => thread.titleRegeneration == null);
+  const titleRegenerationMenuItem = buildBulkTitleRegenerationContextMenuItem({
+    supportedCount: titleRegenerationThreads.length,
+    actionableCount: regeneratableTitleThreads.length,
+  });
+  const pinnedSelectedThreads = selectedThreads.filter(
+    (thread) => capabilitiesOf(thread)?.threadPinning === true && thread.pinnedAt != null,
+  );
+  const unpinMenuItem = buildBulkUnpinContextMenuItem({ pinnedCount: pinnedSelectedThreads.length });
+  const snoozePresets = resolveSnoozePresets(new Date(), settings.timestampFormat);
+  const items: ContextMenuItem<SelectionMenuId>[] = [
+    ...(unpinMenuItem ? [{ ...unpinMenuItem, disabled: !canOperateThreads(pinnedSelectedThreads) }] : []),
+    {
+      id: "settle",
+      label: `Settle (${count})`,
+      disabled: settlingThreads.length === 0 || !canOperateThreads(settlingThreads),
+    },
+    ...(canSnoozeSelection
+      ? [
+          {
+            id: "snooze" as const,
+            label: `Snooze (${count})`,
+            disabled: !canOperateThreads(selectedThreads),
+            children: [
+              ...snoozePresets.map((preset) => ({
+                id: `snooze:${preset.id}` as const,
+                label: `${preset.label} (${preset.whenLabel})`,
+                disabled: !canOperateThreads(selectedThreads),
+              })),
+              {
+                id: "snooze:custom" as const,
+                label: "Custom…",
+                separatorBefore: true,
+                disabled: !canOperateThreads(selectedThreads),
+              },
+            ],
+          },
+        ]
+      : []),
+    ...(titleRegenerationMenuItem
+      ? [
+          {
+            ...titleRegenerationMenuItem,
+            disabled: titleRegenerationMenuItem.disabled || !canOperateThreads(regeneratableTitleThreads),
+          },
+        ]
+      : []),
+    { id: "mark-unread", label: `Mark unread (${count})` },
+    { id: "delete", label: `Delete (${count})`, destructive: true, disabled: !canOperateThreads(selectedThreads) },
+  ];
+  const onSelect = (id: SelectionMenuId) => {
+    void (async () => {
+      const current = appAtomRegistry.get(sidebarThreadListAtom);
+      const actionTargets =
+        id === "unpin"
+          ? pinnedSelectedThreads
+          : id === "regenerate-title"
+            ? regeneratableTitleThreads
+            : id === "settle"
+              ? settlingThreads.flatMap((thread) => {
+                  const live = current.threadByKey.get(threadShellKey(thread));
+                  return live && live.settledOverride !== "settled" ? [live] : [];
+                })
+              : selectedThreads;
+      if (id === "settle" && actionTargets.length === 0) return;
+      if (id !== "mark-unread" && !checkThreadOperations(actionTargets)) return;
+      if (id.startsWith("snooze:")) {
+        const preset =
+          id === "snooze:custom"
+            ? await requestCustomSnooze()
+            : snoozePresets.find((candidate) => `snooze:${candidate.id}` === id);
+        if (preset) {
+          clearThreadSelection();
+          for (const thread of selectedThreads) {
+            attemptSnooze(scopeThreadRef(thread.environmentId, thread.id), preset.snoozedUntil);
+          }
+        }
+        return;
+      }
+      switch (id) {
+        case "unpin":
+          for (const thread of pinnedSelectedThreads) attemptUnpin(scopeThreadRef(thread.environmentId, thread.id));
+          clearThreadSelection();
+          return;
+        case "regenerate-title":
+          for (const thread of regeneratableTitleThreads) {
+            await regenerateThreadTitle(scopeThreadRef(thread.environmentId, thread.id));
+          }
+          clearThreadSelection();
+          return;
+        case "settle":
+          settleThreadKeys(current, actionTargets.map(threadShellKey));
+          clearThreadSelection();
+          return;
+        case "mark-unread":
+          for (const threadKey of threadKeys) {
+            const thread = current.threadByKey.get(threadKey);
+            if (thread) markThreadUnread(scopeThreadRef(thread.environmentId, thread.id));
+          }
+          clearThreadSelection();
+          return;
+        case "delete": {
+          if (appAtomRegistry.get(sidebarClientSettingsAtom).confirmThreadDelete) {
+            const confirmed = await requestConfirmDialog(
+              [
+                `Delete ${count} thread${count === 1 ? "" : "s"}?`,
+                "This permanently clears conversation history for these threads.",
+              ].join("\n"),
+              { variant: "destructive" },
+            );
+            if (!confirmed) return;
+          }
+          if (!checkThreadOperations(selectedThreads)) return;
+          const { deletedThreadKeys, firstFailure } = await deleteSelectedThreadEntries({
+            entries: threadKeys.map((threadKey) => ({ threadKey })),
+            delete: async ({ threadKey }) => {
+              const thread = appAtomRegistry.get(sidebarThreadListAtom).threadByKey.get(threadKey);
+              if (!thread) return null;
+              return deleteThread(scopeThreadRef(thread.environmentId, thread.id));
+            },
+          });
+          if (firstFailure !== null) reportResult(firstFailure, "Failed to delete threads");
+          removeFromThreadSelection(
+            getThreadKeysToDeselectAfterDelete(threadKeys, deletedThreadKeys, (threadKey) => {
+              const ref = parseScopedThreadKey(threadKey);
+              return ref !== null && readThreadShell(ref) !== null;
+            }),
+          );
+          return;
+        }
+        default:
+          return;
+      }
+    })();
+  };
+  return <ContextMenu items={items} x={x} y={y} onSelect={onSelect} onClose={onClose} testId="sidebar-selection-context-menu" />;
+}
+
 
 function ThreadContextMenu({ threadKey, x, y, onClose }: { threadKey: string; x: number; y: number; onClose: () => void }) {
   const list = useAtomValue(sidebarThreadListAtom);

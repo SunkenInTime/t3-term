@@ -355,6 +355,8 @@ export const sidebarProjectScopeAtom = Atom.make((get): SidebarProjectGroup | nu
 });
 
 export function setSidebarProjectScopeKey(key: string | null): void {
+  // A selection made under one scope can hold threads the next scope hides.
+  clearThreadSelection();
   updateSidebarPersistedState({ projectScopeKey: key });
 }
 
@@ -816,6 +818,8 @@ export const sidebarRenameAtom = Atom.make<{ readonly threadKey: string; readonl
 export const sidebarContextMenuAtom = Atom.make<
   | { readonly kind: "thread"; readonly threadKey: string; readonly x: number; readonly y: number }
   | { readonly kind: "draft"; readonly draftId: string; readonly x: number; readonly y: number }
+  /** Right-click on a selected row while several are selected: the bulk menu. */
+  | { readonly kind: "selection"; readonly x: number; readonly y: number }
   | null
 >(null).pipe(Atom.keepAlive);
 

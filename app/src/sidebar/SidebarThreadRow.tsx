@@ -32,6 +32,7 @@ import {
   threadKeysWithUnsentDraftAtom,
   threadLocalLastVisitedAtAtom,
   threadSelectedAtom,
+  threadSelectionAtom,
   toggleThreadSelection,
   type SidebarProviderEntry,
 } from "../state/sidebar.ts";
@@ -742,7 +743,12 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
       };
   const handleAuxClick = (event: { x?: number; y?: number; isRightClick?: boolean }) => {
     if (event.isRightClick === false) return;
-    setContextMenu({ kind: "thread", threadKey, x: event.x ?? 0, y: event.y ?? 0 });
+    const selection = appAtomRegistry.get(threadSelectionAtom).selectedThreadKeys;
+    setContextMenu(
+      selection.size > 0 && selection.has(threadKey)
+        ? { kind: "selection", x: event.x ?? 0, y: event.y ?? 0 }
+        : { kind: "thread", threadKey, x: event.x ?? 0, y: event.y ?? 0 },
+    );
   };
 
   const rowBackground = ghost

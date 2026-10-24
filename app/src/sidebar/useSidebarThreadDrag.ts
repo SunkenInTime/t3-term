@@ -93,6 +93,12 @@ export interface SidebarDragView {
   readonly offsets: ReadonlyMap<string, number | null>;
   /** The lifted row's top, in list-content pixels. */
   readonly ghostTop: number;
+  /**
+   * How far the projection reaches past the list's end. dnd-kit's transforms
+   * grow the browser's scrollable overflow; offsets here do not, so the list
+   * pads its end by this much while the drag lasts.
+   */
+  readonly overflow: number;
 }
 
 export interface SidebarSweepView {
@@ -197,6 +203,7 @@ function commitDrop(list: SidebarThreadList, activeKey: string, activeSection: S
   if (activeThread === undefined) return;
   const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
   const plan = planDrop(list, activeKey, activeSection, target);
+  if (process.env.T3TERM_DRAG_DEBUG) console.error("[drag] plan", JSON.stringify({ target: target.section, plan }));
   if (plan === null || plan.kind === "none") return;
   if (plan.kind === "settle" && isThreadSettling(activeKey)) return;
   const assignments =
@@ -402,6 +409,7 @@ export function useSidebarThreadDrag(input: Input): {
         firstShelfTop: shelfIndex === -1 ? null : painted(shelfIndex),
       });
       const overId = collisions[0]?.id ?? null;
+      if (process.env.T3TERM_DRAG_DEBUG) console.error("[drag] upd", JSON.stringify({ py: Math.round(pointer.y), scroll: Math.round(metrics.scrollTop), ch: Math.round(metrics.contentHeight), shelf: shelfIndex === -1 ? null : Math.round(painted(shelfIndex)), ghost: Math.round(activeRect.top + transformY), over: overId?.slice(-12), c1: collisions[1]?.id.slice(-12) }));
       const overIndex = overId === null ? -1 : current.items.findIndex((item) => sidebarListItemId(item) === overId);
       current.overId = overId;
       current.transforms =
@@ -410,10 +418,13 @@ export function useSidebarThreadDrag(input: Input): {
           : current.project({ rects: current.rects, activeIndex: current.activeIndex, overIndex });
       const target = overId === null ? null : resolveSidebarDropTarget(current.items, current.activeKey, overId);
       const offsets = new Map<string, number | null>();
+      const listBottom = current.rects.at(-1)?.bottom ?? 0;
+      let projectedBottom = listBottom;
       current.items.forEach((item, index) => {
         const transform = current.transforms[index];
         if (transform && index !== current.activeIndex) {
           offsets.set(sidebarListItemId(item), transform.scaleY === 0 ? null : transform.y);
+          if (transform.scaleY !== 0) projectedBottom = Math.max(projectedBottom, current.rects[index]!.bottom + transform.y);
         }
       });
       setDragView({
@@ -422,6 +433,7 @@ export function useSidebarThreadDrag(input: Input): {
         targetSection: target?.section ?? null,
         offsets,
         ghostTop: activeRect.top + transformY,
+        overflow: Math.max(0, projectedBottom - listBottom),
       });
     };
 
@@ -484,6 +496,7 @@ export function useSidebarThreadDrag(input: Input): {
         stopAutoScroll();
         session = null;
         setDragView(null);
+        if (process.env.T3TERM_DRAG_DEBUG) console.error("[drag] end", JSON.stringify({ point, overId: current.overId, active: current.activeKey }));
         if (point === null || current.overId === null) return;
         const target = resolveSidebarDropTarget(current.items, current.activeKey, current.overId);
         if (target === null) return;
