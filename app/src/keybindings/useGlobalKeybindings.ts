@@ -14,8 +14,8 @@ import { noteUserInput } from "../notifications/platform.ts";
 import type { KeyEvent } from "@gpuix/react";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { KeybindingCommand, ScopedThreadRef } from "@t3tools/contracts";
-import { US_SHIFTED_TO_UNSHIFTED_KEYS } from "@t3tools/shared/keybindings";
+import type { KeybindingCommand, ResolvedKeybindingsConfig, ScopedThreadRef } from "@t3tools/contracts";
+import { matchesKeybindingShortcut, US_SHIFTED_TO_UNSHIFTED_KEYS } from "@t3tools/shared/keybindings";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { cycleAppearanceMode } from "../state/appearance.ts";
@@ -30,6 +30,7 @@ import {
   rightPanelSurfaceAtom,
   routeAtom,
   sidebarOpenAtom,
+  sidebarVisibleAtom,
   toggleSidebar,
   terminalOpenAtom,
 } from "../state/ui.ts";
@@ -39,7 +40,9 @@ import { handleUsageShortcutCommand } from "../usage/usageShortcuts.ts";
 import {
   navigateAdjacentThread,
   navigateToThreadAtIndex,
+  releaseThreadUndoShortcut,
   settleAndAdvance,
+  threadUndoClaimsShortcut,
   togglePinOpenThread,
   undoLatestThreadAction,
 } from "../sidebar/threadActions.ts";
@@ -55,7 +58,18 @@ import {
 } from "../state/preview.ts";
 import { EMPTY_THREAD_STATE, selectedSurface, type ThreadRightPanelState } from "../web/rightPanelStore.ts";
 import { readThreadPreviewState } from "../web/previewStateStore.ts";
-import { sidebarJumpHintsVisibleAtom } from "../state/sidebar.ts";
+import { clearThreadSelection, readThreadSelection, sidebarJumpHintsVisibleAtom } from "../state/sidebar.ts";
+import { clientSettingsAtom } from "../state/clientSettings.ts";
+import { composerRequiresModifier } from "../web/composer-logic.ts";
+import { noteFocusHost, readFocusFacts } from "./focusContext.ts";
+import {
+  isRouteTurnRunning,
+  openFavoriteEditor,
+  readRouteComposerPrompt,
+  runProjectScriptCommand,
+  stopRouteThread,
+  toggleRightPanelMaximized,
+} from "./chatCommands.ts";
 import { toggleThemeEditor } from "../state/themeEditor.ts";
 import {
   copyActiveThreadReference,
@@ -67,6 +81,8 @@ import {
   startScratchThread,
 } from "../palette/actions.ts";
 import {
+  HOST_PLATFORM,
+  resolveChatShortcutCommand,
   resolveShortcutCommand,
   threadJumpIndexFromCommand,
   threadTraversalDirectionFromCommand,
@@ -107,28 +123,77 @@ export function toShortcutEvent(event: KeyEvent): ShortcutEventLike {
   };
 }
 
-/** The `when` clause context, read from app state. */
+/**
+ * The `when` clause context, read from app state: the flags web's ChatView
+ * getShortcutContext and routes/_chat.tsx pass, from the same sources.
+ */
 export function readShortcutContext(overrides?: Partial<ShortcutMatchContext>): Partial<ShortcutMatchContext> {
   const route = appAtomRegistry.get(routeAtom);
+  // What the renderer reports as focused; until it is known, the composer's own focus flag.
+  const focus = readFocusFacts();
+  const composerFocus = focus ? focus.composer : appAtomRegistry.get(composerFocusAtom);
+  const threadRef = route.kind === "thread" ? scopeThreadRef(route.environmentId, route.threadId) : null;
+  const rightPanelOpen = threadRef !== null && appAtomRegistry.get(rightPanelOpenAtom);
+  const terminalFocus = overrides?.terminalFocus ?? appAtomRegistry.get(terminalFocusAtom);
   return {
-    terminalFocus: appAtomRegistry.get(terminalFocusAtom),
-    composerFocus: appAtomRegistry.get(composerFocusAtom),
-    terminalOpen: route.kind === "thread" && appAtomRegistry.get(terminalOpenAtom),
-    rightPanelOpen: route.kind === "thread" && appAtomRegistry.get(rightPanelOpenAtom),
+    terminalFocus,
+    composerFocus,
+    terminalOpen: threadRef !== null && appAtomRegistry.get(terminalOpenAtom),
+    rightPanelOpen,
+    previewFocus: focus?.preview ?? false,
+    // routes/_chat.tsx previewOpen: the open panel's active tab is the browser.
+    previewOpen:
+      threadRef !== null && rightPanelOpen && selectedSurface(readPanelState(scopedThreadKey(threadRef)))?.kind === "preview",
+    // Web's terminal takes keys in xterm's helper textarea, so it counts as editable there too.
+    editableFocus: terminalFocus || (focus ? focus.editable : composerFocus),
     modelPickerOpen: appAtomRegistry.get(modelPickerOpenAtom),
     usagePageOpen: route.kind === "usage",
     draftThreadRoute: route.kind === "draft",
+    turnRunning: isRouteTurnRunning(),
+    composerRequiresModifier: composerRequiresModifier(
+      appAtomRegistry.get(clientSettingsAtom).sendShortcut,
+      readRouteComposerPrompt(),
+    ),
     ...overrides,
   };
+}
+
+/**
+ * Whether any binding's chord is this keystroke, whatever its `when` clause. Reading the
+ * context can ask the renderer for its element tree (focusContext.ts), so keys that are
+ * no shortcut at all skip it.
+ */
+function isAnyBindingChord(event: ShortcutEventLike, keybindings: ResolvedKeybindingsConfig): boolean {
+  for (const binding of keybindings) {
+    if (matchesKeybindingShortcut(event, binding.shortcut, HOST_PLATFORM)) return true;
+    // shortcutForContext: with composerRequiresModifier, Mod+Enter's alternate send is Mod+Shift+Enter.
+    if (
+      binding.command === "composer.sendAlternate" &&
+      matchesKeybindingShortcut(event, { ...binding.shortcut, shiftKey: true }, HOST_PLATFORM)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function resolveKeyEventCommand(
   event: KeyEvent,
   overrides?: Partial<ShortcutMatchContext>,
 ): KeybindingCommand | null {
-  return resolveShortcutCommand(toShortcutEvent(event), appAtomRegistry.get(activeKeybindingsAtom), {
-    context: readShortcutContext(overrides),
-  });
+  const shortcutEvent = toShortcutEvent(event);
+  const keybindings = appAtomRegistry.get(activeKeybindingsAtom);
+  const route = appAtomRegistry.get(routeAtom);
+  // resolveChatShortcutCommand: project scripts are bound on the thread's own server,
+  // everything else on the app's.
+  const scriptKeybindings =
+    route.kind === "thread" || route.kind === "draft" ? (readServerConfig(route.environmentId)?.keybindings ?? null) : null;
+  if (!isAnyBindingChord(shortcutEvent, keybindings) && !(scriptKeybindings && isAnyBindingChord(shortcutEvent, scriptKeybindings))) {
+    return null;
+  }
+  const options = { context: readShortcutContext(overrides) };
+  if (scriptKeybindings === null) return resolveShortcutCommand(shortcutEvent, keybindings, options);
+  return resolveChatShortcutCommand(shortcutEvent, keybindings, scriptKeybindings, options);
 }
 
 // ── Handler registry ────────────────────────────────────────────────────
@@ -371,15 +436,20 @@ function runBuiltIn(command: KeybindingCommand, event: KeyEvent): boolean {
     case "thread.pin":
       if (route.kind !== "thread") return false;
       return togglePinOpenThread();
-    case "thread.undo":
-      return undoLatestThreadAction();
     case "rightPanel.new":
       if (!onThreadRoute() || !appAtomRegistry.get(rightPanelOpenAtom)) return false;
       appAtomRegistry.set(rightPanelAddMenuOpenAtom, true);
       return true;
+    case "rightPanel.toggleMaximized":
+      return toggleRightPanelMaximized(event.isHeld === true);
+    case "thread.stop":
+      return stopRouteThread(event.isHeld === true);
+    case "editor.openFavorite":
+      return openFavoriteEditor(event.isHeld === true);
     default:
       break;
   }
+  if (runProjectScriptCommand(command, event.isHeld === true)) return true;
   if (command.startsWith("usage.") && route.kind === "usage") {
     if (event.isHeld) return true;
     return handleUsageShortcutCommand(command);
@@ -450,6 +520,65 @@ function handleEscapeToGoBack(event: KeyEvent): boolean {
   return true;
 }
 
+/** The key whose press last undid: its repeats are swallowed so they cannot undo again. */
+let heldUndoKey: string | null = null;
+
+/**
+ * ThreadUndoShortcut (AppSidebarLayout): runs ahead of the other shortcuts. While the
+ * notice's claim lasts (and the sidebar shows the notice), mod+Z undoes even from a text
+ * field; any other keypress ends the claim.
+ */
+function handleThreadUndoShortcut(event: KeyEvent): boolean {
+  const key = (event.key ?? "").toLowerCase();
+  if (event.isHeld) {
+    if (heldUndoKey !== null && key === heldUndoKey) {
+      event.preventDefault();
+      return true;
+    }
+    return false;
+  }
+  const isModifier = MODIFIER_KEYS[key] !== undefined;
+  if (!isModifier) heldUndoKey = null;
+  const shortcutEvent = toShortcutEvent(event);
+  const keybindings = appAtomRegistry.get(activeKeybindingsAtom);
+  // Only an undo chord needs the context (and the element tree it may read).
+  const isUndoChord = keybindings.some(
+    (binding) => binding.command === "thread.undo" && matchesKeybindingShortcut(shortcutEvent, binding.shortcut, HOST_PLATFORM),
+  );
+  const context = isUndoChord ? readShortcutContext() : null;
+  const claimed = appAtomRegistry.get(sidebarVisibleAtom) && threadUndoClaimsShortcut();
+  const command =
+    context === null
+      ? null
+      : resolveShortcutCommand(shortcutEvent, keybindings, {
+          context: { ...context, editableFocus: context.editableFocus === true && !claimed },
+        });
+  if (command !== "thread.undo") {
+    if (!isModifier) releaseThreadUndoShortcut();
+    return false;
+  }
+  if (isCommandPaletteOpen() || appAtomRegistry.get(modelPickerOpenAtom)) return false;
+  if (!undoLatestThreadAction()) return false;
+  heldUndoKey = key;
+  event.preventDefault();
+  return true;
+}
+
+/**
+ * routes/_chat.tsx: in the chat routes, an Escape nothing else took (menus and dialogs
+ * had their turn) clears a sidebar multi-selection.
+ */
+function handleEscapeClearsSelection(event: KeyEvent): boolean {
+  if (event.key !== "escape" || isCommandPaletteOpen()) return false;
+  // Settings and Usage are outside web's _chat layout; Pull requests' Escape goes back first.
+  const kind = appAtomRegistry.get(routeAtom).kind;
+  if (kind === "settings" || kind === "usage") return false;
+  if (readThreadSelection().selectedThreadKeys.size === 0) return false;
+  event.preventDefault();
+  clearThreadSelection();
+  return true;
+}
+
 export function handleGlobalKeyUp(event: KeyEvent): void {
   updateJumpHints(event, false);
 }
@@ -471,8 +600,10 @@ export function registerTypeToFocusHandler(handler: TypeToFocusHandler): () => v
 
 export function handleGlobalKeyDown(event: KeyEvent, renderer?: unknown): void {
   noteUserInput();
+  noteFocusHost(renderer);
   updateJumpHints(event, true);
   if (event.defaultPrevented) return;
+  if (handleThreadUndoShortcut(event)) return;
   // An open menu, popover or dialog takes Escape first, as in web. gpuix closes
   // the top layer in its default action after this handler, so step aside.
   if (event.key === "escape" && hasOpenDismissLayer() && !isSidebarGestureActive()) return;
@@ -483,6 +614,7 @@ export function handleGlobalKeyDown(event: KeyEvent, renderer?: unknown): void {
     return;
   }
   if (handleEscapeToGoBack(event)) return;
+  if (handleEscapeClearsSelection(event)) return;
   if (!isCommandPaletteOpen() && typeToFocusHandler?.(event, renderer)) {
     event.preventDefault();
     return;
