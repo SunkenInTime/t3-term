@@ -3,7 +3,7 @@
 // a checkout on another branch). Inert unless set:
 //
 //   T3TERM_DEV_COMPOSER_BANNERS=goal,child-input,background,branch,limit,feedback-sent,feedback-failed,
-//     feedback-uploading,tasks,chatgpt-sharing,provider-warning,provider-error,provider-unauthenticated,provider-unsupported
+//     feedback-uploading,tasks,chatgpt-sharing,terminal-context,provider-warning,provider-error,provider-unauthenticated,provider-unsupported
 //
 // Each flag only replaces the data the banner reads in the open thread; buttons on the
 // banners still run their real commands, so don't click them against a real thread.
@@ -125,3 +125,11 @@ export function withDevChatGptSharing(provider: ServerProvider | null): ServerPr
   if (!provider || !flags.has("chatgpt-sharing")) return provider;
   return { ...provider, auth: { ...provider.auth, status: "authenticated", subscriptionSharing: true } } as ServerProvider;
 }
+
+/**
+ * `terminal-context`: a thread composer opens with a terminal excerpt attached through the
+ * same intake "Add to chat" uses (the terminal's own menu can't be driven by automation).
+ */
+export const DEV_TERMINAL_CONTEXT = flags.has("terminal-context")
+  ? { terminalId: "term-1", terminalLabel: "Terminal 1", lineStart: 2, lineEnd: 4, text: ["t3ctx", "line", "one"].join("\n") }
+  : null;

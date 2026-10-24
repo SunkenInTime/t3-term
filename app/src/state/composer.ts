@@ -22,6 +22,17 @@ import { resolveModelPreferences } from "@t3tools/shared/serverSettings";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
+import {
+  appendInlineContextReference,
+  removeInlineContextReference,
+} from "../web/lib/composerContextReferences.ts";
+import {
+  reviewCommentContextId,
+  reviewCommentContextReference,
+  terminalContextReference,
+} from "../web/lib/composerContextRecords.ts";
+import type { TerminalContextDraft } from "../web/lib/terminalContext.ts";
+import type { ReviewCommentContext } from "../web/reviewCommentContext.ts";
 import { clientSettingsAtom } from "./clientSettings.ts";
 import { termHome } from "../runtime/paths.ts";
 import { serverEnvironment } from "./environment.ts";
@@ -78,6 +89,16 @@ export interface ComposerDraft {
   readonly branch?: string | null;
   readonly worktreePath?: string | null;
   readonly startFromOrigin?: boolean;
+  /**
+   * Diff and file line comments (web ComposerThreadDraftState.reviewComments). Each one has
+   * an inline `t3-context://` reference in the prompt and goes out as a message context record.
+   */
+  readonly reviewComments?: ReadonlyArray<ReviewCommentContext>;
+  /**
+   * Terminal selections added with "Add to chat" (web ComposerThreadDraftState.terminalContexts).
+   * Shown as chips; each goes out as an inline reference in the message text plus a context record.
+   */
+  readonly terminalContexts?: ReadonlyArray<TerminalContextDraft>;
   readonly updatedAt?: string;
 }
 
@@ -91,7 +112,13 @@ export const EMPTY_COMPOSER_DRAFT: ComposerDraft = {
 };
 
 export function composerDraftHasUserContent(draft: ComposerDraft | null | undefined): boolean {
-  return Boolean(draft && (draft.prompt.trim().length > 0 || draft.attachments.length > 0));
+  return Boolean(
+    draft &&
+      (draft.prompt.trim().length > 0 ||
+        draft.attachments.length > 0 ||
+        (draft.reviewComments?.length ?? 0) > 0 ||
+        (draft.terminalContexts?.length ?? 0) > 0),
+  );
 }
 
 /** The last model the user picked; new drafts start from it (web: sticky model selection). */
@@ -240,22 +267,111 @@ export function removeComposerAttachment(key: string, attachmentId: string): voi
 /** Clears what a send dispatched; model, mode and workspace choices stay. */
 export function clearComposerContent(key: string): void {
   updateComposerDraft(key, (draft) =>
-    draft.prompt === "" && draft.attachments.length === 0
+    draft.prompt === "" &&
+    draft.attachments.length === 0 &&
+    (draft.reviewComments?.length ?? 0) === 0 &&
+    (draft.terminalContexts?.length ?? 0) === 0
       ? draft
-      : { ...draft, prompt: "", attachments: [] },
+      : { ...draft, prompt: "", attachments: [], reviewComments: [], terminalContexts: [] },
   );
 }
 
 /** Puts a failed send's prompt and attachments back. */
 export function restoreComposerContent(
   key: string,
-  content: { prompt: string; attachments: ReadonlyArray<ComposerAttachmentDraft> },
+  content: {
+    prompt: string;
+    attachments: ReadonlyArray<ComposerAttachmentDraft>;
+    reviewComments?: ReadonlyArray<ReviewCommentContext>;
+    terminalContexts?: ReadonlyArray<TerminalContextDraft>;
+  },
 ): void {
   updateComposerDraft(key, (draft) => ({
     ...draft,
     prompt: draft.prompt.trim().length > 0 ? `${content.prompt}\n${draft.prompt}` : content.prompt,
     attachments: [...content.attachments, ...draft.attachments],
+    reviewComments: [
+      ...(content.reviewComments ?? []),
+      ...(draft.reviewComments ?? []).filter(
+        (comment) => !content.reviewComments?.some((restored) => restored.id === comment.id),
+      ),
+    ],
+    terminalContexts: [
+      ...(content.terminalContexts ?? []),
+      ...(draft.terminalContexts ?? []).filter(
+        (context) => !content.terminalContexts?.some((restored) => restored.id === context.id),
+      ),
+    ],
   }));
+}
+
+/**
+ * web ChatComposer addTerminalContext. Web drops an inline chip at the caret; this plain text
+ * field cannot read its caret and an inline reference breaks the moment text is typed into
+ * it, so the selection lives in the list (shown as chips) and its reference is added to the
+ * message text at send (terminalContextReferencesText).
+ */
+export function addComposerTerminalContext(key: string, context: TerminalContextDraft): void {
+  updateComposerDraft(key, (draft) => ({
+    ...draft,
+    terminalContexts: [...(draft.terminalContexts ?? []), context],
+  }));
+}
+
+/** Drops a terminal selection (web removes it with its chip). */
+export function removeComposerTerminalContext(key: string, contextId: string): void {
+  updateComposerDraft(key, (draft) => {
+    const existing = draft.terminalContexts ?? [];
+    if (!existing.some((entry) => entry.id === contextId)) return draft;
+    return { ...draft, terminalContexts: existing.filter((entry) => entry.id !== contextId) };
+  });
+}
+
+/** The inline references web's message text carries for its terminal chips, one per selection. */
+export function terminalContextReferencesText(contexts: ReadonlyArray<TerminalContextDraft>): string {
+  return contexts.map((context) => appendInlineContextReference("", terminalContextReference(context)).trim()).join(" ");
+}
+
+/**
+ * web composerDraftStore.addReviewComment: stores the comment (replacing one with the same
+ * id) and appends its inline reference to the prompt the first time it is added.
+ */
+export function addComposerReviewComment(key: string, comment: ReviewCommentContext): void {
+  updateComposerDraft(key, (draft) => {
+    const existing = draft.reviewComments ?? [];
+    const alreadyPresent = existing.some((entry) => entry.id === comment.id);
+    return {
+      ...draft,
+      prompt: alreadyPresent
+        ? draft.prompt
+        : appendInlineContextReference(draft.prompt, reviewCommentContextReference(comment)),
+      reviewComments: [...existing.filter((entry) => entry.id !== comment.id), { ...comment }],
+    };
+  });
+}
+
+/** web composerDraftStore.removeReviewComment: drops the comment and its inline reference. */
+export function removeComposerReviewComment(key: string, commentId: string): void {
+  updateComposerDraft(key, (draft) => {
+    const existing = draft.reviewComments ?? [];
+    if (!existing.some((entry) => entry.id === commentId)) return draft;
+    return {
+      ...draft,
+      prompt: removeInlineContextReference(draft.prompt, reviewCommentContextId(commentId)).prompt,
+      reviewComments: existing.filter((entry) => entry.id !== commentId),
+    };
+  });
+}
+
+/**
+ * Review comments whose inline reference is still in the prompt. The composer here is a
+ * plain text field, so deleting a reference's text is how a comment is removed from it;
+ * web's editor removes the record together with its chip.
+ */
+export function referencedReviewComments(draft: ComposerDraft, prompt = draft.prompt): ReadonlyArray<ReviewCommentContext> {
+  const comments = draft.reviewComments ?? [];
+  if (comments.length === 0) return comments;
+  return comments.filter((comment) => prompt.includes(`/review-comment/${reviewCommentContextId(comment.id)})`));
 }
 
 export function setComposerModelSelection(

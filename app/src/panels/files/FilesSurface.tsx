@@ -8,6 +8,7 @@ import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contract
 import { environmentThreadShells, projectIndexAtom } from "../../state/environment.ts";
 import { rightPanelActions, rightPanelThreadStateAtom, threadKeyOf } from "../../state/rightPanel.ts";
 import FilePreviewPanel from "./FilePreviewPanel.tsx";
+import { AttachmentFilePreview } from "./AttachmentFilePreview.tsx";
 import { useWorkspaceMutationId } from "./workspaceMutation.ts";
 
 /** Where a thread's files live: its worktree, else the project root. */
@@ -32,6 +33,20 @@ export function FilesSurface(props: { environmentId: EnvironmentId; threadId: Th
   const workspaceMutationId = useWorkspaceMutationId(environmentId, threadId);
   if (!workspace) return null;
   const fileSurface = surface?.kind === "file" ? surface : null;
+  if (fileSurface?.attachment) {
+    return (
+      <div testId="files-surface" style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, minWidth: 0 }}>
+        <AttachmentFilePreview
+          key={`${environmentId}:${fileSurface.attachment.id}`}
+          environmentId={environmentId}
+          attachmentId={fileSurface.attachment.id}
+          name={fileSurface.attachment.name}
+          mimeType={fileSurface.attachment.mimeType}
+          sizeBytes={fileSurface.attachment.sizeBytes}
+        />
+      </div>
+    );
+  }
   const folderTrail = surface?.kind === "file" || surface?.kind === "files" ? surface.folderTrail : undefined;
 
   return (

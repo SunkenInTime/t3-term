@@ -76,6 +76,9 @@ import {
   composerSettingsAtom,
   composerTargetKey,
   readComposerDraft,
+  referencedReviewComments,
+  removeComposerTerminalContext,
+  terminalContextReferencesText,
   removeComposerAttachment,
   setComposerInteractionMode,
   setComposerModelOptions,
@@ -193,6 +196,8 @@ import { usePendingThreadRequests } from "./usePendingThreadRequests.ts";
 import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
 import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
+import { ComposerPendingTerminalContexts } from "./ComposerPendingTerminalContexts.tsx";
+import { filterTerminalContextsWithText, type TerminalContextDraft } from "../../web/lib/terminalContext.ts";
 import {
   draftFanoutSelectionsAtom,
   type MultipleModelTarget,
@@ -209,10 +214,12 @@ import { getTriggerDisplayModelName } from "../../web/components/chat/providerIc
 import { shouldShowInstanceBadge } from "../../web/providerInstances.ts";
 import { useProjectCloneBanner } from "./useProjectCloneBanner.tsx";
 import { composerProviderStatusAtom } from "./composerProviderStatus.ts";
-import { devComposerTasks, withDevProviderStatus } from "./devComposerBanners.ts";
+import { DEV_TERMINAL_CONTEXT, devComposerTasks, withDevProviderStatus } from "./devComposerBanners.ts";
+import { addTerminalContextToThreadComposer } from "./terminalContextIntake.ts";
 import { feedbackUploadsInFlight, upsertFeedbackSubmission } from "./ComposerFeedback.tsx";
 import { parseCodexFeedbackCommand, submitCodexFeedback } from "@t3tools/client-runtime/state/threads";
 import { isUsageLimitsCommand, USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
+import { mentionDragOverAtom, reportComposerDropZone } from "../../panels/files/fileTreeActions.ts";
 
 export type { ComposerTarget } from "../../state/composer.ts";
 
@@ -224,6 +231,7 @@ const RESTING_PICKER_LABEL_MAX_SURFACE_PX = 640;
 /** Tailwind `sm`: web's footer drops its gap from this viewport width up. */
 const SM_BREAKPOINT = 640;
 
+const NO_TERMINAL_CONTEXTS: ReadonlyArray<TerminalContextDraft> = [];
 const NO_THREAD_SHELL_ATOM = Atom.make<EnvironmentThreadShell | null>(null);
 const NO_THREAD_STATUS_ATOM = Atom.make<EnvironmentThreadStatus>("live");
 const NO_THREAD_STATE_ATOM = Atom.make(
@@ -619,6 +627,8 @@ function ComposerBody({
   const [surfaceWidth, setSurfaceWidth] = useState<number | null>(null);
   const { width: windowWidth } = useWindowSize();
   const [dragOver, setDragOver] = useState(false);
+  const mentionDragOver = useAtomValue(mentionDragOverAtom) === draftKey;
+  useEffect(() => () => reportComposerDropZone(draftKey, null), [draftKey]);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -866,10 +876,18 @@ function ComposerBody({
   const bannerItems = banners.items;
 
   // ── Send ──────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!DEV_TERMINAL_CONTEXT || threadId === null) return;
+    if ((readComposerDraft(draftKey).terminalContexts?.length ?? 0) > 0) return;
+    addTerminalContextToThreadComposer(environmentId, threadId, DEV_TERMINAL_CONTEXT);
+  }, [environmentId, threadId, draftKey]);
+  // Terminal selections whose reference is still in the prompt (web composerDraft.terminalContexts).
+  const composerTerminalContexts = promptDraft.terminalContexts ?? NO_TERMINAL_CONTEXTS;
   const composerSendState = deriveComposerSendState({
     prompt,
     imageCount: draft.attachments.length,
-    terminalContexts: [],
+    terminalContexts: composerTerminalContexts,
+    elementContextCount: referencedReviewComments(draft, prompt).length,
   });
   const providerSendBlockReason = getAntigravitySendBlockReason(selectedProviderStatus, selectedModel);
   // ── Multiple models (web useMultipleModelSend; drafts only) ──────────
@@ -1093,12 +1111,16 @@ function ComposerBody({
       toast({ type: "warning", title: "Choose a project first" });
       return;
     }
+    // Terminal excerpts go out as inline references in the text plus context records, as on web.
+    const sendTerminalContexts = filterTerminalContextsWithText(readComposerDraft(promptKey).terminalContexts ?? []);
+    const terminalReferences = terminalContextReferencesText(sendTerminalContexts);
+    const messageText = [input.text, terminalReferences].filter((part) => part.length > 0).join(" ");
     const outgoingText = formatOutgoingPrompt({
       provider: selectedProvider,
       model: selectedModel,
       models: selectedProviderModels,
       effort: composerProviderState.promptEffort,
-      text: input.text || "[User attached one or more files without additional text. Respond using the conversation context and the attached files.]",
+      text: messageText || "[User attached one or more files without additional text. Respond using the conversation context and the attached files.]",
     });
     const sendTarget: ComposerSendTarget = threadId
       ? {
@@ -1127,6 +1149,8 @@ function ComposerBody({
       prompt: input.prompt,
       outgoingText,
       attachments: input.attachments,
+      reviewComments: referencedReviewComments(readComposerDraft(draftKey), input.prompt),
+      terminalContexts: sendTerminalContexts,
       modelSelection: selectedModelSelection,
       runtimeMode,
       interactionMode: input.interactionMode,
@@ -1924,6 +1948,13 @@ function ComposerBody({
         onLayout={(event) => {
           const width = (event as { width?: number }).width;
           if (typeof width === "number" && width !== surfaceWidth) setSurfaceWidth(width);
+          // Files tree rows drop mentions here (panels/files/fileTreeActions.ts).
+          reportComposerDropZone(draftKey, {
+            x: Number(event.x ?? 0),
+            y: Number(event.y ?? 0),
+            width: Number(event.width ?? 0),
+            height: Number(event.height ?? 0),
+          });
         }}
         onFileDrop={(event) => {
           setDragOver(false);
@@ -1941,7 +1972,7 @@ function ComposerBody({
         style={{
           ...surfaceBase,
           position: "relative",
-          ...(dragOver ? { backgroundColor: mix("#ffffff", surfaceBase.backgroundColor, 0.045), borderColor: alpha(theme.primary, 0.7) } : {}),
+          ...(dragOver || mentionDragOver ? { backgroundColor: mix("#ffffff", surfaceBase.backgroundColor, 0.045), borderColor: alpha(theme.primary, 0.7) } : {}),
         }}
       >
         <SurfaceHighlight />
@@ -2018,6 +2049,12 @@ function ComposerBody({
         >
           {!isResting ? <ComposerAttachmentMediaRow images={images} onRemove={(id) => removeComposerAttachment(draftKey, id)} /> : null}
           {!isResting ? <ComposerAttachmentFileList files={files} onRemove={(id) => removeComposerAttachment(draftKey, id)} /> : null}
+          {!isResting ? (
+            <ComposerPendingTerminalContexts
+              contexts={composerTerminalContexts}
+              onRemove={(contextId) => removeComposerTerminalContext(promptKey, contextId)}
+            />
+          ) : null}
           <div style={{ position: "relative", flexGrow: 1, minWidth: 0 }}>
             {editorValue.length === 0 ? (
               <text

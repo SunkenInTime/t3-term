@@ -4,12 +4,16 @@
 // emphasis between paired deletions and additions, and stacked or split rows.
 import { expandTabs } from "../code/codeRows.tsx";
 import { splitPatch, type PatchFile } from "./patchFiles.ts";
+import type { DiffReviewLine } from "../../web/reviewCommentContext.ts";
 
 export type DiffLineKind = "context" | "addition" | "deletion";
 
 export interface DiffLine {
   readonly kind: DiffLineKind;
+  /** Tabs expanded, for painting and column math. */
   readonly text: string;
+  /** The line as the patch has it, for comments sent to the agent. */
+  readonly raw: string;
   readonly oldLine: number | null;
   readonly newLine: number | null;
   /** Index into the file's old-side source (context + deletions), for highlighting. */
@@ -83,21 +87,22 @@ function parseFile(file: PatchFile): DiffFileModel {
     }
     const marker = raw[0];
     // Tabs become spaces up front so highlighting, wrapping and emphasis share columns.
-    const text = expandTabs(raw.slice(1).replace(/\r$/, ""));
+    const rawText = raw.slice(1).replace(/\r$/, "");
+    const text = expandTabs(rawText);
     if (marker === "+") {
-      current.push({ kind: "addition", text, oldLine: null, newLine: newNo, oldIndex: null, newIndex: newLines.length, noNewline: false });
+      current.push({ kind: "addition", text, raw: rawText, oldLine: null, newLine: newNo, oldIndex: null, newIndex: newLines.length, noNewline: false });
       newLines.push(text);
       maxLine = Math.max(maxLine, newNo);
       newNo += 1;
       newLeft -= 1;
     } else if (marker === "-") {
-      current.push({ kind: "deletion", text, oldLine: oldNo, newLine: null, oldIndex: oldLines.length, newIndex: null, noNewline: false });
+      current.push({ kind: "deletion", text, raw: rawText, oldLine: oldNo, newLine: null, oldIndex: oldLines.length, newIndex: null, noNewline: false });
       oldLines.push(text);
       maxLine = Math.max(maxLine, oldNo);
       oldNo += 1;
       oldLeft -= 1;
     } else if (marker === " ") {
-      current.push({ kind: "context", text, oldLine: oldNo, newLine: newNo, oldIndex: oldLines.length, newIndex: newLines.length, noNewline: false });
+      current.push({ kind: "context", text, raw: rawText, oldLine: oldNo, newLine: newNo, oldIndex: oldLines.length, newIndex: newLines.length, noNewline: false });
       oldLines.push(text);
       newLines.push(text);
       maxLine = Math.max(maxLine, oldNo, newNo);
@@ -119,6 +124,26 @@ function parseFile(file: PatchFile): DiffFileModel {
 
 export function parseDiffFiles(patch: string | null | undefined): ReadonlyArray<DiffFileModel> {
   return splitPatch(patch).map(parseFile);
+}
+
+/** A file's rows in patch order, the way reviewCommentContext.ts indexes them. */
+const reviewLinesCache = new WeakMap<DiffFileModel, ReadonlyArray<DiffReviewLine>>();
+export function diffReviewLines(file: DiffFileModel): ReadonlyArray<DiffReviewLine> {
+  const cached = reviewLinesCache.get(file);
+  if (cached) return cached;
+  const lines: DiffReviewLine[] = diffFileLines(file).map((line) => ({
+    change: line.kind === "addition" ? "add" : line.kind === "deletion" ? "delete" : "context",
+    oldLineNumber: line.kind === "addition" ? null : line.oldLine,
+    newLineNumber: line.kind === "deletion" ? null : line.newLine,
+    content: line.raw,
+  }));
+  reviewLinesCache.set(file, lines);
+  return lines;
+}
+
+/** The DiffLine objects of `file` in patch order (the same order as diffReviewLines). */
+export function diffFileLines(file: DiffFileModel): ReadonlyArray<DiffLine> {
+  return file.hunks.flatMap((hunk) => hunk.lines);
 }
 
 // ── Word emphasis ─────────────────────────────────────────────────────────
@@ -184,6 +209,28 @@ export function wordEmphasis(before: string, after: string): { before: Range[]; 
 
 export type DiffLayout = "stacked" | "split";
 
+/** One comment (or the open comment form) under a line, after AnnotatableCodeView's entries. */
+export interface DiffCommentEntry {
+  readonly id: string;
+  readonly kind: "draft" | "comment";
+  readonly rangeLabel: string;
+  readonly text: string;
+}
+
+/** pierre's DiffLineAnnotation: the entries that hang under (side, lineNumber). */
+export interface DiffLineAnnotation {
+  readonly side: "additions" | "deletions";
+  readonly lineNumber: number;
+  readonly entries: ReadonlyArray<DiffCommentEntry>;
+}
+
+function annotationMatches(annotation: DiffLineAnnotation, line: DiffLine, side: "old" | "new" | "any"): boolean {
+  if (annotation.side === "additions") {
+    return side !== "old" && line.kind !== "deletion" && line.newLine === annotation.lineNumber;
+  }
+  return side !== "new" && line.kind !== "addition" && line.oldLine === annotation.lineNumber;
+}
+
 /** One side of a painted line. */
 export interface LineCell {
   readonly line: DiffLine;
@@ -205,6 +252,14 @@ export type DiffRow =
   | { readonly type: "line"; readonly key: string; readonly file: DiffFileModel; readonly cell: LineCell }
   | { readonly type: "split"; readonly key: string; readonly file: DiffFileModel; readonly left: LineCell | null; readonly right: LineCell | null }
   | { readonly type: "binary"; readonly key: string; readonly file: DiffFileModel }
+  | {
+      readonly type: "annotation";
+      readonly key: string;
+      readonly file: DiffFileModel;
+      readonly annotation: DiffLineAnnotation;
+      /** Split rows put the annotation under its own side. */
+      readonly half: "full" | "left" | "right";
+    }
   | { readonly type: "end"; readonly key: string; readonly file: DiffFileModel };
 
 function unmodifiedLabel(count: number): string {
@@ -244,9 +299,27 @@ export function buildDiffRows(
   files: ReadonlyArray<DiffFileModel>,
   preferredLayout: DiffLayout,
   collapsed: ReadonlySet<string>,
+  annotationsByPath?: ReadonlyMap<string, ReadonlyArray<DiffLineAnnotation>>,
 ): DiffRow[] {
   const rows: DiffRow[] = [];
   for (const file of files) {
+    const annotations = annotationsByPath?.get(file.path) ?? [];
+    // Each annotation shows once, under the first line it matches.
+    const placed = new Set<DiffLineAnnotation>();
+    const pushAnnotations = (line: DiffLine | null | undefined, side: "old" | "new" | "any", half: "full" | "left" | "right") => {
+      if (!line || annotations.length === 0) return;
+      for (const annotation of annotations) {
+        if (placed.has(annotation) || !annotationMatches(annotation, line, side)) continue;
+        placed.add(annotation);
+        rows.push({
+          type: "annotation",
+          key: `a:${file.path}:${annotation.side}:${annotation.lineNumber}`,
+          file,
+          annotation,
+          half,
+        });
+      }
+    };
     // pierre paints an added or deleted file as one column even in split view.
     const layout: DiffLayout = file.kind === "new" || file.kind === "deleted" ? "stacked" : preferredLayout;
     const isCollapsed = collapsed.has(file.path);
@@ -276,6 +349,8 @@ export function buildDiffRows(
         const key = `l:${file.path}:${hunkIndex}:${lineIndex}`;
         if (layout === "split") {
           rows.push({ type: "split", key, file, left: pair.left, right: pair.right });
+          pushAnnotations(pair.left?.line, "old", "left");
+          pushAnnotations(pair.right?.line, "new", "right");
         }
       });
       if (layout === "stacked") {
@@ -288,6 +363,7 @@ export function buildDiffRows(
         }
         hunk.lines.forEach((line, lineIndex) => {
           rows.push({ type: "line", key: `l:${file.path}:${hunkIndex}:${lineIndex}`, file, cell: { line, emphasis: emphasisByLine.get(line) ?? [] } });
+          pushAnnotations(line, "any", "full");
         });
       }
     });

@@ -49,6 +49,9 @@ import {
   composerAttachmentEnvironment,
   restoreComposerContent,
 } from "../../state/composer.ts";
+import { buildComposerMessageContext } from "../../web/lib/composerContextRecords.ts";
+import type { TerminalContextDraft } from "../../web/lib/terminalContext.ts";
+import type { ReviewCommentContext } from "../../web/reviewCommentContext.ts";
 import {
   environmentServerConfigsAtom,
   environmentSession,
@@ -243,6 +246,10 @@ export interface ComposerSendInput {
   /** What goes on the wire (effort prefix applied). */
   readonly outgoingText: string;
   readonly attachments: ReadonlyArray<ComposerAttachmentDraft>;
+  /** Diff and file comments the prompt references; they go out as message context records. */
+  readonly reviewComments?: ReadonlyArray<ReviewCommentContext>;
+  /** Terminal selections the prompt references; they go out as message context records too. */
+  readonly terminalContexts?: ReadonlyArray<TerminalContextDraft>;
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
@@ -265,7 +272,16 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
   if (appAtomRegistry.get(sendingAtom)) return false;
   appAtomRegistry.set(sendingAtom, true);
   appAtomRegistry.set(composerSendErrorAtom(input.draftKey), null);
-  const snapshot = { prompt: input.prompt, attachments: input.attachments };
+  const snapshot = {
+    prompt: input.prompt,
+    attachments: input.attachments,
+    reviewComments: input.reviewComments ?? [],
+    terminalContexts: input.terminalContexts ?? [],
+  };
+  const messageContext = buildComposerMessageContext({
+    terminalContexts: input.terminalContexts ?? [],
+    reviewComments: input.reviewComments ?? [],
+  });
   // Clear first, like web: the prompt leaves the composer the moment the user sends.
   clearComposerContent(input.draftKey);
   const createdAt = new Date().toISOString();
@@ -332,6 +348,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
             messageId: MessageId.make(newId()),
             role: "user",
             text: input.outgoingText,
+            ...(messageContext ? { context: messageContext } : {}),
             attachments,
           },
           modelSelection: input.modelSelection,
