@@ -14,7 +14,7 @@ import {
   isWorkspaceVideoPreviewPath,
 } from "@t3tools/shared/filePreview";
 import { isHostPath } from "@t3tools/shared/path";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { wordWrapPref } from "../../state/codeView.ts";
 import { persistedAtom } from "../../state/persistedAtom.ts";
@@ -38,6 +38,8 @@ import { useEnvironmentScope } from "../../web/state/session.ts";
 import { composerTargetKey } from "../../state/composer.ts";
 import { fileSavePendingAtom, fileSavePendingKey, setFileSavePending } from "../../state/files.ts";
 import { threadKeyOf } from "../../state/rightPanel.ts";
+import { ChatMarkdown } from "../../chat/timeline/ChatMarkdown.tsx";
+import { TimelineRowCtx, type TimelineRowSharedState } from "../../chat/timeline/rowContext.ts";
 import { FileEditor } from "./FileEditor.tsx";
 import { DelimitedTablePreview } from "./DelimitedTablePreview.tsx";
 import { useFileSaveCoordinator } from "./useFileSaveCoordinator.ts";
@@ -65,27 +67,59 @@ const renderMarkdownAtom = persistedAtom("file-render-markdown", false, decodeBo
 /** web: localStorage `t3code.renderTable`, default table. */
 const renderTableAtom = persistedAtom("file-render-table", true, decodeBoolean(true));
 
-function markdownTheme(theme: Palette) {
+const noop = () => {};
+
+/**
+ * What ChatMarkdown reads from its timeline row: the thread its file links open in and
+ * the folder they resolve against. A file preview has no row, so the rest is inert.
+ */
+function filePreviewRowContext(threadRef: ScopedThreadRef, cwd: string): TimelineRowSharedState {
   return {
-    appearance: theme.appearance,
-    text: alpha(theme.foreground, 0.8),
-    bg: theme.background,
-    accent: theme.infoForeground,
-    fontSans: FONTS.sans,
-    fontMono: FONTS.mono,
-    metrics: { mdTextSize: 14, mdLineHeight: 23, mdBlockGap: 10, mdHeadingSizes: [20, 18, 16, 14] },
-  };
+    timestampFormat: "locale",
+    routeThreadKey: threadKeyOf(threadRef.environmentId, threadRef.threadId),
+    threadRef,
+    markdownCwd: cwd,
+    skills: [],
+    workflowOpening: null,
+    workspaceRoot: cwd,
+    runs: [],
+    activeThreadEnvironmentId: threadRef.environmentId,
+    onRevertToTurnCount: noop,
+    onOpenTurnDiff: noop,
+    onOpenThread: noop,
+    onForkFromRun: async () => {},
+    onRollbackCheckpoint: noop,
+    onToggleTurnFold: noop,
+    onToggleAttemptFold: noop,
+    onToggleWorkGroup: noop,
+    onCancelWorktreeSetup: null,
+    retryableWorkspacePreparationRunIds: new Set(),
+    onRetryWorkspacePreparation: null,
+    onOpenWorktreeSetupTerminal: null,
+    workGroupViewState: { expandedEntries: new Set() },
+    changedFilesExpandedRunIds: new Set(),
+    onToggleChangedFilesExpanded: noop,
+  } as unknown as TimelineRowSharedState;
 }
 
-function RenderedMarkdown(props: { readonly text: string }) {
-  const theme = useTheme();
+/**
+ * web FileMarkdownPreview: the chat's markdown renderer (ChatMarkdown) at max-w-4xl
+ * px-6 py-5, so file links open in Files, web links in the browser, and code, tables,
+ * math and Mermaid render as in chat. Not ported: toggling task-list checkboxes (the
+ * shared markdown renderer has no checkbox press yet) and resolving images against the
+ * file's own folder (they resolve against the workspace, like its links).
+ */
+function RenderedMarkdown(props: { readonly text: string; readonly threadRef: ScopedThreadRef; readonly cwd: string }) {
+  const row = useMemo(() => filePreviewRowContext(props.threadRef, props.cwd), [props.threadRef.environmentId, props.threadRef.threadId, props.cwd]);
   return (
     <div
       testId="files-markdown"
       style={{ display: "flex", flexDirection: "column", alignItems: "center", flexGrow: 1, minHeight: 0, overflowY: "scroll" }}
     >
       <div style={{ width: "100%", maxWidth: 896, paddingLeft: 24, paddingRight: 24, paddingTop: 20, paddingBottom: 20, flexShrink: 0 }}>
-        <markdown source={props.text} theme={markdownTheme(theme)} />
+        <TimelineRowCtx.Provider value={row}>
+          <ChatMarkdown text={props.text} />
+        </TimelineRowCtx.Provider>
       </div>
     </div>
   );
@@ -359,7 +393,7 @@ export default function FilePreviewPanel({
       );
     }
     if (file.data === null) return <FileSurfaceLoading />;
-    if (isMarkdown && renderMarkdown) return <RenderedMarkdown key={relativePath} text={file.data.contents} />;
+    if (isMarkdown && renderMarkdown) return <RenderedMarkdown key={relativePath} text={file.data.contents} threadRef={threadRef} cwd={cwd} />;
     if (tableDelimiter && renderTable) {
       return <DelimitedTablePreview key={relativePath} name={relativePath} text={file.data.contents} delimiter={tableDelimiter} />;
     }
