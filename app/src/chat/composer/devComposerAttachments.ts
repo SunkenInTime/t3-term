@@ -22,7 +22,7 @@ const DEV_ATTACH_TARGET = process.env.T3TERM_DEV_ATTACH_TARGET ?? "";
 let devAttachConsumed = false;
 
 /** The dev paths once per process: later composers start empty. */
-export function takeDevAttachPaths(projectTitle: string | null, targetKind: "thread" | "draft"): ReadonlyArray<string> {
+export function takeDevAttachPaths(projectTitle: string | null, targetKind: "thread" | "draft" | "question"): ReadonlyArray<string> {
   if (devAttachConsumed || DEV_ATTACH_PATHS.length === 0 || projectTitle !== DEV_ATTACH_PROJECT) return [];
   if (DEV_ATTACH_TARGET !== "" && DEV_ATTACH_TARGET !== targetKind) return [];
   devAttachConsumed = true;

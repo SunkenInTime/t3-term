@@ -1848,11 +1848,11 @@ function ComposerBody({
     });
   };
   useEffect(() => {
-    const devPaths = takeDevAttachPaths(project?.title ?? null, target.kind);
+    const devPaths = takeDevAttachPaths(project?.title ?? null, questionAttachmentKey !== null ? "question" : target.kind);
     if (devPaths.length > 0) addPaths(devPaths);
-    // Once the project is known, like a drop.
+    // Once the project (or a question taking files) is known, like a drop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.title]);
+  }, [project?.title, questionAttachmentKey]);
   const onAttach = async () => {
     const paths = await renderer.promptForPaths?.({ files: true, multiple: true, prompt: "Attach" });
     if (paths && paths.length > 0) addPaths(paths);
