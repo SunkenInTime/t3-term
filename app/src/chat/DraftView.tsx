@@ -64,7 +64,7 @@ function DraftCanvas({
   const cardInline = useDetailsCardInline();
   const small = useSmallViewport();
   const projects = useAtomValue(environmentProjects.projectsAtom);
-  // The first send is on its way: web shows the thread it is becoming (title, message, working).
+  // The first send is on its way: web shows the thread it is becoming (message, working row).
   const pending = useAtomValue(draftPendingSendAtom(composerTargetKey(target)));
   const project =
     environmentId !== null && projectId !== null
@@ -89,8 +89,9 @@ function DraftCanvas({
                 </Text>
               </>
             ) : null}
+            {/* web keeps "New thread" until the thread exists (the title seed is the server's to apply). */}
             <Text weight={500} truncate>
-              {pending?.title || "New thread"}
+              New thread
             </Text>
           </>
         }

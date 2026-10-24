@@ -656,12 +656,11 @@ export function removeOptimisticMessages(threadKey: string, remove: (message: Ch
 
 /**
  * A new-thread draft's first send while it is on its way (web promotes the draft at once):
- * the draft shows the message and the thread-to-be's title until the thread opens.
+ * the draft shows the message and the working row until the thread opens.
  */
 export interface DraftPendingSend {
   readonly threadId: ThreadId;
   readonly message: ChatMessage;
-  readonly title: string;
 }
 
 export const draftPendingSendAtom = Atom.family((_draftKey: string) =>

@@ -295,7 +295,6 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
     appAtomRegistry.set(draftPendingSendAtom(input.draftKey), {
       threadId,
       message: optimisticMessage,
-      title: deriveThreadTitleSeed({ text: input.prompt, attachments: input.attachments }),
     });
   }
   let failure: string | null = null;

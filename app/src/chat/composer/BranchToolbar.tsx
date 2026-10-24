@@ -72,6 +72,7 @@ import {
   BranchToolbarMenuLabel,
   BranchToolbarMenuRow,
   BranchToolbarMenuText,
+  capLabel,
   type BranchToolbarControlIcon,
 } from "./BranchToolbarControl.tsx";
 
@@ -319,6 +320,7 @@ export function BranchToolbar({ environmentId, projectId, draftKey, onComposerFo
             showEnvironmentIndicator={showEnvironmentIndicator}
             canPickEnvironment={canPickEnvironment}
             previousWorktreeLabel={previousWorktreeLabel}
+            previousWorktreeBranch={previousWorktreeSeed?.branch ?? null}
             onEnvModeChange={onEnvModeChange}
             onUsePreviousWorktree={onUsePreviousWorktree}
             onEnvironmentChange={onEnvironmentChange}
@@ -359,6 +361,7 @@ function RunContextSelector(props: {
   showEnvironmentIndicator: boolean;
   canPickEnvironment: boolean;
   previousWorktreeLabel: string | null;
+  previousWorktreeBranch: string | null;
   onEnvModeChange: (mode: EnvMode) => void;
   onUsePreviousWorktree: () => void;
   onEnvironmentChange: (option: EnvironmentOption) => void;
@@ -451,13 +454,31 @@ function RunContextSelector(props: {
                 props.onUsePreviousWorktree();
               }}
             >
-              <BranchToolbarIcon name="folder-git" color={theme.foreground} />
-              <BranchToolbarMenuText>{props.previousWorktreeLabel}</BranchToolbarMenuText>
+              <PreviousWorktreeItemContent branch={props.previousWorktreeBranch} />
             </BranchToolbarMenuRow>
           ) : null}
         </>
       ) : null}
     </Popover>
+  );
+}
+
+/**
+ * apps/web/src/components/PreviousWorktreeItemContent.tsx: a history icon (12px, 4px down)
+ * beside two lines, "Previous worktree" over the branch in 12px muted text.
+ */
+function PreviousWorktreeItemContent({ branch }: { branch: string | null }) {
+  const theme = useTheme();
+  return (
+    <div style={{ display: "flex", flexDirection: "row", alignItems: "flex-start", gap: 6, minWidth: 0, flexShrink: 1, pointerEvents: "none" }}>
+      <div style={{ display: "flex", marginTop: 4 }}>
+        <BranchToolbarIcon name="history" color={theme.foreground} />
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", minWidth: 0, flexShrink: 1 }}>
+        <BranchToolbarMenuText>Previous worktree</BranchToolbarMenuText>
+        {branch ? <BranchToolbarMenuText size={12} color={theme.mutedForeground}>{capLabel(branch)}</BranchToolbarMenuText> : null}
+      </div>
+    </div>
   );
 }
 
