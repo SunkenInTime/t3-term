@@ -75,6 +75,9 @@ import { useNowMinute, useNowSecond } from "./clock.ts";
 
 export type SidebarSweepAction = "settle" | "unsettle" | "unsnooze";
 
+const DOUBLE_CLICK_MS = 500;
+let lastRowClick: { threadKey: string | null; at: number } = { threadKey: null, at: 0 };
+
 /**
  * A control inside a row acts through the row's captured press (sidebarGesture.ts):
  * the row runs it on release unless the press became a drag or sweep.
@@ -723,13 +726,20 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
       rangeSelectThreadsTo(threadKey, appAtomRegistry.get(sidebarThreadListAtom).orderedThreadKeys);
       return;
     }
-    if ((event.clickCount ?? 1) === 2) {
+    // Synthetic clicks (automation, some terminals) always report clickCount 1; time them too.
+    const now = Date.now();
+    const clickCount =
+      (event.clickCount ?? 1) === 1 && lastRowClick.threadKey === threadKey && now - lastRowClick.at < DOUBLE_CLICK_MS
+        ? 2
+        : (event.clickCount ?? 1);
+    lastRowClick = clickCount === 1 ? { threadKey, at: now } : { threadKey: null, at: 0 };
+    if (clickCount === 2) {
       if (canOperate && !modifiers?.alt) {
         setRename({ threadKey, title: thread.title });
       }
       return;
     }
-    if ((event.clickCount ?? 1) > 2) return;
+    if (clickCount > 2) return;
     clearThreadSelection();
     setThreadSelectionAnchor(threadKey);
     navigateToThread(threadRef);
