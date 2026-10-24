@@ -172,13 +172,42 @@ export function layoutAuditReport(top = 30): string {
     grouped.set(key, entry);
   }
   const candidates = [...grouped.values()].sort((a, b) => b.saving - a.saving).slice(0, top);
-  const lines = [`nodes=${order.length} units=${Math.round(total)} (1 unit per node with no repeated layout)`];
+  // GPUI rebuilds every element each frame, so the node count per region is
+  // what a keystroke pays for, apart from repeated layout.
+  const regions = new Map<string, number>();
+  const types = new Map<string, number>();
+  for (const node of order) {
+    const region = path(node).split(" > ")[0] || "(none)";
+    regions.set(region, (regions.get(region) ?? 0) + 1);
+    const key = `${region}:${node.type}`;
+    types.set(key, (types.get(key) ?? 0) + 1);
+  }
+  const lines = [
+    `nodes=${order.length} units=${Math.round(total)} (1 unit per node with no repeated layout)`,
+    `regions: ${[...regions].sort((a, b) => b[1] - a[1]).map(([name, count]) => `${name}=${count}`).join(" ")}`,
+    `types: ${[...types].sort((a, b) => b[1] - a[1]).map(([name, count]) => `${name}=${count}`).join(" ")}`,
+  ];
   for (const { node, saving, count } of candidates) {
     const style = Object.keys(node.style).filter((key) => key !== "hover" && key !== "active").join(",");
     lines.push(
       `${Math.round(saving).toString().padStart(8)}  #${node.id}${count > 1 ? ` (+${count - 1} alike)` : ""} ${node.type} x${amp.get(node.id)} ` +
         `[${style.slice(0, 120)}] text="${(firstText(node) ?? "").slice(0, 40)}" path=${path(node)}`,
     );
+  }
+  // T3TERM_AUDIT_DUMP=<testId prefix>: the first matching subtree, one node per line.
+  const dumpId = process.env.T3TERM_AUDIT_DUMP;
+  const dumpRoot = dumpId ? order.find((node) => node.testId?.startsWith(dumpId)) : undefined;
+  if (dumpRoot) {
+    lines.push(`subtree ${dumpRoot.testId} (${subtree.get(dumpRoot.id)} units):`);
+    const walk = (node: Node, depth: number) => {
+      const style = Object.keys(node.style).filter((key) => key !== "hover" && key !== "active").join(",");
+      lines.push(`${"  ".repeat(depth)}${node.type}${node.testId ? `#${node.testId}` : ""} [${style.slice(0, 100)}]${node.text ? ` "${node.text.slice(0, 30)}"` : ""}`);
+      for (const child of node.children) {
+        const next = nodes.get(child);
+        if (next) walk(next, depth + 1);
+      }
+    };
+    walk(dumpRoot, 0);
   }
   return lines.join("\n");
 }
