@@ -61,7 +61,7 @@ import { readThreadPreviewState } from "../web/previewStateStore.ts";
 import { clearThreadSelection, readThreadSelection, sidebarJumpHintsVisibleAtom } from "../state/sidebar.ts";
 import { clientSettingsAtom } from "../state/clientSettings.ts";
 import { composerRequiresModifier } from "../web/composer-logic.ts";
-import { noteFocusHost, readFocusFacts, type FocusFacts } from "./focusContext.ts";
+import { noteFocusHost, readFocusFacts } from "./focusContext.ts";
 import {
   isRouteTurnRunning,
   openFavoriteEditor,
@@ -122,29 +122,29 @@ export function toShortcutEvent(event: KeyEvent): ShortcutEventLike {
   };
 }
 
-const COMPOSER_FOCUS: FocusFacts = { editable: true, preview: false };
-
 /**
  * The `when` clause context, read from app state: the flags web's ChatView
  * getShortcutContext and routes/_chat.tsx pass, from the same sources.
  */
 export function readShortcutContext(overrides?: Partial<ShortcutMatchContext>): Partial<ShortcutMatchContext> {
   const route = appAtomRegistry.get(routeAtom);
-  const composerFocus = appAtomRegistry.get(composerFocusAtom);
-  // The composer's editor is editable and outside the preview; anything else asks the renderer.
-  const focus = composerFocus ? COMPOSER_FOCUS : readFocusFacts();
+  // What the renderer reports as focused; until it is known, the composer's own focus flag.
+  const focus = readFocusFacts();
+  const composerFocus = focus ? focus.composer : appAtomRegistry.get(composerFocusAtom);
   const threadRef = route.kind === "thread" ? scopeThreadRef(route.environmentId, route.threadId) : null;
   const rightPanelOpen = threadRef !== null && appAtomRegistry.get(rightPanelOpenAtom);
+  const terminalFocus = appAtomRegistry.get(terminalFocusAtom);
   return {
-    terminalFocus: appAtomRegistry.get(terminalFocusAtom),
+    terminalFocus,
     composerFocus,
     terminalOpen: threadRef !== null && appAtomRegistry.get(terminalOpenAtom),
     rightPanelOpen,
-    previewFocus: focus.preview,
+    previewFocus: focus?.preview ?? false,
     // routes/_chat.tsx previewOpen: the open panel's active tab is the browser.
     previewOpen:
       threadRef !== null && rightPanelOpen && selectedSurface(readPanelState(scopedThreadKey(threadRef)))?.kind === "preview",
-    editableFocus: focus.editable,
+    // Web's terminal takes keys in xterm's helper textarea, so it counts as editable there too.
+    editableFocus: terminalFocus || (focus ? focus.editable : composerFocus),
     modelPickerOpen: appAtomRegistry.get(modelPickerOpenAtom),
     usagePageOpen: route.kind === "usage",
     draftThreadRoute: route.kind === "draft",
