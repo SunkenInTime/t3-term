@@ -39,6 +39,7 @@ import {
   type DiffLineAnnotation,
   type DiffRow,
   type LineCell,
+  EXPANSION_LINE_COUNT,
 } from "./diffModel.ts";
 import { DiffCommentAnnotation } from "./DiffCommentAnnotation.tsx";
 import { linePoint, useDiffComments, type DiffComments, type DiffCommentsConfig } from "./useDiffComments.ts";
@@ -119,7 +120,15 @@ export interface DiffViewProps {
   readonly onReachEnd?: () => void;
   /** Right-click on a file header's name (web DiffPanel onContextMenuCapture → fileContextMenu). */
   readonly fileMenu?: DiffFileMenu | null;
+  /**
+   * A press on an "N unmodified lines" separator (pierre's hunk expansion). Absent: the
+   * separators are labels only (a turn diff has no full file contents to show).
+   */
+  readonly onExpandGap?: ((file: DiffFileModel, expandIndex: number, direction: GapDirection) => void) | null;
 }
+
+/** pierre's expand directions: "up" grows from the gap's start, "down" from its end. */
+export type GapDirection = "up" | "down" | "both";
 
 /** The filename context menu: its items for a path (empty: no menu), and what a pick does. */
 export interface DiffFileMenu {
@@ -149,6 +158,7 @@ interface RowInteraction {
     readonly renderAnnotation: ((filePath: string, annotation: DiffExternalAnnotation) => ReactNode) | null;
     readonly renderHeaderExtras: ((file: DiffFileModel) => ReactNode) | null;
     readonly fileMenu: DiffFileMenu | null;
+    readonly expandGap: ((file: DiffFileModel, expandIndex: number, direction: GapDirection) => void) | null;
   };
 }
 
@@ -198,8 +208,18 @@ export function DiffView(props: DiffViewProps) {
     : null;
   const renderHeaderExtras = props.renderHeaderExtras ?? null;
   const fileMenu = props.fileMenu ?? null;
-  const interactionRef = useRef<RowInteraction["current"]>({ comments, hover, unhover, lineClick, renderAnnotation, renderHeaderExtras, fileMenu });
-  interactionRef.current = { comments, hover, unhover, lineClick, renderAnnotation, renderHeaderExtras, fileMenu };
+  const expandGap = props.onExpandGap ?? null;
+  const interactionRef = useRef<RowInteraction["current"]>({
+    comments,
+    hover,
+    unhover,
+    lineClick,
+    renderAnnotation,
+    renderHeaderExtras,
+    fileMenu,
+    expandGap,
+  });
+  interactionRef.current = { comments, hover, unhover, lineClick, renderAnnotation, renderHeaderExtras, fileMenu, expandGap };
   const interaction = useMemo<RowInteraction>(
     () => ({
       get current() {
@@ -471,8 +491,23 @@ const DiffRowView = memo(function DiffRowView(props: {
         />
       );
     }
-    case "separator":
-      return <SeparatorRow text={row.text} direction={row.direction} first={row.first} last={row.last} split={row.split} palette={palette} width={props.width} />;
+    case "separator": {
+      const expandGap = props.interaction.current.expandGap;
+      return (
+        <SeparatorRow
+          text={row.text}
+          direction={row.direction}
+          first={row.first}
+          last={row.last}
+          split={row.split}
+          hidden={row.hidden}
+          palette={palette}
+          width={props.width}
+          testId={`diff-gap-${row.file.path}-${row.expandIndex}`}
+          onExpand={expandGap ? (direction) => expandGap(row.file, row.expandIndex, direction) : null}
+        />
+      );
+    }
     case "end":
       return <div style={{ height: BLOCK_GAP }} />;
     case "binary":
@@ -843,31 +878,66 @@ function SeparatorRow(props: {
   first: boolean;
   last: boolean;
   split: boolean;
+  /** Hidden lines, or null when unknown. */
+  hidden: number | null;
   width: number;
   palette: DiffPalette;
+  testId: string;
+  onExpand: ((direction: GapDirection) => void) | null;
 }) {
   const { palette } = props;
-  const icon = props.direction === "up" ? EXPAND_UP : props.direction === "down" ? EXPAND_DOWN : EXPAND_BOTH;
   const half = Math.floor(props.width / 2);
+  const expandable = props.onExpand !== null;
+  // createSeparator: a gap between hunks wider than one expansion gets an up and a down
+  // button stacked in the icon cell; the first gap only grows down, the last only up.
+  const chunked = expandable && !props.first && !props.last && props.hidden !== null && props.hidden > EXPANSION_LINE_COUNT;
+  // data-expand-down paints the expand icon flipped (an up chevron), data-expand-up unflipped.
+  const single: { direction: GapDirection; icon: string } = props.first
+    ? { direction: "down", icon: EXPAND_UP }
+    : props.last
+      ? { direction: "up", icon: EXPAND_DOWN }
+      : { direction: "both", icon: EXPAND_BOTH };
+  const hoverBg = alpha(palette.separatorText, 0.12);
+  const button = (direction: GapDirection, icon: string, height: number, corners: { top: boolean; bottom: boolean }, key: string) => (
+    <div
+      key={key}
+      testId={`${props.testId}-${direction}`}
+      onClick={expandable ? () => props.onExpand?.(direction) : undefined}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 32,
+        height,
+        flexShrink: 0,
+        overflow: "hidden",
+        ...(corners.top ? { borderTopLeftRadius: 6 } : {}),
+        ...(corners.bottom ? { borderBottomLeftRadius: 6 } : {}),
+        backgroundColor: palette.separator,
+        ...(expandable ? { cursor: "pointer", hover: { backgroundColor: hoverBg } } : {}),
+      }}
+    >
+      <svg
+        source={icon}
+        style={{ width: icon === EXPAND_BOTH ? 10 : 16, height: 16, flexShrink: 0, color: palette.separatorText, pointerEvents: "none" }}
+      />
+    </div>
+  );
   const labelled = (
     <>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 32,
-          height: SEPARATOR_HEIGHT,
-          flexShrink: 0,
-          borderTopLeftRadius: 6,
-          borderBottomLeftRadius: 6,
-          backgroundColor: palette.separator,
-        }}
-      >
-        <svg source={icon} style={{ width: props.direction === "both" ? 10 : 16, height: 16, color: palette.separatorText, pointerEvents: "none" }} />
-      </div>
+      {chunked ? (
+        <div style={{ display: "flex", flexDirection: "column", width: 32, height: SEPARATOR_HEIGHT, flexShrink: 0, gap: 1 }}>
+          {button("up", EXPAND_DOWN, (SEPARATOR_HEIGHT - 1) / 2, { top: true, bottom: false }, "up")}
+          {button("down", EXPAND_UP, (SEPARATOR_HEIGHT - 1) / 2, { top: false, bottom: true }, "down")}
+        </div>
+      ) : (
+        button(single.direction, single.icon, SEPARATOR_HEIGHT, { top: true, bottom: true }, "single")
+      )}
       <div style={{ width: 2, flexShrink: 0 }} />
       <div
+        testId={`${props.testId}-label`}
+        // InteractionManager: a press on the "N unmodified lines" text expands both ways.
+        onClick={expandable ? () => props.onExpand?.("both") : undefined}
         style={{
           display: "flex",
           flexDirection: "row",
@@ -880,9 +950,10 @@ function SeparatorRow(props: {
           borderTopRightRadius: 6,
           borderBottomRightRadius: 6,
           backgroundColor: palette.separator,
+          ...(expandable ? { cursor: "pointer" } : {}),
         }}
       >
-        <text style={{ color: palette.separatorText, fontSize: 11, lineHeight: 16, fontFamily: FONTS.sans, whiteSpace: "nowrap" }}>
+        <text style={{ color: palette.separatorText, fontSize: 11, lineHeight: 16, fontFamily: FONTS.sans, whiteSpace: "nowrap", pointerEvents: "none" }}>
           {props.text}
         </text>
       </div>

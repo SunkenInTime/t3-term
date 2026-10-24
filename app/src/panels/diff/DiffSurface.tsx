@@ -15,9 +15,11 @@ import {
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { runAtomCommand, squashAtomCommandFailure, type AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { appAtomRegistry } from "../../runtime/runtime.ts";
+import { toast } from "../../ui/toast.tsx";
 import {
   environmentThreadDetails,
   environmentThreadShells,
@@ -49,8 +51,16 @@ import { areAllDiffFilesCollapsed, toggleAllDiffFiles } from "../../web/lib/diff
 import { useEnvironmentQuery } from "../../web/state/query.ts";
 import { useEnvironmentScope } from "../../web/state/session.ts";
 import { resolveDiffPathForWorkspace } from "../../web/diffFileActions.ts";
-import { parseDiffFiles } from "./diffModel.ts";
-import { DiffView, type DiffFileMenu } from "./DiffView.tsx";
+import {
+  EXPANSION_LINE_COUNT,
+  diffFileChangeType,
+  expandDiffFile,
+  parseDiffFiles,
+  type DiffFileContents,
+  type DiffFileModel,
+  type ExpandedRegion,
+} from "./diffModel.ts";
+import { DiffView, type DiffFileMenu, type GapDirection } from "./DiffView.tsx";
 import { fileContextMenuItems, runFileTreeMenuAction, type FileTreeMenuAction } from "../files/fileTreeActions.ts";
 import { DiffFileTree } from "./DiffFileTree.tsx";
 import { DiffBaseRefPicker } from "./DiffBaseRefPicker.tsx";
@@ -351,6 +361,76 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
       : null;
   const lineStat = sourceStat ?? files.reduce((sum, file) => ({ additions: sum.additions + file.additions, deletions: sum.deletions + file.deletions }), { additions: 0, deletions: 0 });
 
+  // DiffPanel's loadDiffFiles: git selections can load each file's full contents, which
+  // turns the "N unmodified lines" separators into expanders. Turn diffs have no loader.
+  const canExpand = selectedRunId === null && gitSource !== undefined && canReadFiles && preview.data !== null;
+  const expansionKey = canExpand ? `${scopeKey}:${gitSource.diffHash}:${ignoreWhitespace}` : "";
+  const [expansion, setExpansion] = useState<{
+    key: string;
+    contents: ReadonlyMap<string, DiffFileContents>;
+    regions: ReadonlyMap<string, ReadonlyMap<number, ExpandedRegion>>;
+  }>({ key: "", contents: new Map(), regions: new Map() });
+  const liveExpansion = expansion.key === expansionKey ? expansion : null;
+  const displayFiles = useMemo(() => {
+    if (!liveExpansion || liveExpansion.contents.size === 0) return files;
+    return files.map((file) => {
+      const contents = liveExpansion.contents.get(file.path);
+      return contents ? expandDiffFile(file, contents, liveExpansion.regions.get(file.path) ?? new Map()) : file;
+    });
+  }, [files, liveExpansion]);
+  const loadingContents = useRef(new Set<string>());
+  const expandGap = (file: DiffFileModel, expandIndex: number, direction: GapDirection) => {
+    if (!canExpand || !gitSource || !preview.data) return;
+    const key = expansionKey;
+    setExpansion((current) => {
+      const base = current.key === key ? current : { key, contents: new Map<string, DiffFileContents>(), regions: new Map<string, ReadonlyMap<number, ExpandedRegion>>() };
+      const fileRegions = new Map<number, ExpandedRegion>(base.regions.get(file.path) ?? []);
+      const region = fileRegions.get(expandIndex) ?? { fromStart: 0, fromEnd: 0 };
+      fileRegions.set(expandIndex, {
+        fromStart: region.fromStart + (direction === "down" ? 0 : EXPANSION_LINE_COUNT),
+        fromEnd: region.fromEnd + (direction === "up" ? 0 : EXPANSION_LINE_COUNT),
+      });
+      return { ...base, regions: new Map(base.regions).set(file.path, fileRegions) };
+    });
+    const loadKey = `${key}\n${file.path}`;
+    if (liveExpansion?.contents.has(file.path) || loadingContents.current.has(loadKey)) return;
+    loadingContents.current.add(loadKey);
+    void (
+      runAtomCommand(
+        appAtomRegistry,
+        reviewEnvironment.diffFileContents,
+        {
+          environmentId,
+          input: {
+            cwd: preview.data.cwd,
+            sourceKind: gitSource.kind,
+            changeType: diffFileChangeType(file),
+            baseRef: gitSource.baseRef ?? null,
+            headRef: gitSource.headRef ?? null,
+            oldPath: file.previousPath ?? file.path,
+            newPath: file.path,
+          },
+        } as never,
+        { reportFailure: false },
+      ) as Promise<AtomCommandResult<DiffFileContents, unknown>>
+    ).then((result) => {
+      loadingContents.current.delete(loadKey);
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        toast({
+          type: "error",
+          title: "Could not load the file to expand it",
+          description: error instanceof Error ? error.message : file.path,
+        });
+        return;
+      }
+      setExpansion((current) => {
+        if (current.key !== key) return current;
+        return { ...current, contents: new Map(current.contents).set(file.path, result.value) };
+      });
+    });
+  };
+
   const storedCollapsed = useAtomValue(diffCollapsedFilesAtom(scopeKey));
   const fileKeys = files.map((file) => file.path);
   const collapsed = storedCollapsed ?? (filesCollapsedByDefault ? new Set(fileKeys) : EMPTY_SET);
@@ -560,7 +640,8 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
             </div>
           ) : null}
           <DiffView
-            files={files}
+            files={displayFiles}
+            onExpandGap={canExpand ? expandGap : null}
             layout={diffLayout}
             wrap={wordWrap}
             collapsed={collapsedSet}
