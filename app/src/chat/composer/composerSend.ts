@@ -181,6 +181,8 @@ export interface ComposerSendInput {
   /** The thread's pending approvals and those being answered, read live (web refs). */
   readonly readPendingApprovalIds?: () => ReadonlyArray<string>;
   readonly readRespondingApprovalIds?: () => ReadonlyArray<string>;
+  /** Work still landing in the draft (a pasted image being prepared). */
+  readonly readDraftBusy?: () => boolean;
   /** Implements a proposed plan (web: sourceProposedPlan). */
   readonly sourceProposedPlan?: { readonly threadId: ThreadId; readonly planId: string };
   /**
@@ -220,10 +222,13 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
   const approvalsToDecline = input.approvalsToDecline ?? [];
   if (approvalsToDecline.length > 0 && input.respondToApproval) {
     const attachmentIdsAtSend = input.attachments.map((attachment) => attachment.id).join("\n");
+    // A paste still landing in the draft (an image being prepared) changes it too.
     const draftChangedSinceSend = () => {
+      if (input.readDraftBusy?.()) return true;
       const live = readComposerDraft(input.draftKey);
       return live.prompt !== input.prompt || live.attachments.map((attachment) => attachment.id).join("\n") !== attachmentIdsAtSend;
     };
+    const draftBeforeDecline = readComposerDraft(input.draftKey);
     const changedBeforeDecline = draftChangedSinceSend();
     const pendingIdsBeforeDecline = input.readPendingApprovalIds?.() ?? approvalsToDecline.map((approval) => approval.requestId);
     const responding = input.readRespondingApprovalIds?.() ?? [];
@@ -232,7 +237,9 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
       !changedBeforeDecline &&
       !approvalResponding &&
       (await declinePendingApprovals(approvalsToDecline, input.respondToApproval).catch(() => false));
-    const draftChanged = changedBeforeDecline || draftChangedSinceSend();
+    // web compares the whole draft too: a context chip or model change during the decline is
+    // an edit the user made after sending.
+    const draftChanged = changedBeforeDecline || draftChangedSinceSend() || readComposerDraft(input.draftKey) !== draftBeforeDecline;
     const approvalArrived = (input.readPendingApprovalIds?.() ?? []).some((id) => !pendingIdsBeforeDecline.includes(id));
     if (!declined || draftChanged || approvalArrived) {
       appAtomRegistry.set(sendingAtom, false);

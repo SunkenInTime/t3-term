@@ -247,6 +247,7 @@ import { TraitsMenuContent, TraitsPicker } from "./TraitsPicker.tsx";
 import { type ComposerControlsMeasurer, useComposerControlsLayout } from "./useComposerControlsLayout.ts";
 import { resolveComposerProviderModel } from "./useComposerProviderModel.ts";
 import { useComposerMenuItems } from "./useComposerMenuItems.ts";
+import { useProviderWorkspaceSnapshotRefresh } from "./useProviderWorkspaceSnapshotRefresh.ts";
 import { ComposerStashBadge, ComposerStashMenu } from "./ComposerStash.tsx";
 import { useComposerStash } from "./useComposerStash.ts";
 import { sendQueuedRunNow } from "./QueuedRunsControl.tsx";
@@ -857,6 +858,12 @@ function ComposerBody({
   }, []);
 
   // ── Command menu ──────────────────────────────────────────────────────
+  const refreshWorkspaceSnapshotOnTyping = useProviderWorkspaceSnapshotRefresh({
+    environmentId,
+    gitCwd: cwd,
+    selectedInstanceId: noProviderAvailable ? null : selectedInstanceId,
+    selectedProviderStatus,
+  });
   const selectedProviderSkills = selectedProviderStatus
     ? resolveProviderSkillsForCwd(selectedProviderStatus, cwd)
     : NO_SKILLS;
@@ -923,6 +930,8 @@ function ComposerBody({
     if (valueChanged) {
       setSubmissionError(null);
       typingGuard.onDraftChange();
+      // web: typing is when the menu is about to need skills, so a snapshot past its TTL rescans.
+      refreshWorkspaceSnapshotOnTyping();
     }
     if (isChoiceOnlyPendingQuestion) return;
     if (valueChanged && !activePendingProgress && promptHistoryPositionRef.current?.position.recalled !== nextValue) {
@@ -1490,9 +1499,17 @@ function ComposerBody({
         };
     setTriggerState(null);
     typingGuard.onSend();
-    const approvalsToDecline = requests.pendingApprovals.filter(
-      (approval) => !requests.respondingRequestIds.includes(approval.requestId),
-    );
+    // web shownPendingApprovalIds: only approvals the user could see are declined (not one the
+    // typing guard is still holding back), and only while this thread is still the one open.
+    const route = appAtomRegistry.get(routeAtom);
+    const stillOnThread =
+      threadId !== null && route.kind === "thread" && route.threadId === threadId && route.environmentId === environmentId;
+    const approvalsToDecline = stillOnThread
+      ? requests.pendingApprovals.filter(
+          (approval) =>
+            !typingGuard.heldRequestIds.has(approval.requestId) && !requests.respondingRequestIds.includes(approval.requestId),
+        )
+      : [];
     const sent = await sendComposerMessage({
       environmentId,
       draftKey,
@@ -1512,6 +1529,7 @@ function ComposerBody({
         (await requests.onRespondToApproval(requestId, decision)) as never,
       readPendingApprovalIds: () => liveRequestsRef.current.pendingApprovals.map((approval) => approval.requestId),
       readRespondingApprovalIds: () => liveRequestsRef.current.respondingRequestIds,
+      readDraftBusy: () => (pendingImagePreparations.get(draftKey) ?? 0) > 0,
       ...(input.sourceProposedPlan ? { sourceProposedPlan: input.sourceProposedPlan } : {}),
       ...(input.background ? { background: { projectId } } : {}),
       ...(input.compactBeforeSend ? { compactBeforeSend: true } : {}),
