@@ -73,6 +73,8 @@ import "./devOpenThread.ts";
 import { TimelineMinimap } from "./TimelineMinimap.tsx";
 import { ThreadErrorBanner } from "./ThreadErrorBanner.tsx";
 import { findHighlightColors, ThreadFindBar, type ThreadFindState } from "./ThreadFindBar.tsx";
+import type { ThreadFindPositionReader } from "../../web/components/chat/threadFind.ts";
+import { locateFindOccurrence } from "./findOccurrence.ts";
 import { ThreadStatusFooter } from "./ThreadStatusLine.tsx";
 import { PendingHandoffRow } from "./PendingHandoffRow.tsx";
 import { TimelineRowContent } from "./TimelineRows.tsx";
@@ -521,10 +523,11 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
   // ── Find in thread (ThreadFindProvider + useThreadFind) ───────────────────
   const findOpen = useAtomValue(findBarOpenAtom);
   const [find, setFind] = useState<ThreadFindState | null>(null);
-  const onFindChange = useStableCallback((next: ThreadFindState) => {
-    setFind(next);
-    const entryId = next.match?.entryId;
-    if (!entryId) return;
+  const onFindChange = useStableCallback((next: ThreadFindState) => setFind(next));
+  const findMatchEntryId = findOpen ? (find?.match?.entryId ?? null) : null;
+  useEffect(() => {
+    const entryId = findMatchEntryId;
+    if (!entryId || !timelineEntries.some((entry) => entry.id === entryId)) return;
     // Reveal the match: open the turn fold and superseded attempt that hide it.
     const foldRunId = timelineTurnFoldRunIdsByEntryId({
       timelineEntries,
@@ -536,7 +539,38 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
     if (foldRunId) setExpandedRunIds((current) => (current.has(foldRunId) ? current : new Set(current).add(foldRunId)));
     const attemptId = timelineEntries.find((entry) => entry.id === entryId)?.attempt?.id;
     if (attemptId) setExpandedAttemptIds((current) => (current.has(attemptId) ? current : new Set(current).add(attemptId)));
-  });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findMatchEntryId, find?.navigationId, timelineEntries]);
+  // useThreadFindNavigation: a match in history the client has not loaded yet
+  // pages through to it, one request per page cursor.
+  const requestedFindPages = useRef<{ key: string | null; pages: Set<string> }>({ key: null, pages: new Set() });
+  useEffect(() => {
+    const match = findOpen ? find?.match : null;
+    const key = match ? `${find?.navigationId}:${find?.query}:${match.entryId}:${match.occurrence}` : null;
+    if (requestedFindPages.current.key !== key) requestedFindPages.current = { key, pages: new Set() };
+    if (!match || timelineEntries.some((entry) => entry.id === match.entryId)) return;
+    if (!history.hasMoreHistory || history.loading || history.error) return;
+    const cursor = timelineEntries[0]?.id ?? "first";
+    if (requestedFindPages.current.pages.has(cursor)) return;
+    requestedFindPages.current.pages.add(cursor);
+    void runAtomCommand(appAtomRegistry, threadEnvironment.loadEarlierHistory, {
+      environmentId,
+      input: { threadId, throughEntryId: match.entryId },
+    });
+  }, [findOpen, find, timelineEntries, history.hasMoreHistory, history.loading, history.error, environmentId, threadId]);
+  // useThreadFindPositionReader: a new query starts at the first message or
+  // plan at or below the viewport top, so find begins where the reader is.
+  const findViewport = useRef({ start: -1 });
+  const findPositionReader = useRef<ThreadFindPositionReader | null>(null);
+  findPositionReader.current = () => {
+    const entryById = new Map(timelineEntries.map((entry) => [entry.id, entry]));
+    for (const row of rows.slice(Math.max(0, findViewport.current.start))) {
+      if (row.kind === "turn-fold" || row.kind === "attempt-fold") continue;
+      const entry = entryById.get(row.kind === "assistant-meta" ? row.message.id : row.id);
+      if (entry && (entry.kind === "message" || entry.kind === "proposed-plan")) return { entryId: entry.id, occurrence: 0 };
+    }
+    return undefined;
+  };
   const closeFind = useStableCallback(() => {
     appAtomRegistry.set(findBarOpenAtom, false);
     setFind(null);
@@ -572,6 +606,7 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
             threadRef={threadRef}
             rows={rows}
             find={activeFind}
+            findViewport={findViewport}
             history={showHistoryControl ? history : null}
             onLoadEarlier={loadEarlier}
             parentThreadLink={parentThreadLink}
@@ -603,7 +638,7 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
       <MarkdownOverlayHost />
       {findOpen ? (
         <div style={{ position: "absolute", top: 12, right: 12, width: 280, display: "flex", pointerEvents: "none" }}>
-          <ThreadFindBar environmentId={environmentId} threadId={threadId} onChange={onFindChange} onClose={closeFind} />
+          <ThreadFindBar threadRef={threadRef} skills={skills} positionReader={findPositionReader} onChange={onFindChange} onClose={closeFind} />
         </div>
       ) : null}
       <Dialog
@@ -672,6 +707,8 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
 }
 
 const EMPTY_HANDOFF_RUNS: ReadonlyArray<HandoffTimelineRun> = [];
+/** web FIND_MATCH_VIEW_MARGIN: a revealed match keeps this much room from the viewport edges. */
+const FIND_MATCH_VIEW_MARGIN = 96;
 
 const NO_PROJECT_ATOM = Atom.make(null);
 const EMPTY_SETUP_ATOM = Atom.make(AsyncResult.initial<WorktreeSetupSnapshot | null, never>(false));
@@ -694,6 +731,7 @@ const TimelineList = memo(function TimelineList({
   threadRef,
   rows,
   find,
+  findViewport,
   history,
   onLoadEarlier,
   parentThreadLink,
@@ -702,6 +740,8 @@ const TimelineList = memo(function TimelineList({
   threadRef: ScopedThreadRef;
   rows: ReadonlyArray<MessagesTimelineRow>;
   find: ThreadFindState | null;
+  /** Where the viewport top is, for the find bar's position reader. */
+  findViewport: { current: { start: number } };
   history: { readonly hasMoreHistory: boolean; readonly loading: boolean; readonly error: string | null } | null;
   onLoadEarlier: () => void;
   parentThreadLink: { readonly threadId: ThreadId; readonly title: string } | null;
@@ -793,6 +833,7 @@ const TimelineList = memo(function TimelineList({
       }
     }
     const next = start < 0 ? null : { start: start - leadingRows, end: end - leadingRows };
+    findViewport.current.start = next?.start ?? -1;
     setVisibleRange((current) => (current?.start === next?.start && current?.end === next?.end ? current : next));
   };
 
@@ -879,18 +920,48 @@ const TimelineList = memo(function TimelineList({
             (row.kind === "work" && row.groupedEntries.some((entry) => entry.id === find.match!.entryId)) ||
             (row.kind === "work-toggle" && row.id === `work-toggle:${find.match!.entryId}`),
         );
+  // useThreadFindNavigation reveal: the row comes in 96px below the top, then
+  // the active occurrence's line is located inside it (findOccurrence.ts) and
+  // scrolled into view when it falls outside the margins, so a match deep in
+  // a long message is shown rather than the message's first lines.
+  const revealGeneration = useRef(0);
+  const listBounds = useRef({ y: 0, height: 0 });
+  const activeFindFrame = useRef<PublicInstance | null>(null);
   useEffect(() => {
     const id = listRef.current?.id;
-    if (findRowIndex < 0 || id == null) return;
-    renderer.scrollToItem?.(id, leadingRows + findRowIndex, -96);
+    const match = find?.match;
+    if (findRowIndex < 0 || id == null || !match || !find) return;
+    const generation = ++revealGeneration.current;
+    const index = leadingRows + findRowIndex;
+    const query = find.query;
+    renderer.scrollToItem?.(id, index, -FIND_MATCH_VIEW_MARGIN);
+    const timer = setTimeout(() => {
+      if (generation !== revealGeneration.current) return;
+      const frameId = activeFindFrame.current?.id;
+      const bounds = listBounds.current;
+      const tree = (renderer as { getAutomationTree?: () => string }).getAutomationTree?.();
+      if (frameId == null || !tree || bounds.height <= 0) return;
+      const line = locateFindOccurrence(tree, frameId, query, match.occurrence);
+      if (!line) return;
+      const usable = bounds.height - composerInset;
+      const margin = Math.min(FIND_MATCH_VIEW_MARGIN, Math.max(0, (usable - line.height) / 2));
+      // Like web, move only as far as needed: a match below lands at the bottom margin.
+      const rowTop = line.rowTop - bounds.y;
+      const top = rowTop + line.top;
+      const delta = top < margin ? top - margin : top + line.height > usable - margin ? top + line.height - (usable - margin) : 0;
+      if (Math.abs(delta) < 1) return;
+      renderer.scrollToItem?.(id, index, -rowTop + delta);
+    }, 64);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [findRowIndex, find?.navigationId, find?.match?.entryId]);
+  }, [findRowIndex, find?.navigationId, find?.match?.entryId, find?.match?.occurrence]);
   const highlightColors = findHighlightColors(theme);
   const findQuery = find && find.query.length > 0 ? find.query : null;
 
   const frame = (key: string, children: ReactNode, rowIndex = -1) => (
     <div
       key={key}
+      {...(rowIndex >= 0 && rowIndex === findRowIndex ? { ref: activeFindFrame } : {})}
       onLayout={(event) => onRowLayout(key, Math.round(event.height ?? 0))}
       {...(findQuery
         ? {
@@ -914,6 +985,7 @@ const TimelineList = memo(function TimelineList({
       onScroll={() => queueMicrotask(checkAtEnd)}
       onLayout={(event) => {
         const next = { width: Math.round(event.width ?? 0), height: Math.round(event.height ?? 0) };
+        listBounds.current = { y: event.y ?? 0, height: event.height ?? 0 };
         setViewport((current) => (current.width === next.width && current.height === next.height ? current : next));
       }}
     >
