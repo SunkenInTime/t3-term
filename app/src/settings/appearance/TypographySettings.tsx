@@ -2,9 +2,10 @@
 //
 // The family control becomes FontFamilyPicker once the OS font list has loaded
 // (installedFonts.ts; web: once the browser grants font enumeration) and stays a
-// text input until then or if listing fails. The web only commits a typed family
-// the canvas probe can render; gpuix cannot probe a typed name, so any non-empty
-// family is accepted and GPUI falls back to the platform font for unknown names.
+// text input until then or if listing fails. Like web, the text input only
+// commits a family that renders (FamilyProbe; web: appearanceFonts.ts
+// isFontFamilyAvailable) and, for code and terminal, is fixed-width; anything
+// else stays in the field, marked invalid.
 import {
   DEFAULT_UNIFIED_SETTINGS,
   MAX_CODE_FONT_SIZE,
@@ -20,14 +21,14 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { Switch } from "../../ui/overlay.tsx";
 import { Text } from "../../ui/primitives.tsx";
-import { FONTS, useTheme } from "../../ui/theme.ts";
+import { FONTS, alpha, useTheme } from "../../ui/theme.ts";
 import { localStore } from "../../web/lib/localStore.ts";
 import { isMacPlatform, PLATFORM } from "../../web/lib/utils.ts";
 import { searchableSetting } from "../../web/components/settings/settingsSearch.ts";
 import { SettingsSelect, TextField } from "../controls.tsx";
 import { SettingResetButton, SettingsRow, SettingsSection } from "../layout.tsx";
 import { useScopedSettings, useUpdateScopedSettings } from "../scope.tsx";
-import { FontFamilyPicker } from "./FontFamilyPicker.tsx";
+import { FontFamilyPicker, MonospaceProbe } from "./FontFamilyPicker.tsx";
 import { CodeFontPreview, PromptFontPreview, TerminalFontPreview } from "./FontPreviews.tsx";
 import { useFontEnumeration } from "./installedFonts.ts";
 
@@ -303,6 +304,71 @@ function sizeOptions(min: number, max: number) {
 
 const FAMILY_COMMIT_DELAY_MS = 400;
 
+/** appearanceFonts.ts: generic families always render. */
+const GENERIC_FAMILY = /^(system-ui|sans-serif|serif|monospace|ui-monospace)$/i;
+/** No machine has this family, so GPUI draws it in its fallback face. */
+const MISSING_FAMILY = "t3term-missing-font-probe";
+const FAMILY_PROBE_TEXT = "mmmmmmmmmmwwwwwlli";
+
+/**
+ * web isFontFamilyAvailable measures text in the family against generic
+ * fallbacks on a canvas. GPUI substitutes its fallback face for a family it
+ * cannot find, so the family renders exactly when its run lays out at a
+ * different width than the same run in a family that cannot exist. The
+ * platform UI and code faces may be that fallback themselves, so they are
+ * accepted without measuring (knownRenderableFamily).
+ */
+function FamilyProbe({ family, onResult }: { family: string; onResult: (available: boolean) => void }) {
+  const theme = useTheme();
+  const widths = useRef<{ candidate?: number; missing?: number }>({});
+  const done = useRef(false);
+  const settle = (key: "candidate" | "missing", width: number | undefined) => {
+    if (done.current || !width) return;
+    widths.current[key] = width;
+    const { candidate, missing } = widths.current;
+    if (candidate === undefined || missing === undefined) return;
+    done.current = true;
+    onResult(candidate !== missing);
+  };
+  const probeStyle = { position: "absolute" as const, top: 0, left: 0, whiteSpace: "nowrap" as const, fontSize: 48, color: theme.foreground };
+  return (
+    <div style={{ position: "absolute", top: 0, left: 0, opacity: 0, pointerEvents: "none" }}>
+      <text style={{ ...probeStyle, fontFamily: family }} onLayout={(event) => settle("candidate", event.width)}>
+        {FAMILY_PROBE_TEXT}
+      </text>
+      <text style={{ ...probeStyle, fontFamily: MISSING_FAMILY }} onLayout={(event) => settle("missing", event.width)}>
+        {FAMILY_PROBE_TEXT}
+      </text>
+    </div>
+  );
+}
+
+function knownRenderableFamily(family: string): boolean {
+  const normalized = family.trim().toLowerCase();
+  return GENERIC_FAMILY.test(normalized) || normalized === FONTS.sans.toLowerCase() || normalized === FONTS.mono.toLowerCase();
+}
+
+/** A typed family under test: it must render, and code and terminal families must be fixed-width. */
+function FamilyCheck({
+  family,
+  requireMonospace,
+  onResult,
+}: {
+  family: string;
+  requireMonospace: boolean;
+  onResult: (accepted: boolean) => void;
+}) {
+  const [renders, setRenders] = useState<boolean | null>(knownRenderableFamily(family) ? true : null);
+  const needsMonospaceProbe = requireMonospace && !GENERIC_FAMILY.test(family);
+  useEffect(() => {
+    if (renders === false) onResult(false);
+    else if (renders === true && !needsMonospaceProbe) onResult(true);
+  }, [renders]);
+  if (renders === null) return <FamilyProbe family={family} onResult={setRenders} />;
+  if (renders && needsMonospaceProbe) return <MonospaceProbe family={family} onResult={onResult} />;
+  return null;
+}
+
 function FontFamilySettingsRow({
   id,
   title,
@@ -330,7 +396,12 @@ function FontFamilySettingsRow({
   onReset: () => void;
   size: { min: number; max: number; value: number; defaultValue: number; onChange: (value: number) => void };
 }) {
+  const theme = useTheme();
   const [draft, setDraft] = useState(value);
+  // False while typing; a draft that has settled yet differs from the value was rejected.
+  const [draftSettled, setDraftSettled] = useState(true);
+  const [checking, setChecking] = useState<{ readonly family: string; readonly typedAgainst: string; readonly key: number } | null>(null);
+  const checkKey = useRef(0);
   // A pending commit remembers the value it was typed against, so one that
   // outlives an external change (reset, another window) drops its stale draft.
   const commitTimer = useRef<{ readonly id: ReturnType<typeof setTimeout>; readonly value: string } | null>(null);
@@ -340,25 +411,44 @@ function FontFamilySettingsRow({
   if (adopted !== value) {
     setAdopted(value);
     setDraft(value);
+    setDraftSettled(true);
+    setChecking(null);
   }
   const cancelPendingCommit = () => {
     if (commitTimer.current !== null) clearTimeout(commitTimer.current.id);
     commitTimer.current = null;
   };
   useEffect(() => () => cancelPendingCommit(), []);
-  const commitDraft = (next: string) => {
-    if (next !== value) onValueChange(next);
+  // web commitDraft: an empty field restores the default; a family commits only once it checks out.
+  const commitDraft = (next: string, typedAgainst: string) => {
+    if (next.trim().length === 0) {
+      setDraftSettled(true);
+      if (next !== typedAgainst) onValueChange(next);
+      return;
+    }
+    checkKey.current += 1;
+    setChecking({ family: next, typedAgainst, key: checkKey.current });
+  };
+  const finishCheck = (accepted: boolean) => {
+    const check = checking;
+    setChecking(null);
+    setDraftSettled(true);
+    if (check && accepted && latestValue.current === check.typedAgainst && check.family !== check.typedAgainst) onValueChange(check.family);
   };
   const flushDraft = () => {
     const pending = commitTimer.current;
     cancelPendingCommit();
-    if (pending !== null && pending.value === value) commitDraft(draft);
+    if (pending !== null && pending.value === value) commitDraft(draft, value);
   };
   const resetToDefault = () => {
     cancelPendingCommit();
+    setChecking(null);
     setDraft(defaultValue);
+    setDraftSettled(true);
     onReset();
   };
+  const draftTrimmed = draft.trim();
+  const draftRejected = draftSettled && checking === null && draftTrimmed.length > 0 && draftTrimmed !== value.trim();
   const resetAction =
     value !== defaultValue || size.value !== size.defaultValue ? (
       <SettingResetButton label={title.toLowerCase()} onClick={resetToDefault} />
@@ -388,23 +478,30 @@ function FontFamilySettingsRow({
           event.preventDefault?.();
           event.stopPropagation?.();
           cancelPendingCommit();
+          setChecking(null);
           setDraft(value);
+          setDraftSettled(true);
         }}
+        style={{ position: "relative" }}
       >
+        {checking ? <FamilyCheck key={checking.key} family={checking.family.trim()} requireMonospace={requireMonospace} onResult={finishCheck} /> : null}
         <TextField
           testId={`font-family-${testKey}`}
           size="sm"
           width={176}
           value={draft}
           placeholder={defaultFamily}
+          {...(draftRejected ? { style: { borderColor: alpha(theme.error, 0.36) } } : {})}
           onChange={(next) => {
             setDraft(next);
+            setDraftSettled(false);
+            setChecking(null);
             cancelPendingCommit();
             const typedAgainst = value;
             commitTimer.current = {
               id: setTimeout(() => {
                 commitTimer.current = null;
-                if (latestValue.current === typedAgainst && next !== typedAgainst) onValueChange(next);
+                if (latestValue.current === typedAgainst) commitDraft(next, typedAgainst);
               }, FAMILY_COMMIT_DELAY_MS),
               value: typedAgainst,
             };

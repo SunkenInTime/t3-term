@@ -422,6 +422,7 @@ export function AcpSessionManagementSection(props: {
                     <TextField
                       width="100%"
                       size="sm"
+                      secret
                       value={draft.headers}
                       placeholder={'Write-only headers JSON, e.g. {"Authorization":"Bearer …"}'}
                       disabled={busy}

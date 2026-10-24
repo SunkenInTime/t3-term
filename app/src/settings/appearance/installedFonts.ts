@@ -58,7 +58,8 @@ export function parseFamilies(output: string): string[] {
 
 export function discoverInstalledFonts(): void {
   if (state.status !== "unknown" || loading) return;
-  const invocation = command();
+  // T3TERM_NO_FONT_LIST=1 stands in for a browser that denies enumeration, to reach the typed-family field.
+  const invocation = process.env.T3TERM_NO_FONT_LIST === "1" ? null : command();
   if (invocation === null) {
     state = { status: "unavailable" };
     return;

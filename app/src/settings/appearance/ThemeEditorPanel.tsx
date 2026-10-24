@@ -3,9 +3,9 @@
 // layer that lets clicks through everywhere except the panel, so the app stays
 // usable under the live preview.
 //
-// Not ported: "Inspect" (click an element to jump to its color role) and the
-// "· N uses" count. Both read the DOM's computed styles; gpuix paints resolved
-// colors with no record of which theme role produced them.
+// "Inspect" (click an element to jump to its color role), the "· N uses" count
+// and the usage highlight work from captured frames rather than the DOM's
+// computed styles; see themeInspection.ts.
 import { useGpuixRequired, useWindowSize, type EventPayload, type PublicInstance } from "@gpuix/react";
 import { useEffect, useRef, useState } from "react";
 
@@ -45,6 +45,7 @@ import {
   type ThemeDefinition,
 } from "../../web/themePalette.ts";
 import { ThemeColorField, ThemeEditorRingContext, useEditorRing } from "./ThemeColorPicker.tsx";
+import { canInspectThemeColors, highlightAndCountUses, inspectThemeRoleAt, setThemeHighlight } from "./themeInspection.ts";
 
 const PANEL_MARGIN = 8;
 const MIN_WIDTH = 280;
@@ -133,6 +134,14 @@ export function ThemeEditorPanel({
   const [isMinimized, setIsMinimized] = useState(false);
   const [roleQuery, setRoleQuery] = useState("");
   const [selectedRole, setSelectedRole] = useState<ThemeColorRole | null>(null);
+  // How the role was selected: its label shows where it is used until toggled
+  // off; a picker touch or an inspect click only counts, so the edited color stays visible.
+  const [selection, setSelection] = useState<{ role: ThemeColorRole; keepHighlight: boolean; nonce: number } | null>(null);
+  const [usageCount, setUsageCount] = useState<number | null>(null);
+  const [isInspecting, setIsInspecting] = useState(false);
+  const inspectionRenderer = useGpuixRequired();
+  const canInspect = canInspectThemeColors(inspectionRenderer);
+  const selectionNonce = useRef(0);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
   const [panelSize, setPanelSize] = useState<{ width: number; height: number } | null>(null);
@@ -189,6 +198,8 @@ export function ThemeEditorPanel({
   useEffect(() => () => setThemePreview(null), []);
 
   const updateColor = (role: ThemeColorRole, value: string) => {
+    // The highlight would paint over the color being chosen.
+    setThemeHighlight(null);
     setColorsByAppearance((current) => {
       const nextColors = { ...current[activeAppearance], [role]: value };
       const shouldManageColors = !isAdvanced && THEME_EDITOR_SIMPLE_ROLES.includes(role) && isThemeEditorColor(value);
@@ -211,9 +222,14 @@ export function ThemeEditorPanel({
     if (isAdvanced) setShouldRegenerateGuidedColors(true);
   };
 
+  const markSelection = (role: ThemeColorRole | null, keepHighlight: boolean) => {
+    setSelection(role === null ? null : { role, keepHighlight, nonce: ++selectionNonce.current });
+  };
+
   const selectThemeRole = (role: ThemeColorRole) => {
     const visibleRole = getThemeEditorColorFamily(role)?.role ?? role;
     setSelectedRole(visibleRole);
+    markSelection(visibleRole, false);
     if (!THEME_EDITOR_SIMPLE_ROLES.includes(visibleRole)) {
       setIsAdvanced(true);
       setRoleQuery("");
@@ -221,7 +237,35 @@ export function ThemeEditorPanel({
   };
 
   const toggleThemeRole = (role: ThemeColorRole) => {
-    setSelectedRole((current) => (current === role ? null : role));
+    const next = selectedRole === role && selection?.keepHighlight ? null : role;
+    setSelectedRole(next);
+    markSelection(next, true);
+  };
+
+  // web's spotlight and usage count follow the selected role.
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+  useEffect(() => {
+    if (!selection) {
+      setThemeHighlight(null);
+      setUsageCount(null);
+      return;
+    }
+    if (!canInspect) return;
+    const roles = getThemeEditorColorFamily(selection.role)?.roles ?? [selection.role];
+    void highlightAndCountUses(inspectionRenderer, roles, currentRect()).then((count) => {
+      if (selectionRef.current?.nonce !== selection.nonce) return;
+      setUsageCount(count);
+      if (!selection.keepHighlight) setThemeHighlight(null);
+    });
+  }, [selection?.nonce]);
+  useEffect(() => () => setThemeHighlight(null), []);
+
+  const inspectAt = async (x: number, y: number) => {
+    setIsInspecting(false);
+    setThemeHighlight(null);
+    const role = await inspectThemeRoleAt(inspectionRenderer, x, y);
+    if (role) selectThemeRole(role);
   };
 
   const handleAdvancedChange = (checked: boolean) => {
@@ -542,11 +586,13 @@ export function ThemeEditorPanel({
     );
   };
 
-  const subtitle = selectedRole
-    ? isAdvanced
-      ? (getThemeEditorColorFamily(selectedRole)?.label ?? getThemeRoleLabel(selectedRole))
-      : getThemeRoleLabel(selectedRole)
-    : "Select a color below";
+  const subtitle = isInspecting
+    ? "Select an element · Esc to cancel"
+    : selectedRole
+      ? `${isAdvanced ? (getThemeEditorColorFamily(selectedRole)?.label ?? getThemeRoleLabel(selectedRole)) : getThemeRoleLabel(selectedRole)}${
+          canInspect ? ` · ${usageCount ?? 0} ${usageCount === 1 ? "use" : "uses"}` : ""
+        }`
+      : "Select a color below";
   const dark = theme.appearance === "dark";
   const ringColor = themeColorToHex(colorsByAppearance[activeAppearance].focus)?.slice(0, 7) ?? theme.primary;
   const submitLabel = isEditing
@@ -560,6 +606,22 @@ export function ThemeEditorPanel({
   return (
     <anchored fill="window" deferred priority={0} occlude={false} style={{ backgroundColor: "transparent", pointerEvents: "none" }}>
       <ThemeEditorRingContext.Provider value={ringColor}>
+      {isInspecting ? (
+        // Takes the next press anywhere outside the panel (painted below it), as web's capture listeners do.
+        <div
+          testId="theme-editor-inspect-layer"
+          tabIndex={0}
+          autoFocus
+          onMouseDown={(event: EventPayload) => void inspectAt(event.x ?? 0, event.y ?? 0)}
+          onKeyDown={(event) => {
+            if (event.key !== "escape") return;
+            event.preventDefault();
+            event.stopPropagation();
+            setIsInspecting(false);
+          }}
+          style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, cursor: "crosshair", pointerEvents: "auto" }}
+        />
+      ) : null}
       <div
         testId="theme-editor-panel"
         onLayout={(event: EventPayload) => {
@@ -644,6 +706,19 @@ export function ThemeEditorPanel({
               </Text>
             )}
           </div>
+          {canInspect && !isMinimized ? (
+            <Tooltip content={isInspecting ? "Cancel inspecting app colors" : "Inspect app colors"} side="top">
+              <Button
+                testId="theme-editor-inspect"
+                size="xs"
+                variant={isInspecting ? "outline" : "ghost"}
+                icon="mouse-pointer-2"
+                onClick={() => setIsInspecting(!isInspecting)}
+              >
+                {isInspecting ? "Cancel" : "Inspect"}
+              </Button>
+            </Tooltip>
+          ) : null}
           <IconButton
             testId="theme-editor-minimize"
             icon={isMinimized ? "chevron-up" : "chevron-down"}

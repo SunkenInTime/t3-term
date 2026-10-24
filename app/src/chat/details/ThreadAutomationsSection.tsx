@@ -1,5 +1,5 @@
 // Scheduled tasks bound to this thread, after apps/web/src/components/chat/ThreadAutomationsPanel.tsx.
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
   runAtomCommand,
@@ -16,7 +16,7 @@ import { useEffect, useState } from "react";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
 import { serverEnvironment } from "../../state/environment.ts";
-import { routeAtom } from "../../state/ui.ts";
+import { openScheduledTaskSettings } from "../../settings/navigation.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import { Switch, Tooltip } from "../../ui/overlay.tsx";
 import { toast } from "../../ui/toast.tsx";
@@ -83,7 +83,6 @@ export function ThreadAutomationsSection({
   threadId: ThreadId;
 }) {
   const { theme, label } = useDetailsTokens();
-  const setRoute = useAtomSet(routeAtom);
   const canOperate = useAtomValue(serverEnvironment.runScheduledTaskNow.permissionAtom(environmentId));
   const tasksQuery = useEnvironmentQuery(serverEnvironment.scheduledTasksLive({ environmentId, input: {} }));
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
@@ -128,7 +127,8 @@ export function ThreadAutomationsSection({
     succeeded: "#10b981",
     failed: theme.error,
   };
-  const openSettings = () => setRoute({ kind: "settings", page: "scheduled-tasks" });
+  // web ThreadAutomationsPanel: Manage opens this environment's tasks; Edit opens the task's editor.
+  const openSettings = () => openScheduledTaskSettings({ environmentId });
 
   return (
     <DetailsSection
@@ -193,7 +193,7 @@ export function ThreadAutomationsSection({
             </div>
           </Tooltip>
           <Tooltip content="Edit automation">
-            <DetailsIconAction icon="pencil" onClick={openSettings} testId={`details-automation-edit-${task.id}`} />
+            <DetailsIconAction icon="pencil" onClick={() => openScheduledTaskSettings({ environmentId, taskId: task.id })} testId={`details-automation-edit-${task.id}`} />
           </Tooltip>
           {/* A webhook task runs from its URL; there is no request to run it with. */}
           {task.schedule.type === "webhook" ? null : (

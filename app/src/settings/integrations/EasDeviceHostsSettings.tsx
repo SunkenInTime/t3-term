@@ -272,6 +272,7 @@ function EasDeviceHostEditor(props: {
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
             <TextField
               key={tokenFieldKey}
+              secret
               value={token.kind === "new" ? token.value : ""}
               placeholder={token.kind === "saved" ? "Saved. Enter a new token to replace it" : "Optional"}
               readOnly={props.busy}
