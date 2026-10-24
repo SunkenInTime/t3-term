@@ -139,11 +139,14 @@ import {
   copyActiveThreadReference,
   openThread,
   readActiveThreadReferenceCopyTarget,
+  readServerConfig,
   reportError,
   sortProjectsByActivity,
   startNewThread,
   startScratchThread,
 } from "./actions.ts";
+import { composerPromptLink, copyPromptLink, promptLinkRepositoryOf } from "./copyPromptLink.ts";
+import { composerTargetKey } from "../state/composer.ts";
 import {
   ItemIcon,
   PaletteFooter,
@@ -990,6 +993,51 @@ function CommandModePalette({
       shortcutCommand: "chat.find",
       run: async () => appAtomRegistry.set(findBarOpenAtom, true),
     });
+  }
+  // web promptLinkInput: the route's thread or draft composer, its project and providers.
+  const promptLinkDraftKey =
+    route.kind === "thread"
+      ? composerTargetKey({ kind: "thread", environmentId: route.environmentId, threadId: route.threadId })
+      : route.kind === "draft"
+        ? composerTargetKey({
+            kind: "draft",
+            environmentId: route.environmentId,
+            projectId: route.projectId,
+            ...(route.draftId ? { draftId: route.draftId } : {}),
+          })
+        : null;
+  const promptLinkInput =
+    promptLinkDraftKey === null
+      ? null
+      : {
+          draftKey: promptLinkDraftKey,
+          project: currentProject ?? undefined,
+          providers: readServerConfig(currentProjectEnvironmentId)?.providers ?? [],
+          threadModelSelection: activeThread?.modelSelection ?? null,
+        };
+  const plainPromptLink = promptLinkInput ? composerPromptLink({ ...promptLinkInput, withContext: false }) : null;
+  if (promptLinkInput !== null && plainPromptLink !== null) {
+    actionItems.push({
+      kind: "action",
+      value: "action:copy-prompt-link",
+      searchTerms: ["copy", "share", "prompt", "link"],
+      title: "Copy prompt link",
+      icon: <ItemIcon name="link" />,
+      run: () => copyPromptLink(plainPromptLink),
+    });
+    if (promptLinkRepositoryOf(promptLinkInput.project) !== null) {
+      const contextLink = composerPromptLink({ ...promptLinkInput, withContext: true });
+      if (contextLink !== null) {
+        actionItems.push({
+          kind: "action",
+          value: "action:copy-prompt-link-with-context",
+          searchTerms: ["copy", "share", "prompt", "link", "repository", "model"],
+          title: "Copy prompt link with repo and model",
+          icon: <ItemIcon name="link" />,
+          run: () => copyPromptLink(contextLink),
+        });
+      }
+    }
   }
   if (copyTarget !== null) {
     actionItems.push({

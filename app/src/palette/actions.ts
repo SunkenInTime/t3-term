@@ -31,7 +31,9 @@ import {
   readComposerDraft,
   setComposerInteractionMode,
   setComposerModelSelection,
+  setDraftWorkspace,
   reusableProjectDraftId,
+  type DraftThreadEnvMode,
 } from "../state/composer.ts";
 import {
   environmentCatalog,
@@ -209,12 +211,32 @@ function carryComposerStateInto(projectRef: ScopedProjectRef, draftId: string | 
   if (override) setComposerModelSelection(destinationKey, override, { sticky: false, explicit: false, replaceOptions: true });
 }
 
-export function startNewThread(projectRef: ScopedProjectRef): void {
+/** useHandleNewThread's NewThreadWorkspaceOptions: where the new draft's thread will run. */
+export interface NewThreadWorkspaceOptions {
+  readonly branch?: string | null;
+  readonly worktreePath?: string | null;
+  readonly envMode?: DraftThreadEnvMode;
+  readonly startFromOrigin?: boolean;
+}
+
+export function startNewThread(projectRef: ScopedProjectRef, workspace?: NewThreadWorkspaceOptions): void {
   // web useHandleNewThread: an empty draft of the project is reused; a draft with content
   // stays as it is (in the sidebar) and the new thread gets a draft of its own.
   const reusable = reusableProjectDraftId(projectRef.environmentId, projectRef.projectId);
   const draftId = reusable === null ? globalThis.crypto.randomUUID() : reusable;
   carryComposerStateInto(projectRef, draftId);
+  // web pickExplicitWorkspaceOptions: only the options given overwrite the draft's own.
+  if (workspace) {
+    const explicit = {
+      ...(workspace.branch !== undefined ? { branch: workspace.branch } : {}),
+      ...(workspace.worktreePath !== undefined ? { worktreePath: workspace.worktreePath } : {}),
+      ...(workspace.envMode !== undefined ? { envMode: workspace.envMode } : {}),
+      ...(workspace.startFromOrigin !== undefined ? { startFromOrigin: workspace.startFromOrigin } : {}),
+    };
+    if (Object.keys(explicit).length > 0) {
+      setDraftWorkspace(composerTargetKey({ kind: "draft", ...projectRef, ...(draftId ? { draftId } : {}) }), explicit);
+    }
+  }
   appAtomRegistry.set(routeAtom, {
     kind: "draft",
     environmentId: projectRef.environmentId,

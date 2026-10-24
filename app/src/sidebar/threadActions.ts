@@ -19,13 +19,21 @@ import {
 import { canSnooze, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import * as ThreadUndo from "@t3tools/client-runtime/state/thread-undo";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
+import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+import { AuthSourceControlWriteScope, type EnvironmentId, type ScopedThreadRef, type ThreadId } from "@t3tools/contracts";
+import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import { startNewThread } from "../palette/actions.ts";
 import * as Cause from "effect/Cause";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
-import { environmentServerConfigsAtom, environmentThreadShells, threadEnvironment } from "../state/environment.ts";
+import {
+  environmentProjects,
+  environmentServerConfigsAtom,
+  environmentThreadShells,
+  threadEnvironment,
+} from "../state/environment.ts";
+import { vcsEnvironment } from "../state/git.ts";
 import {
   markThreadUnreadLocally,
   markThreadVisitedLocally,
@@ -46,6 +54,8 @@ import {
   type ThreadTraversalDirection,
 } from "../web/components/Sidebar.logic.ts";
 import { requestConfirmDialog as requestConfirm } from "../dialogs/confirmDialog.ts";
+import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../web/worktreeCleanup.ts";
+import { readEnvironmentScope } from "../web/state/session.ts";
 import { writeClipboardText } from "./clipboard.ts";
 
 type Result = AtomCommandResult<unknown, unknown>;
@@ -180,9 +190,25 @@ function refreshUndoNotice() {
 
 ThreadUndo.subscribe(refreshUndoNotice);
 
+/**
+ * showThreadUndoNotice.ts shortcutClaimed: from a notice appearing until the next other
+ * keypress, mod+Z undoes the thread action even in a text field.
+ */
+let shortcutClaimed = false;
+
+export function threadUndoClaimsShortcut(): boolean {
+  return shortcutClaimed && appAtomRegistry.get(threadUndoNoticeAtom) !== null;
+}
+
+/** Called on any other keypress; hands mod+Z back to text fields. */
+export function releaseThreadUndoShortcut(): void {
+  shortcutClaimed = false;
+}
+
 function showThreadUndoNotice(options: UndoOptions) {
   if (!options.claim.isCurrent()) return;
   liveUndos.push(options);
+  shortcutClaimed = true;
   refreshUndoNotice();
   clearTimeout(undoExpiry);
   undoExpiry = setTimeout(() => {
@@ -457,25 +483,72 @@ export async function archiveThread(target: ScopedThreadRef): Promise<Result> {
 }
 
 /**
- * Web also offers to remove a worktree only this thread used; t3-term leaves
- * worktrees alone (see the report: not ported yet).
+ * useThreadActions.deleteThread. When the thread is the last one using its worktree,
+ * the worktree goes too: automatically under the `worktreeOnDelete` setting, otherwise
+ * after asking. A bulk delete passes the keys already deleted, so a worktree shared
+ * only among the selected threads counts as orphaned by the last of them.
  */
-export async function deleteThread(target: ScopedThreadRef): Promise<Result> {
+export async function deleteThread(
+  target: ScopedThreadRef,
+  opts: { readonly deletedThreadKeys?: ReadonlySet<string> } = {},
+): Promise<Result> {
   const thread = readThreadShell(target);
   if (!thread) {
     return run(threadEnvironment.delete, target.environmentId, { threadId: target.threadId });
   }
-  if (thread.runtime !== null) {
-    await run(threadEnvironment.stopSession, target.environmentId, { threadId: target.threadId });
-  }
   const threads = appAtomRegistry
     .get(environmentThreadShells.quietThreadShellsAtom)
     .filter((candidate) => candidate.environmentId === target.environmentId);
+  const threadProject =
+    appAtomRegistry
+      .get(environmentProjects.projectsAtom)
+      .find((project) => project.environmentId === target.environmentId && project.id === thread.projectId) ?? null;
+  const deletedIds =
+    opts.deletedThreadKeys && opts.deletedThreadKeys.size > 0
+      ? new Set<ThreadId>(
+          [...opts.deletedThreadKeys].flatMap((threadKey) => {
+            const ref = parseScopedThreadKey(threadKey);
+            return ref && ref.environmentId === target.environmentId ? [ref.threadId] : [];
+          }),
+        )
+      : undefined;
+  const survivingThreads =
+    deletedIds && deletedIds.size > 0
+      ? threads.filter((entry) => entry.id === target.threadId || !deletedIds.has(entry.id))
+      : threads;
+  const orphanedWorktreePath = getOrphanedWorktreePathForThread(survivingThreads, target.threadId);
+  const displayWorktreePath = orphanedWorktreePath ? formatWorktreePathForDisplay(orphanedWorktreePath) : null;
+  const environmentConfig = appAtomRegistry.get(environmentServerConfigsAtom).get(target.environmentId);
+  const canDeleteWorktree =
+    orphanedWorktreePath !== null &&
+    threadProject !== null &&
+    !isScratchProject(threadProject, environmentConfig?.scratchWorkspaceRoot) &&
+    readEnvironmentScope(target.environmentId, AuthSourceControlWriteScope);
+  const automaticWorktreeCleanup = environmentConfig?.settings
+    ? resolveWorktreeCleanup(environmentConfig.settings, thread.projectId).worktreeOnDelete
+    : false;
+  let shouldDeleteWorktree = canDeleteWorktree && automaticWorktreeCleanup;
+  if (canDeleteWorktree && !automaticWorktreeCleanup) {
+    shouldDeleteWorktree = await requestConfirm(
+      [
+        "This thread is the only one linked to this worktree:",
+        displayWorktreePath ?? orphanedWorktreePath,
+        "",
+        "Delete the worktree too?",
+      ].join("\n"),
+      { variant: "destructive" },
+    );
+  }
+
+  if (thread.runtime !== null) {
+    await run(threadEnvironment.stopSession, target.environmentId, { threadId: target.threadId });
+  }
   const shouldNavigateToFallback =
     appAtomRegistry.get(routeThreadKeyAtom) === scopedThreadKey(target);
   const fallbackThreadId = getFallbackThreadIdAfterDelete({
     threads,
     deletedThreadId: target.threadId,
+    ...(deletedIds ? { deletedThreadIds: deletedIds } : {}),
     sortOrder: appAtomRegistry.get(sidebarClientSettingsAtom).sidebarThreadSortOrder,
   });
   const result = await run(threadEnvironment.delete, target.environmentId, {
@@ -489,6 +562,47 @@ export async function deleteThread(target: ScopedThreadRef): Promise<Result> {
         ? { kind: "thread", environmentId: target.environmentId, threadId: fallbackThreadId }
         : { kind: "home" },
     );
+  }
+  if (!shouldDeleteWorktree || !orphanedWorktreePath || !threadProject) return result;
+
+  const removeResult: Result = readEnvironmentScope(target.environmentId, AuthSourceControlWriteScope)
+    ? await runAtomCommand(
+        appAtomRegistry,
+        vcsEnvironment.removeWorktree,
+        {
+          environmentId: target.environmentId,
+          input: { cwd: threadProject.workspaceRoot, path: orphanedWorktreePath, force: true },
+        },
+        { reportFailure: false },
+      )
+    : failure("This connection can no longer remove worktrees.");
+  const refreshResult: Result | null =
+    removeResult._tag === "Success"
+      ? await runAtomCommand(
+          appAtomRegistry,
+          vcsEnvironment.refreshStatus,
+          { environmentId: target.environmentId, input: { cwd: threadProject.workspaceRoot } },
+          { reportFailure: false },
+        )
+      : null;
+  const cleanupFailure =
+    removeResult._tag === "Failure" ? removeResult : refreshResult?._tag === "Failure" ? refreshResult : null;
+  if (cleanupFailure) {
+    const removalFailed = removeResult._tag === "Failure";
+    const message = errorMessage(squashAtomCommandFailure(cleanupFailure));
+    console.error("Worktree cleanup failed after thread deletion", {
+      threadId: target.threadId,
+      projectCwd: threadProject.workspaceRoot,
+      worktreePath: orphanedWorktreePath,
+    });
+    toast({
+      type: "error",
+      title: removalFailed ? "Failed to delete worktree" : "Worktree deleted, but Git status refresh failed",
+      description: removalFailed
+        ? `Could not remove ${displayWorktreePath ?? orphanedWorktreePath}. ${message}`
+        : message,
+    });
+    // The thread was deleted; the cleanup failure has its own toast.
   }
   return result;
 }

@@ -78,10 +78,14 @@ export function leaveSettings(): void {
 export function openSettingsPage(page: SettingsPage, targetId?: string, pageTarget?: SettingsPageTarget): void {
   const previousTarget = appAtomRegistry.get(settingsPageTargetAtom);
   // A plain navigation drops the last link's target, like a route without search.
-  appAtomRegistry.set(
-    settingsPageTargetAtom,
-    pageTarget && pageTarget.page === page ? { target: pageTarget, nonce: (previousTarget?.nonce ?? 0) + 1 } : null,
-  );
+  const target = pageTarget && pageTarget.page === page ? pageTarget : null;
+  appAtomRegistry.set(settingsPageTargetAtom, target ? { target, nonce: (previousTarget?.nonce ?? 0) + 1 } : null);
+  // web settingsScopeNavigation.ts: a link's environmentId becomes the machine scope and
+  // replaces the previous scope, so the page looks for its provider or task on that
+  // machine. A link without one keeps the scope (retainSettingsScope).
+  if (target?.environmentId !== undefined) {
+    appAtomRegistry.set(settingsScopeSearchAtom, { machine: target.environmentId });
+  }
   appAtomRegistry.set(routeAtom, { kind: "settings", page });
   if (targetId) {
     const previous = appAtomRegistry.get(settingsSearchTargetAtom);

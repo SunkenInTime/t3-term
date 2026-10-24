@@ -23,6 +23,7 @@ import {
   buildProjectGroups,
   selectProjectGroupingSettings,
 } from "@t3tools/client-runtime/state/project-grouping";
+import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import { createInboxReturnTracker } from "@t3tools/client-runtime/state/thread-inbox";
 import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
@@ -52,6 +53,7 @@ import {
   environmentSession,
   environmentThreadShells,
   projectIndexAtom,
+  threadEnvironment,
 } from "./environment.ts";
 import { routeAtom } from "./ui.ts";
 import {
@@ -85,6 +87,8 @@ interface PersistedSidebarState {
   readonly snoozedExpanded: boolean;
   readonly workingExpanded: boolean;
   readonly projectScopeKey: string | null;
+  /** web uiStateStore.threadLastVisitedAtById: read markers kept for servers without visited tracking. */
+  readonly threadLastVisitedAtById: Readonly<Record<string, string>>;
 }
 
 const PERSISTED_DEFAULTS: PersistedSidebarState = {
@@ -92,7 +96,24 @@ const PERSISTED_DEFAULTS: PersistedSidebarState = {
   snoozedExpanded: false,
   workingExpanded: false,
   projectScopeKey: null,
+  threadLastVisitedAtById: {},
 };
+
+/** web uiStateStore sanitizeTimestampRecord */
+function sanitizeTimestampRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, string] =>
+        entry[0].length > 0 &&
+        typeof entry[1] === "string" &&
+        entry[1].length > 0 &&
+        Number.isFinite(Date.parse(entry[1])),
+    ),
+  );
+}
 
 function persistedStatePath(): string {
   return NodePath.join(termHome(), "sidebar-state.json");
@@ -108,6 +129,7 @@ function readPersistedState(): PersistedSidebarState {
       snoozedExpanded: parsed.snoozedExpanded === true,
       workingExpanded: parsed.workingExpanded === true,
       projectScopeKey: typeof parsed.projectScopeKey === "string" ? parsed.projectScopeKey : null,
+      threadLastVisitedAtById: sanitizeTimestampRecord(parsed.threadLastVisitedAtById),
     };
   } catch {
     return PERSISTED_DEFAULTS;
@@ -134,10 +156,48 @@ export function updateSidebarPersistedState(patch: Partial<PersistedSidebarState
   });
 }
 
-/** Web's uiStateStore.threadLastVisitedAtById: only used when a server predates visited tracking. */
-export const threadLocalLastVisitedAtAtom = Atom.make<ReadonlyMap<string, string>>(new Map<string, string>()).pipe(
-  Atom.keepAlive,
-);
+/**
+ * Web's uiStateStore.threadLastVisitedAtById: only used when a server predates visited
+ * tracking. Saved with the sidebar state, so a restart does not mark every thread unread.
+ */
+export const threadLocalLastVisitedAtAtom = Atom.make<ReadonlyMap<string, string>>(
+  new Map(Object.entries(appAtomRegistry.get(sidebarPersistedStateAtom).threadLastVisitedAtById)),
+).pipe(Atom.keepAlive);
+
+appAtomRegistry.subscribe(threadLocalLastVisitedAtAtom, (visited) => {
+  updateSidebarPersistedState({ threadLastVisitedAtById: Object.fromEntries(visited) });
+});
+
+/**
+ * useThreadVisitedMigration: once a thread's server tracks visits (the shell carries
+ * `lastVisitedAt`), a newer local marker is uploaded once, so upgrading the server keeps
+ * what was already read. Subscribed outside render, like web.
+ */
+const migratedThreadKeys = new Set<string>();
+
+function migrateLocalVisitMarkers(threads: ReadonlyArray<EnvironmentThreadShell>): void {
+  for (const thread of threads) {
+    // Field absent: the server has no visited tracking; keep the local value in play.
+    if (thread.lastVisitedAt === undefined) continue;
+    const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+    if (migratedThreadKeys.has(threadKey)) continue;
+    migratedThreadKeys.add(threadKey);
+    const local = appAtomRegistry.get(threadLocalLastVisitedAtAtom).get(threadKey);
+    if (!local) continue;
+    const localMs = Date.parse(local);
+    if (!Number.isFinite(localMs)) continue;
+    const serverMs = thread.lastVisitedAt === null ? null : Date.parse(thread.lastVisitedAt);
+    if (serverMs !== null && Number.isFinite(serverMs) && serverMs >= localMs) continue;
+    void runAtomCommand(
+      appAtomRegistry,
+      threadEnvironment.visit,
+      { environmentId: thread.environmentId, input: { threadId: thread.id, visitedAt: local } },
+      { reportFailure: false },
+    );
+  }
+}
+
+appAtomRegistry.subscribe(environmentThreadShells.threadShellsAtom, migrateLocalVisitMarkers, { immediate: true });
 
 export function markThreadVisitedLocally(threadKey: string, visitedAt: string): void {
   const current = appAtomRegistry.get(threadLocalLastVisitedAtAtom);
