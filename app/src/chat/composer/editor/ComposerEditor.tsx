@@ -14,7 +14,7 @@
 // so composition input (Chinese, Japanese, Korean) does not reach this editor; and a JS
 // clipboard API: paste goes through a hidden textarea's native paste (pasteSink), copy
 // through the OS clipboard tool (lib/clipboard.ts).
-import { useGpuixRequired, type EventPayload, type KeyEvent } from "@gpuix/react";
+import { isTerminal, useGpuixRequired, type EventPayload, type KeyEvent } from "@gpuix/react";
 import type { ServerProviderSkill } from "@t3tools/contracts";
 import { isProviderSkillUserInvocable } from "@t3tools/client-runtime/providerSkills";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
@@ -22,6 +22,7 @@ import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import { forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 
 import { copyToClipboard } from "../../../lib/clipboard.ts";
+import { readClipboardText } from "../../../terminal/clipboard.ts";
 import { useTextMetricsEpoch } from "../../markdown/measure.ts";
 import { TextMeasureHost } from "../../markdown/TextMeasureHost.tsx";
 import { FONTS, alpha, useTheme } from "../../../ui/theme.ts";
@@ -157,6 +158,12 @@ export interface ComposerEditorHandle {
    * on its way here (a burst after type-to-focus) arrives only at the window.
    */
   handleKey(event: KeyEvent): void;
+  /**
+   * web isCaretOnVisualEdge: the caret is collapsed on the first (start) or last (end)
+   * visual line, with no newline between it and that edge. Prompt history only takes
+   * ArrowUp/ArrowDown there, so the arrows still move between lines of a long prompt.
+   */
+  isCaretOnVisualEdge(edge: "start" | "end"): boolean;
   /** Element id of the focusable editor, for renderer.focusElement. */
   readonly id: number | null;
 }
@@ -253,6 +260,9 @@ export const ComposerEditor = memo(
     skillMetaRef.current = skillMeta;
     const propsRef = useRef(props);
     propsRef.current = props;
+    // isTerminal() is read during render (gpuix); handlers read it from here.
+    const terminalRef = useRef(false);
+    terminalRef.current = isTerminal();
 
     const parseOptions = () => ({
       skillMeta: skillMetaRef.current,
@@ -458,6 +468,18 @@ export const ComposerEditor = memo(
       // A copy still on its way to the OS clipboard (the tool takes a moment) pastes from memory.
       if (lastCopy && Date.now() - lastCopy.at < 1500) {
         pasteText(lastCopy.text);
+        return;
+      }
+      // In a terminal GPUI's clipboard is the terminal's, and it only holds what this app
+      // copied: the sink textarea would paste nothing, and the focus hop leaves the
+      // editor deaf to the keys that follow. Read the system clipboard with the OS tool.
+      if (terminalRef.current) {
+        void readClipboardText().then(
+          (text) => {
+            if (text.length > 0) pasteText(text);
+          },
+          () => {},
+        );
         return;
       }
       const host = renderer();
@@ -840,6 +862,15 @@ export const ComposerEditor = memo(
         },
         readSnapshot: snapshot,
         receivedKeystroke: (id) => receivedKeystrokesRef.current.includes(id),
+        isCaretOnVisualEdge: (edge) => {
+          const current = stateRef.current!;
+          const value = serializeDocCached(current.doc);
+          if (value.length === 0) return true;
+          if (!isCollapsed(current.selection)) return false;
+          const cursor = posToMarkdown(current.doc, current.selection.head);
+          if (edge === "start" ? value.slice(0, cursor).includes("\n") : value.slice(cursor).includes("\n")) return false;
+          return verticalTarget(layoutRef.current, current.selection.head, 0, edge === "start" ? -1 : 1) === null;
+        },
         handleKey: (event) => handleKey(event),
         appendTyped: (text) => {
           const current = stateRef.current!;

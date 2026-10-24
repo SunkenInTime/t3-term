@@ -40,6 +40,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-execution";
 import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thread-workflows";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   type EnvironmentId,
   isProviderNativeSubagentThread,
@@ -157,6 +158,12 @@ import {
   selectComposerTasksPlan,
 } from "../../web/session-logic.ts";
 import { resolveThreadSyncPhase } from "../../web/threadSync.ts";
+import { deriveTimelineEntriesFromVisibleTurnItems } from "../../web/session-logic.ts";
+import {
+  type ComposerPromptHistoryPosition,
+  buildComposerPromptHistoryEntries,
+  stepComposerPromptHistory,
+} from "../../web/components/chat/composerPromptHistory.ts";
 import { useDelayedStatus } from "../../web/hooks/useDelayedStatus.ts";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import { BranchToolbar } from "./BranchToolbar.tsx";
@@ -264,6 +271,47 @@ const NO_SKILLS: ServerProvider["skills"] = [];
 const NO_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
 const DEFAULT_PLACEHOLDER = "Ask anything, @tag files/folders, $use skills, or / for commands";
 const PROMPT_LINE_HEIGHT = 23;
+
+/** Whether a focused element id is a native text field, by id (ids are never reused). */
+const editableById = new Map<number, boolean>();
+
+/**
+ * True when focus sits on an editable element still on screen: a native <input> or
+ * <textarea>, or this composer's editor (web TYPE_TO_FOCUS_EDITABLE_SELECTOR). GPUI keeps
+ * the id of a focused element after it unmounts, and focuses the row or control a click
+ * landed on, so neither a bare id nor "something is focused" means the keys have a home.
+ * Surfaces that take keys themselves (terminal, browser, device stream, file tree) stop or
+ * prevent them before the window sees them.
+ */
+function hasEditableFocus(renderer: unknown, editorId: number | null): boolean {
+  const host = renderer as
+    | { getFocusedElementId?: () => number | null; getElementBounds?: (id: number) => unknown; getAutomationTree?: () => string }
+    | undefined;
+  const id = host?.getFocusedElementId?.();
+  if (id === null || id === undefined) return false;
+  if (id === editorId) return true;
+  if (host?.getElementBounds && host.getElementBounds(id) == null) return false;
+  let editable = editableById.get(id);
+  if (editable === undefined) {
+    editable = false;
+    try {
+      const find = (node: { id?: number; type?: string; children?: unknown[] }): string | null => {
+        if (node.id === id) return node.type ?? null;
+        for (const child of (node.children ?? []) as Array<typeof node>) {
+          const type = find(child);
+          if (type !== null) return type;
+        }
+        return null;
+      };
+      const type = host?.getAutomationTree ? find(JSON.parse(host.getAutomationTree())) : "input";
+      editable = type === "input" || type === "textarea";
+    } catch {
+      editable = true;
+    }
+    editableById.set(id, editable);
+  }
+  return editable;
+}
 
 /** Mixes `color` over `base` at `amount`, for opaque stand-ins of web's translucent glass. */
 function mix(color: string, base: string, amount: number): string {
@@ -669,6 +717,32 @@ function ComposerBody({
     lastFocusRequestRef.current = focusRequest;
     focusEditor();
   });
+  // web: opening a thread or draft puts the caret in its composer (the editor mounts
+  // focused), so a click on a sidebar row is followed by typing into the prompt. Only when
+  // nothing live holds focus: the focused element of the composer this one replaced is gone.
+  useEffect(() => {
+    if (small) return;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const attempt = () => {
+      timer = null;
+      if (!hasEditableFocus(renderer, editorRef.current?.id ?? null) && !isConfirmDialogActive()) {
+        if (editorRef.current?.id != null) {
+          editorRef.current.focusAtEnd();
+          return;
+        }
+      } else {
+        return;
+      }
+      if (++tries < 10) timer = setTimeout(attempt, 16);
+    };
+    attempt();
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+    };
+    // Once per mount: the body is keyed by its target.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Command menu ──────────────────────────────────────────────────────
   const selectedProviderSkills = selectedProviderStatus
@@ -730,11 +804,56 @@ function ComposerBody({
     caretRef.current = caret;
     if (valueChanged) setSubmissionError(null);
     if (isChoiceOnlyPendingQuestion) return;
+    if (valueChanged && !activePendingProgress && promptHistoryPositionRef.current?.position.recalled !== nextValue) {
+      promptHistoryPositionRef.current = null;
+    }
     if (valueChanged) {
       writeEditorValue(nextValue);
       if (restingRequested) appAtomRegistry.set(composerRestingAtom(draftKey), false);
     }
     setTrigger(isLiteralPendingAnswer || suppressTrigger ? null : detectComposerTrigger(nextValue, caret));
+  };
+
+  // ── Prompt history (web useComposerCommandKey navigatePromptHistory) ──
+  // Keyed by draft: a recall made in one thread is not a browsing position in another.
+  const promptHistoryPositionRef = useRef<{ targetKey: string; position: ComposerPromptHistoryPosition } | null>(null);
+  const navigatePromptHistory = (direction: "backward" | "forward", event: KeyEvent): boolean => {
+    const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
+    if (mods.shift || mods.alt || mods.cmd || mods.ctrl) return false;
+    if (threadId === null || requests.pendingUserInputs.length > 0 || queuedEdit.isEditing) return false;
+    const current = readComposerDraft(promptKey);
+    if (
+      current.attachments.length > 0 ||
+      referencedTerminalContexts(current).length > 0 ||
+      referencedReviewComments(current).length > 0
+    ) {
+      return false;
+    }
+    const recalled = promptHistoryPositionRef.current;
+    const position = recalled?.targetKey === promptKey ? recalled.position : null;
+    if (position === null && current.prompt.length > 0) return false;
+    if (!editorRef.current?.isCaretOnVisualEdge(direction === "backward" ? "start" : "end")) return false;
+    // Built on the keypress, not per render: the timeline changes on every streamed delta.
+    const visibleTurnItems = appAtomRegistry.get(
+      environmentThreadDetails.visibleTurnItemsAtom(scopeThreadRef(environmentId, threadId)),
+    );
+    const messages = deriveTimelineEntriesFromVisibleTurnItems({ visibleTurnItems, optimisticMessages: [] }).flatMap(
+      (entry) => (entry.kind === "message" ? [entry.message] : []),
+    );
+    const step = stepComposerPromptHistory({
+      direction,
+      entries: buildComposerPromptHistoryEntries(messages as never),
+      position,
+      currentPrompt: current.prompt,
+    });
+    if (!step) return false;
+    promptHistoryPositionRef.current = step.position ? { targetKey: promptKey, position: step.position } : null;
+    valueRef.current = step.prompt;
+    caretRef.current = step.prompt.length;
+    setComposerPrompt(promptKey, step.prompt);
+    setTriggerState(null);
+    setHighlightedItemId(null);
+    return true;
   };
 
   const applyPromptReplacement = (rangeStart: number, rangeEnd: number, replacement: string) => {
@@ -1479,6 +1598,9 @@ function ComposerBody({
       toggleInteractionMode();
       return true;
     }
+    if (key === "up" || key === "down") {
+      return navigatePromptHistory(key === "up" ? "backward" : "forward", event);
+    }
     if (plainEnter) {
       if (event.isHeld) return true;
       submit();
@@ -1694,8 +1816,9 @@ function ComposerBody({
       editor.handleKey(event);
       return true;
     }
-    // Anything focused (a field, the terminal, this editor) keeps its own keys.
-    if (focusedId !== null && focusedId !== undefined) return false;
+    // A focused field or this editor keeps its own keys (web shouldRedirectInputToComposer);
+    // a focused row or control, or an element no longer on screen, does not.
+    if (hasEditableFocus(eventRenderer, editor?.id ?? null)) return false;
     if (
       appAtomRegistry.get(terminalFocusAtom) ||
       appAtomRegistry.get(modelPickerOpenAtom) ||
