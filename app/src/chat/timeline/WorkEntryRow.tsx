@@ -6,7 +6,6 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
-import { withVisibleControlCharacters } from "@t3tools/client-runtime/work-log/command-label";
 import {
   toolCallLines,
   turnItemDetailRevision,
@@ -59,6 +58,7 @@ import {
 } from "../../web/session-logic.ts";
 import { formatUpcomingTimestamp } from "../../web/timestampFormat.ts";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
+import { ShellCommandBlock } from "./ShellCommandBlock.tsx";
 import { SubagentNotificationLink } from "./EventRows.tsx";
 import { TimelineRowTimestamp, useHover } from "./parts.tsx";
 import { TimelineRowActivityCtx, TimelineRowCtx, type TimelineWorkEntry } from "./rowContext.ts";
@@ -514,7 +514,7 @@ function ToolCallBody(
   const call = toolCallLines({ command: props.command, args: props.args });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
-      {call.command ? <MonoBlock text={withVisibleControlCharacters(call.command)} color={alpha(theme.foreground, 0.85)} /> : null}
+      {call.command ? <ShellCommandBlock command={call.command} fontSize={CODE_SIZE} lineHeight={CODE_LINE} /> : null}
       {call.args ? (
         <div style={{ display: "flex", flexDirection: "column" }}>
           {call.args.map(([key, value]) =>
