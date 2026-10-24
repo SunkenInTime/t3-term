@@ -7,6 +7,7 @@
 //   t3-term --pair 'http://host:3773/pair#token=CODE'        pair with a pairing URL
 //   t3-term                                                   the T3 server on this machine, plus saved environments
 //   t3-term --no-local                                        saved environments only
+//   t3-term --open 'https://app.t3.codes/new?prompt=...'     open a T3 Code prompt link (also t3code://..., /new?...)
 import { render } from "@gpuix/react";
 
 import { App } from "./app/App.tsx";
@@ -15,16 +16,18 @@ import { bootstrapConnections, parseArgs } from "./connect/bootstrap.ts";
 import { installPerfProbe, perfOnEvent, perfProbeEnabled } from "./dev/perfProbe.ts";
 import { handleGlobalKeyDown, handleGlobalKeyUp } from "./keybindings/useGlobalKeybindings.ts";
 import { noteUserInput } from "./notifications/platform.ts";
+import { openPromptLink } from "./promptLinks/promptLinkTarget.ts";
 
 const args = parseArgs(process.argv.slice(2));
 if (args.help) {
   console.log(
-    "usage: t3-term [--url <http-url> (--token <bearer> | --pair <code>)] [--pair <pairing-url>] [--no-local] [--terminal | --window]",
+    "usage: t3-term [--url <http-url> (--token <bearer> | --pair <code>)] [--pair <pairing-url>] [--no-local] [--terminal | --window] [--open <t3 code link>]",
   );
   process.exit(0);
 }
 
 const boot = await bootstrapConnections(args);
+if (args.open !== undefined) openPromptLink(args.open);
 
 const background = process.env.GPUIX_BACKGROUND === "1";
 // T3TERM_WINDOW=<width>x<height> opens the window at another size (screenshots of narrow layouts).

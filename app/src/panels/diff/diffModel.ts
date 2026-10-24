@@ -212,7 +212,8 @@ export type DiffLayout = "stacked" | "split";
 /** One comment (or the open comment form) under a line, after AnnotatableCodeView's entries. */
 export interface DiffCommentEntry {
   readonly id: string;
-  readonly kind: "draft" | "comment";
+  /** "external": drawn by the caller (DiffView `renderAnnotation`), e.g. a pull request review thread. */
+  readonly kind: "draft" | "comment" | "external";
   readonly rangeLabel: string;
   readonly text: string;
 }

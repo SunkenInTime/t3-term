@@ -19,7 +19,7 @@ import {
 } from "react";
 
 import { ProjectGlyph } from "../sidebar/ProjectGlyph.tsx";
-import { Icon } from "../ui/Icon.tsx";
+import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Popover, Tooltip } from "../ui/overlay.tsx";
 import { Text } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../ui/theme.ts";
@@ -193,6 +193,92 @@ export function PrMenuRadioItem({
         {children}
       </div>
       {indicator && checked ? <Icon name="check" size={14} color={theme.foreground} /> : null}
+    </div>
+  );
+}
+
+/**
+ * MenuItem / MenuRadioItem from apps/web/src/components/ui/menu.tsx as the pull request menus
+ * use them: 14px icons at 80%, an optional muted second line (the icon then sits at the top),
+ * a destructive tone, a checked fill for radio rows, and a trailing shortcut. `keepOpen` holds
+ * the menu open, which the inline-confirm rows need for their first, arming press.
+ */
+export function PrMenuItem({
+  icon,
+  iconNode,
+  children,
+  description,
+  shortcut,
+  destructive = false,
+  checked = false,
+  disabled = false,
+  keepOpen = false,
+  onSelect,
+  onMouseDownOutside,
+  testId,
+}: {
+  icon?: IconName;
+  iconNode?: ReactNode;
+  children: ReactNode;
+  description?: string;
+  shortcut?: string | null;
+  destructive?: boolean;
+  checked?: boolean;
+  disabled?: boolean;
+  keepOpen?: boolean;
+  onSelect?: () => void;
+  onMouseDownOutside?: () => void;
+  testId?: string;
+}) {
+  const theme = useTheme();
+  const menu = useContext(PrMenuContext);
+  const color = destructive ? theme.errorForeground : theme.foreground;
+  return (
+    <div
+      testId={testId}
+      onMouseDown={menu.keepOpen}
+      {...(onMouseDownOutside ? { onMouseDownOutside } : {})}
+      onClick={
+        disabled
+          ? undefined
+          : () => {
+              onSelect?.();
+              if (!keepOpen) menu.close();
+            }
+      }
+      style={{
+        ...menuRowStyle(false, checked, theme),
+        alignItems: description ? "flex-start" : "center",
+        opacity: disabled ? 0.64 : 1,
+        cursor: disabled ? "default" : "pointer",
+        ...(disabled ? { hover: {} } : {}),
+      }}
+    >
+      {iconNode ??
+        (icon ? (
+          <div style={{ display: "flex", marginTop: description ? 3 : 0, flexShrink: 0 }}>
+            <Icon name={icon} size={14} color={destructive ? theme.errorForeground : theme.mutedForeground} opacity={0.8} />
+          </div>
+        ) : null)}
+      <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
+        {typeof children === "string" ? (
+          <Text color={color} style={{ whiteSpace: "nowrap" }}>
+            {children}
+          </Text>
+        ) : (
+          children
+        )}
+        {description ? (
+          <Text size="xs" color={theme.mutedForeground}>
+            {description}
+          </Text>
+        ) : null}
+      </div>
+      {shortcut ? (
+        <Text size="xs" weight={500} color={alpha(theme.mutedForeground, 0.8)} style={{ marginLeft: 16, flexShrink: 0 }}>
+          {shortcut}
+        </Text>
+      ) : null}
     </div>
   );
 }
