@@ -4,9 +4,11 @@
 // the review conversations under their lines, pending line comments, and a draft box a press on a
 // line number opens. A commit scope narrows it to one commit; a file tree sits beside it.
 //
-// Not ported: the whitespace toggle (the diff model has no whitespace-insensitive pairing) and
-// multi-line selections (a press on a line number comments on that line, which is also what web
-// sends for a range on every host but GitHub).
+// "Hide whitespace changes" (web's pilcrow toggle, starting from the diffIgnoreWhitespace setting)
+// re-pairs each hunk ignoring whitespace (pullRequestWhitespace.ts), as web does client-side.
+//
+// Not ported: multi-line selections (a press on a line number comments on that line, which is
+// also what web sends for a range on every host but GitHub).
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
@@ -22,7 +24,8 @@ import { parseDiffFiles, type DiffFileModel } from "../panels/diff/diffModel.ts"
 import { DiffView, type DiffExternalAnnotation } from "../panels/diff/DiffView.tsx";
 import { FileEntryIcon } from "../panels/files/FileEntryIcon.tsx";
 import { diffLayoutPref, wordWrapPref } from "../state/codeView.ts";
-import { diffFilesCollapsedPref, diffFileTreeOpenPref } from "../state/git.ts";
+import { diffFilesCollapsedPref, diffFileTreeOpenPref, diffIgnoreWhitespacePref } from "../state/git.ts";
+import { hideWhitespaceChanges } from "./pullRequestWhitespace.ts";
 import {
   nextPendingReviewCommentId,
   pullRequestEnvironment,
@@ -151,6 +154,9 @@ export function PullRequestCodeTab({
   const filesCollapsedByDefault = useAtomValue(diffFilesCollapsedPref.atom);
   const fileTreeOpen = useAtomValue(diffFileTreeOpenPref.atom);
   const [wordWrap, setWordWrap] = useState(initialWrap);
+  // web: seeded from the diffIgnoreWhitespace setting, then local to the tab.
+  const initialIgnoreWhitespace = useAtomValue(diffIgnoreWhitespacePref.atom);
+  const [ignoreWhitespace, setIgnoreWhitespace] = useState(initialIgnoreWhitespace);
   const [toggledFiles, setToggledFiles] = useState<ReadonlySet<string>>(() => new Set());
   const [foldOverride, setFoldOverride] = useState<DiffFoldOverride>(null);
   const effectiveFoldOverride = foldOverride ?? (filesCollapsedByDefault ? "folded" : "expanded");
@@ -249,7 +255,10 @@ export function PullRequestCodeTab({
   const canCommentOnLines = review.inlineComment && commit === null;
   // Agent context is local, so it does not need the host's comment permission.
   const canSelectLines = commit === null && (review.inlineComment || onAddToAgentSelection !== undefined);
-  const files = useMemo(() => loadedSlices.flatMap(parseSlice), [loadedSlices]);
+  const files = useMemo(
+    () => loadedSlices.flatMap((slice) => (ignoreWhitespace ? parseSlice(slice).map(hideWhitespaceChanges) : parseSlice(slice))),
+    [loadedSlices, ignoreWhitespace],
+  );
   const filePaths = files.map((file) => file.path);
   // A conversation is placed only when its line falls inside a hunk that was drawn. While a commit
   // is on screen every conversation is listed instead: its line numbers belong to the whole change.
@@ -689,6 +698,17 @@ export function PullRequestCodeTab({
         </div>
       </div>
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>
+        <ToolbarToggle
+          icon="pilcrow"
+          pressed={ignoreWhitespace}
+          label={ignoreWhitespace ? "Show whitespace changes" : "Hide whitespace changes"}
+          onClick={() => {
+            // web changeIgnoreWhitespace: a draft anchored to a line may no longer exist.
+            setIgnoreWhitespace(!ignoreWhitespace);
+            setDraft(null);
+          }}
+          testId="pr-code-whitespace"
+        />
         <SegmentedIcons
           value={diffLayout === "split" ? "split" : "stacked"}
           onChange={(next) => diffLayoutPref.set(next)}
