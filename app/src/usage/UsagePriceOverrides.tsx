@@ -1,10 +1,10 @@
 // Port of apps/web/src/components/usage/UsagePriceOverrides.tsx.
-// gpuix inputs have no <datalist>, so the Model ID and Map to cells take free
-// text without the web's model suggestions.
+// gpuix inputs have no <datalist>; the Model ID and Map to cells draw their own
+// suggestion list (SuggestionList) from the same models web lists.
 import { useAtomValue } from "@effect/atom-react";
 import { AuthSettingsWriteScope, type EnvironmentId } from "@t3tools/contracts";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { serverEnvironment } from "../state/environment.ts";
@@ -21,7 +21,7 @@ import {
 } from "../web/components/usage/usagePriceTable.ts";
 import { writeUsagePrices, type UsagePriceWriteResult } from "../web/components/usage/usagePriceTargets.ts";
 import { Button, IconButton, Text } from "../ui/primitives.tsx";
-import { Menu, Tooltip } from "../ui/overlay.tsx";
+import { Menu, Popover, Tooltip } from "../ui/overlay.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../ui/theme.ts";
 import { UsageDialog } from "./UsageDialog.tsx";
 import { MenuCheckboxRow, UsageMenuSeparator } from "./usageUi.tsx";
@@ -40,6 +40,9 @@ const MODEL_COLUMN = "22%";
 const ALIAS_COLUMN = "18%";
 const ACTION_COLUMN = 40;
 
+const SUGGESTION_ROW_HEIGHT = 28;
+const SUGGESTION_MAX_ROWS = 8;
+
 function PriceInput({
   value,
   placeholder,
@@ -47,6 +50,7 @@ function PriceInput({
   disabled,
   mono,
   testId,
+  suggestions,
 }: {
   value: string;
   placeholder: string;
@@ -54,15 +58,67 @@ function PriceInput({
   disabled?: boolean;
   mono?: boolean;
   testId?: string;
+  /** web <datalist>: models offered while the field has focus, filtered by what is typed. */
+  suggestions?: readonly string[];
 }) {
   const theme = useTheme();
-  return (
+  const [focused, setFocused] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const [highlighted, setHighlighted] = useState(-1);
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (blurTimer.current) clearTimeout(blurTimer.current);
+  }, []);
+  const query = value.trim().toLowerCase();
+  // Chromium's datalist: every option on an empty field, substring matches after, nothing once the value is an option.
+  const matches =
+    suggestions === undefined || suggestions.some((option) => option === value)
+      ? []
+      : suggestions.filter((option) => query === "" || option.toLowerCase().includes(query));
+  const open = focused && !dismissed && !disabled && matches.length > 0;
+  const noteFocus = () => {
+    if (blurTimer.current) clearTimeout(blurTimer.current);
+    setFocused(true);
+    setDismissed(false);
+  };
+  const pick = (option: string) => {
+    onChange(option);
+    setDismissed(true);
+    setHighlighted(-1);
+  };
+  const input = (
     <input
       testId={testId}
       value={value}
       placeholder={placeholder}
       readOnly={disabled}
-      onChange={(event) => onChange(event.value ?? "")}
+      onChange={(event) => {
+        // Typing proves focus: a focus moved programmatically (or by automation) fires no onFocus.
+        noteFocus();
+        setHighlighted(-1);
+        onChange(event.value ?? "");
+      }}
+      onFocus={noteFocus}
+      onBlur={() => {
+        // A press on a suggestion blurs the field first; let the pick land before the list goes.
+        blurTimer.current = setTimeout(() => setFocused(false), 150);
+      }}
+      onKeyDown={(event) => {
+        if (!open) return;
+        if (event.key === "down" || event.key === "up") {
+          event.preventDefault();
+          const step = event.key === "down" ? 1 : -1;
+          // -1 is the field itself, as in a datalist: stepping past either end returns to it.
+          setHighlighted((current) => {
+            const next = current + step;
+            return next < -1 ? matches.length - 1 : next >= matches.length ? -1 : next;
+          });
+        }
+      }}
+      onSubmit={() => {
+        const option = highlighted >= 0 ? matches[highlighted] : undefined;
+        if (option !== undefined) pick(option);
+      }}
       style={{
         width: "100%",
         height: 28,
@@ -78,6 +134,51 @@ function PriceInput({
         opacity: disabled ? 0.64 : 1,
       }}
     />
+  );
+  if (suggestions === undefined) return input;
+  // The input swallows its own presses; its wrapper still sees them (every element under the pointer does).
+  const field = (
+    <div style={{ display: "flex", width: "100%" }} onMouseDown={noteFocus}>
+      {input}
+    </div>
+  );
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) setDismissed(true);
+      }}
+      side="bottom"
+      align="start"
+      sideOffset={4}
+      testId={testId ? `${testId}-suggestions` : undefined}
+      rootStyle={{ width: "100%" }}
+      style={{ padding: 4, minWidth: 200, maxHeight: SUGGESTION_ROW_HEIGHT * SUGGESTION_MAX_ROWS + 8, overflowY: "scroll" }}
+      trigger={field}
+    >
+      {matches.map((option, index) => (
+        <div
+          key={option}
+          onMouseDown={() => pick(option)}
+          onMouseEnter={() => setHighlighted(index)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            height: SUGGESTION_ROW_HEIGHT,
+            flexShrink: 0,
+            paddingLeft: 8,
+            paddingRight: 8,
+            borderRadius: RADIUS.sm,
+            backgroundColor: index === highlighted ? theme.accent : "#00000000",
+            cursor: "pointer",
+          }}
+        >
+          <text style={{ color: theme.foreground, fontSize: 13, lineHeight: 18, fontFamily: FONTS.sans, whiteSpace: "nowrap", pointerEvents: "none" }}>
+            {option}
+          </text>
+        </div>
+      ))}
+    </Popover>
   );
 }
 
@@ -120,6 +221,19 @@ export function UsagePriceOverrides({
       ]),
     ),
   ].sort();
+  const models = [
+    ...new Set([
+      ...customModels,
+      ...usage
+        .filter((environment) => selected.some((target) => target.environmentId === environment.environmentId))
+        .flatMap((environment) => environment.summary?.buckets.map((bucket) => bucket.model) ?? []),
+    ]),
+  ].sort();
+  // web's two datalists: unpriced models for a new row, models no environment maps yet for Map to.
+  const priceModelSuggestions = models.filter((model) => !customModels.includes(model));
+  const aliasModelSuggestions = models.filter((model) =>
+    selected.every((environment) => !Object.hasOwn(environment.aliases ?? {}, model)),
+  );
   const newModels = new Set(drafts.filter((draft) => draft.isNew).map((draft) => draft.model.trim()));
   const rows: readonly UsagePriceDraft[] = [
     ...customModels
@@ -400,6 +514,7 @@ export function UsagePriceOverrides({
                           testId={`usage-price-model-${row.id}`}
                           value={row.model}
                           placeholder="Model ID"
+                          suggestions={priceModelSuggestions}
                           disabled={locked}
                           onChange={(value) => updateDraft({ ...row, model: value })}
                         />
@@ -432,6 +547,8 @@ export function UsagePriceOverrides({
                           <PriceInput
                             value={row.alias ?? aliasCell.value}
                             placeholder={row.isNew ? "Optional" : aliasCell.placeholder}
+                            suggestions={aliasModelSuggestions}
+                            testId={`usage-price-alias-${row.id}`}
                             disabled={locked}
                             onChange={(value) => editAlias(row, value)}
                           />
