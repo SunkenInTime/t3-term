@@ -254,6 +254,7 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
         workspaceRoot: ctx.workspaceRoot,
         recordsById: resolvedContext.recordsById,
         imageUrls,
+        files: new Map(files.map((file) => [file.id, file])),
       }),
     // recordsById is rebuilt per render from the message; its identity follows the message.
     // eslint-disable-next-line react-hooks/exhaustive-deps

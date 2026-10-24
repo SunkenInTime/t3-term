@@ -35,6 +35,8 @@ export interface ContextChipEnvironment {
   readonly recordsById: ReadonlyMap<string, ComposerContextRecord>;
   /** Image attachment URLs by attachment id, for the image viewer. */
   readonly imageUrls: ReadonlyMap<string, string>;
+  /** File attachments by id: a file chip opens its attachment in the Files surface. */
+  readonly files: ReadonlyMap<string, Parameters<typeof rightPanelActions.openAttachment>[1]>;
 }
 
 function unavailable(label: string): ChipPayload {
@@ -97,6 +99,7 @@ export function userMessageContextChip(
     }
     case "file": {
       const video = record.mimeType.startsWith("video/");
+      const file = context.files.get(record.attachmentId);
       return {
         type: "chip",
         kind: video ? "video" : "file",
@@ -104,6 +107,9 @@ export function userMessageContextChip(
         suffix: formatAttachmentSize(record.sizeBytes),
         icon: video ? { kind: "lucide", name: "film" } : { kind: "file", path: record.name },
         tooltip: `${record.name}\n${formatAttachmentSize(record.sizeBytes)}`,
+        ...(file && !video
+          ? { onActivate: () => rightPanelActions.openAttachment(threadKeyOf(context.environmentId, context.threadId), file) }
+          : {}),
       };
     }
     case "terminal":
