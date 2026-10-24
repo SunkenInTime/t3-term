@@ -31,6 +31,7 @@ import { useState, type ReactNode } from "react";
 
 import { resolveNewThreadEnvMode, resolveProjectSettings } from "@t3tools/shared/projectSettings";
 
+import type { Atom } from "effect/reactivity";
 import { appAtomRegistry } from "../../runtime/runtime.ts";
 import { composerDraftAtom, setDraftWorkspace } from "../../state/composer.ts";
 import { environmentCatalog, serverEnvironment, shellEnvironment } from "../../state/environment.ts";
@@ -310,7 +311,7 @@ export function RunContextRow({
 
 // ── Open in editor ────────────────────────────────────────────────────────
 
-type RemoteOpenState =
+export type RemoteOpenState =
   | { readonly mode: "local-exec" }
   | { readonly mode: "remote-links"; readonly host: { readonly host: string; readonly username?: string } }
   | { readonly mode: "remote-unavailable" };
@@ -331,6 +332,23 @@ function isLoopbackHostname(hostname: string): boolean {
 function useRemoteOpenState(environmentId: EnvironmentId): RemoteOpenState {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  return resolveRemoteOpenState(catalog, config, environmentId);
+}
+
+/** useRemoteOpenState for callers outside render (markdown link menus read it at click time). */
+export function readRemoteOpenState(environmentId: EnvironmentId): RemoteOpenState {
+  return resolveRemoteOpenState(
+    appAtomRegistry.get(environmentCatalog.catalogValueAtom),
+    appAtomRegistry.get(serverEnvironment.configValueAtom(environmentId)),
+    environmentId,
+  );
+}
+
+function resolveRemoteOpenState(
+  catalog: Atom.Type<typeof environmentCatalog.catalogValueAtom>,
+  config: Atom.Type<ReturnType<typeof serverEnvironment.configValueAtom>>,
+  environmentId: EnvironmentId,
+): RemoteOpenState {
   const entry = catalog.entries.get(environmentId);
   if (!entry) return { mode: "local-exec" };
   const profile = Option.getOrNull(entry.profile);
