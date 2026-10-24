@@ -4,6 +4,9 @@ import { useEffect, type ReactNode } from "react";
 
 import type { Boot } from "../connect/bootstrap.ts";
 import { ConnectGate } from "../connect/ConnectGate.tsx";
+import { BootstrapThreadCoordinator } from "../coordinators/BootstrapThreadCoordinator.tsx";
+import { FirstRunGate } from "../onboarding/FirstRunGate.tsx";
+import { WelcomeHost } from "../onboarding/WelcomeHost.tsx";
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { environmentCatalog } from "../state/environment.ts";
 import { routeAtom, sidebarMobileOpenAtom, sidebarOpenAtom } from "../state/ui.ts";
@@ -44,13 +47,21 @@ export function App({ boot }: { boot: Boot }) {
           >
             <ViewportSync />
             <ConnectGate bootError={boot.error}>
-              <Shell boot={boot} />
-              {/* Before the palette and dialogs: same layer priority, so they paint over the editor. */}
-              <ThemeEditorHost />
-              <CommandPalette />
-              <DialogHost />
-              <ChatGptWelcomeCoordinator />
-              <EnvironmentThemeSync />
+              {/* web FirstRunGate: nothing until the workspace is known to need setup or not. */}
+              <FirstRunGate>
+                {/* web: EventRouter's welcome half, which the gate holds back while it decides.
+                    Ahead of the shell, as web's EventRouter is ahead of its outlet: its effect must
+                    open the bootstrap thread before home's starts a draft in the latest project. */}
+                <BootstrapThreadCoordinator />
+                <Shell boot={boot} />
+                {/* Before the palette and dialogs: same layer priority, so they paint over the editor. */}
+                <ThemeEditorHost />
+                <WelcomeHost />
+                <CommandPalette />
+                <DialogHost />
+                <ChatGptWelcomeCoordinator />
+                <EnvironmentThemeSync />
+              </FirstRunGate>
             </ConnectGate>
             <ThreadNotificationCoordinator />
             <PullRequestGuideRunCoordinator />

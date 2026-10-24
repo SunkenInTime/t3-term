@@ -87,7 +87,13 @@ function sanitizeTheme(raw: unknown): ThemeState {
   return { theme, appearanceMode, halves };
 }
 
+// Web's hydration status (hooks/useSettings.ts): a settings file that exists but
+// can't be read or parsed is a failed read, not a fresh install, so first-run
+// onboarding (onboarding/FirstRunGate.tsx) offers a retry instead of starting over.
+let lastReadFailed = false;
+
 function readDocument(): ClientSettingsDocument {
+  lastReadFailed = false;
   try {
     const raw: unknown = JSON.parse(NodeFS.readFileSync(settingsFile(), "utf8"));
     const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
@@ -108,7 +114,8 @@ function readDocument(): ClientSettingsDocument {
       console.error("[CLIENT_SETTINGS] dropped invalid keys", error);
     }
     return { settings, theme: sanitizeTheme(record.theme) };
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") lastReadFailed = true;
     return { settings: DEFAULT_CLIENT_SETTINGS, theme: DEFAULT_THEME_STATE };
   }
 }
@@ -124,9 +131,33 @@ export const themeStateAtom = Atom.make<ThemeState>(initial.theme).pipe(
   Atom.withLabel("t3term-theme-state"),
 );
 
+export type ClientSettingsHydrationStatus = "ready" | "failed" | "retrying";
+
+export const clientSettingsHydrationStatusAtom = Atom.make<ClientSettingsHydrationStatus>(
+  lastReadFailed ? "failed" : "ready",
+).pipe(Atom.keepAlive, Atom.withLabel("t3term-client-settings-hydration"));
+
+/** web ensureClientSettingsHydrated: reads the settings file again after a failed read. */
+export async function ensureClientSettingsHydrated(): Promise<void> {
+  if (appAtomRegistry.get(clientSettingsHydrationStatusAtom) === "ready") return;
+  appAtomRegistry.set(clientSettingsHydrationStatusAtom, "retrying");
+  // A frame of "retrying" so the Retry button shows it is working.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const document = readDocument();
+  if (lastReadFailed) {
+    appAtomRegistry.set(clientSettingsHydrationStatusAtom, "failed");
+    throw new Error("Could not read client settings.");
+  }
+  appAtomRegistry.set(clientSettingsAtom, document.settings);
+  appAtomRegistry.set(themeStateAtom, document.theme);
+  appAtomRegistry.set(clientSettingsHydrationStatusAtom, "ready");
+}
+
 let writeTimer: ReturnType<typeof setTimeout> | null = null;
 
 function persist(): void {
+  // An unreadable settings file stays as it is until a retry reads it.
+  if (appAtomRegistry.get(clientSettingsHydrationStatusAtom) !== "ready") return;
   // Coalesce bursts (a slider drag) into one write.
   if (writeTimer) clearTimeout(writeTimer);
   writeTimer = setTimeout(() => {
