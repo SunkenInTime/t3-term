@@ -28,6 +28,7 @@ import { ChatMarkdown } from "./ChatMarkdown.tsx";
 import type { ChipPayload } from "../markdown/MarkdownChips.tsx";
 import { userMessageContextChip } from "./userMessageContextChips.ts";
 import { ContextPressProbe } from "./UserMessageContextDetails.tsx";
+import { SNAP_SHOT_FRAME, SnapShotAttachmentDetails } from "./SnapShotAttachmentDetails.tsx";
 
 /** Context kinds whose chip opens a details popup anchored at the press. */
 const POPUP_CONTEXT_KINDS = new Set(["terminal", "element", "review-comment", "preview-annotation"]);
@@ -376,37 +377,41 @@ function UserImageGrid({ images, videos }: { images: ReadonlyArray<ChatAttachmen
     <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 8, maxWidth: 210, marginBottom: 8 }}>
       {images.map((image) => {
         const url = urlById.get(image.id) ?? ("previewUrl" in image ? (image.previewUrl ?? null) : null);
+        // A SnapShot window capture takes both columns at h-28 w-52 and carries its source app's details.
+        const snapShot = url && isImageAttachment(image) && image.source?.kind === "snap-shot" ? image.source : null;
+        const tile = snapShot ? SNAP_SHOT_FRAME : { width: cellWidth, height: Math.round((cellWidth * 3) / 4) };
+        const openImage = () => {
+          // ExpandedImageDialog over the message's images, starting at this one.
+          const gallery = images.flatMap((entry) => {
+            const src = urlById.get(entry.id) ?? ("previewUrl" in entry ? (entry.previewUrl ?? null) : null);
+            return src ? [{ src, name: entry.name }] : [];
+          });
+          openExpandedImage({ images: gallery, index: Math.max(0, gallery.findIndex((entry) => entry.src === url)) });
+        };
         return (
           <div
             key={image.id}
-            onClick={
-              url
-                ? () => {
-                    // ExpandedImageDialog over the message's images, starting at this one.
-                    const gallery = images.flatMap((entry) => {
-                      const src = urlById.get(entry.id) ?? ("previewUrl" in entry ? (entry.previewUrl ?? null) : null);
-                      return src ? [{ src, name: entry.name }] : [];
-                    });
-                    openExpandedImage({ images: gallery, index: Math.max(0, gallery.findIndex((entry) => entry.src === url)) });
-                  }
-                : undefined
-            }
+            onClick={url ? openImage : undefined}
             style={{
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              width: cellWidth,
-              height: Math.round((cellWidth * 3) / 4),
+              width: tile.width,
+              height: tile.height,
               borderRadius: RADIUS.lg,
               borderWidth: 1,
               borderColor: alpha(theme.border, 0.8),
               backgroundColor: alpha(theme.background, 0.7),
               overflow: "hidden",
               cursor: url ? "pointer" : "default",
+              ...(snapShot ? { position: "relative" as const } : {}),
             }}
           >
             {url ? (
-              <img src={url} objectFit="cover" style={{ width: cellWidth, height: Math.round((cellWidth * 3) / 4), borderRadius: RADIUS.lg }} />
+              <>
+                <img src={url} objectFit="cover" style={{ width: tile.width - 2, height: tile.height - 2, borderRadius: RADIUS.lg - 1 }} />
+                {snapShot ? <SnapShotAttachmentDetails source={snapShot} onOpenImage={openImage} /> : null}
+              </>
             ) : (
               <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)} style={{ textAlign: "center", width: cellWidth - 16 }}>
                 {image.name}
