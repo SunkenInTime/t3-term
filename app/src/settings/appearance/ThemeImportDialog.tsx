@@ -357,7 +357,7 @@ export function ThemeImportDialog({
                   testId="theme-import-json"
                   value={json}
                   placeholder={JSON_PLACEHOLDER}
-                  minRows={9}
+                  minRows={8}
                   maxRows={14}
                   theme={{ caret: theme.foreground }}
                   onChange={(event) => setJson(event.value ?? "")}

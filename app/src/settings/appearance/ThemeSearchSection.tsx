@@ -201,14 +201,14 @@ export function ThemeSearchSection({
           Find open-source themes from Open VSX.
         </Text>
       </div>
-      {/* InputGroup size="lg": 40 tall, search icon addon. */}
+      {/* InputGroup size="lg": 36 tall (measured on web), search icon addon. */}
       <div
         style={{
           display: "flex",
           flexDirection: "row",
           alignItems: "center",
           gap: 8,
-          height: 40,
+          height: 36,
           paddingLeft: 12,
           paddingRight: 12,
           borderRadius: RADIUS.lg,
