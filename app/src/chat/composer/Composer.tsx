@@ -74,6 +74,10 @@ import {
   type ComposerTarget,
   addComposerAttachments,
   composerDraftAtom,
+  dismissResumeCompactionForever,
+  keepFullHistoryThreadKeysAtom,
+  resumeCompactionDismissedAtom,
+  setKeepFullHistory,
   optimisticMessagesAtom,
   removeOptimisticMessages,
   focusComposer,
@@ -216,6 +220,8 @@ import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments"
 import * as NodeFs from "node:fs";
 import { takeDevAttachPaths } from "./devComposerAttachments.ts";
 import { prepareImageAttachment } from "./imagePreparation.ts";
+import { hasDismissedResumeCompaction, shouldOfferResumeCompaction } from "../../web/components/chat/ContextWindowMeter.logic.ts";
+import { resolveIdleCompaction } from "@t3tools/contracts/settings";
 import { environmentSupportsQuestionAttachments, questionAttachmentDraftKey } from "./questionAttachments.ts";
 import { readClipboardAttachmentPaths, writePastedTextFile } from "./clipboardAttachments.ts";
 import {
@@ -285,7 +291,7 @@ import { getTriggerDisplayModelName } from "../../web/components/chat/providerIc
 import { shouldShowInstanceBadge } from "../../web/providerInstances.ts";
 import { useProjectCloneBanner } from "./useProjectCloneBanner.tsx";
 import { composerProviderStatusAtom } from "./composerProviderStatus.ts";
-import { DEV_TERMINAL_CONTEXT, devComposerTasks, withDevProviderStatus } from "./devComposerBanners.ts";
+import { DEV_TERMINAL_CONTEXT, devComposerBanner, devComposerTasks, withDevProviderStatus } from "./devComposerBanners.ts";
 import { addTerminalContextToThreadComposer } from "./terminalContextIntake.ts";
 import { feedbackUploadsInFlight, upsertFeedbackSubmission } from "./ComposerFeedback.tsx";
 import { parseCodexFeedbackCommand, submitCodexFeedback } from "@t3tools/client-runtime/state/threads";
@@ -1197,7 +1203,62 @@ function ComposerBody({
     (multipleModelSelections === null ? providerSendBlockReason : null);
   const followUpBehavior: "queue" | "steer" =
     requests.pendingApprovals.length > 0 ? "steer" : settings.followUpBehavior;
-  const isCompacting = false;
+  // web ChatView isCompacting: a compaction (or a /compact turn) is the run in progress, so a
+  // follow-up queues behind it rather than steering (steering into it is rejected).
+  const isCompacting = useMemo(() => {
+    if (!projection || !(isRunning || phase === "connecting")) return false;
+    const activeRunId = runtime?.activeRunId ?? null;
+    let latestUser: (typeof projection.turnItems)[number] | null = null;
+    let compactionRunning = false;
+    let compactionSettled = false;
+    for (const item of projection.turnItems) {
+      if (item.type === "user_message") latestUser = item;
+      if (item.type !== "compaction") continue;
+      if (item.runId !== null && item.runId === activeRunId && item.status === "running") compactionRunning = true;
+      if (item.runId === activeActivityRun?.runId && item.status !== "running" && item.status !== "pending") compactionSettled = true;
+    }
+    const compactRequestIsActive =
+      latestUser?.type === "user_message" &&
+      latestUser.text.trim().toLowerCase() === "/compact" &&
+      latestUser.attachments.length === 0 &&
+      latestUser.runId === activeActivityRun?.runId &&
+      !activeActivityRunSettled;
+    return compactionRunning || (compactRequestIsActive && !compactionSettled);
+  }, [projection, isRunning, phase, runtime?.activeRunId, activeActivityRun?.runId, activeActivityRunSettled]);
+  // web resumeCompactionTokens: a Claude session idle past its prompt cache would re-read its
+  // whole history on the next turn; the send offers to compact it first (Compact / Full).
+  // Read with the time it is asked for: the send asks now, the primary actions each minute.
+  const resumeCompactionKey = `${environmentId}:${selectedInstanceId}`;
+  const resumeCompactionTokensAt = (now: string): number | null => {
+    if (threadId && compactCommandAvailable && devComposerBanner("resume-compaction")) return activeContextWindow?.usedTokens ?? 248_000;
+    if (!threadId || !activeContextWindow || !compactCommandAvailable || hasHeldQueuedRuns) return null;
+    if (multipleModelSelections !== null) return null;
+    if (serverConfig && resolveIdleCompaction(serverConfig.settings, selectedInstanceId) === "off") return null;
+    if (appAtomRegistry.get(resumeCompactionDismissedAtom).has(resumeCompactionKey)) return null;
+    return shouldOfferResumeCompaction({
+      provider: selectedProvider,
+      usedTokens: activeContextWindow.usedTokens,
+      updatedAt: activeContextWindow.updatedAt,
+      promptCacheTtlMs: liveTokenUsage?.promptCacheTtlMs,
+      now,
+    })
+      ? activeContextWindow.usedTokens
+      : null;
+  };
+  // web: Claude's own "never" answer to its compaction question stops the offer for good.
+  const nativeResumeCompactionDismissed = useMemo(
+    () =>
+      hasDismissedResumeCompaction(
+        (projection?.runtimeRequests ?? [])
+          .filter((request) => request.kind === "user_input" && request.status === "resolved")
+          .map((request) => ({ kind: "user-input.resolved", payload: { answers: (request as { answers?: unknown }).answers } })),
+      ),
+    [projection?.runtimeRequests],
+  );
+  useEffect(() => {
+    if (nativeResumeCompactionDismissed) dismissResumeCompactionForever(resumeCompactionKey);
+  }, [nativeResumeCompactionDismissed, resumeCompactionKey]);
+  const threadKeyForHistory = threadId ? scopedThreadKey(scopeThreadRef(environmentId, threadId)) : null;
 
   const submit = (dispatchMode?: ComposerDispatchMode, submissionIntent: ComposerSubmissionIntent = "foreground") => {
     // web useComposerSend: /usage-limits is answered locally from the Limits snapshot.
@@ -1275,11 +1336,17 @@ function ComposerBody({
       void submitMultipleModels(promptAtSend, attachments);
       return;
     }
+    // web planComposerTurn: compact first unless the user chose Full for this thread.
+    const compactBeforeSend =
+      resumeCompactionTokensAt(new Date().toISOString()) !== null &&
+      !(threadKeyForHistory !== null && appAtomRegistry.get(keepFullHistoryThreadKeysAtom).has(threadKeyForHistory)) &&
+      promptAtSend.trim().toLowerCase() !== "/compact";
     void dispatchSend({
       prompt: promptAtSend,
       text: promptAtSend.trim(),
       attachments,
       interactionMode,
+      compactBeforeSend,
       background: submissionIntent === "background",
       dispatchMode:
         dispatchMode ??
@@ -1379,6 +1446,7 @@ function ComposerBody({
     dispatchMode: ComposerDispatchMode;
     sourceProposedPlan?: { threadId: ThreadId; planId: string };
     background?: boolean;
+    compactBeforeSend?: boolean;
   }) => {
     if (!project && !threadId) {
       toast({ type: "warning", title: "Choose a project first" });
@@ -1439,6 +1507,7 @@ function ComposerBody({
       readRespondingApprovalIds: () => liveRequestsRef.current.respondingRequestIds,
       ...(input.sourceProposedPlan ? { sourceProposedPlan: input.sourceProposedPlan } : {}),
       ...(input.background ? { background: { projectId } } : {}),
+      ...(input.compactBeforeSend ? { compactBeforeSend: true } : {}),
       running: isRunning,
     });
     if (sent) {
@@ -2437,6 +2506,8 @@ function ComposerBody({
   const primaryActions = (
     <UploadGatedPrimaryActions
       uploadKey={uploadsEnabled && !queuedEdit.isEditing ? promptKey : null}
+      resumeCompactionTokensAt={resumeCompactionTokensAt}
+      fullHistoryThreadKey={threadKeyForHistory}
       compact={isResting || isComposerPrimaryActionsCompact}
       canOperateThread={true}
       pendingAction={pendingAction}
@@ -2890,10 +2961,44 @@ function OptimisticMessageWatcher({
  */
 function UploadGatedPrimaryActions({
   uploadKey,
+  resumeCompactionTokensAt,
+  fullHistoryThreadKey,
   ...props
-}: Parameters<typeof ComposerPrimaryActions>[0] & { uploadKey: string | null }) {
+}: Parameters<typeof ComposerPrimaryActions>[0] & {
+  uploadKey: string | null;
+  resumeCompactionTokensAt: (now: string) => number | null;
+  fullHistoryThreadKey: string | null;
+}) {
   const blockReason = useAtomValue(uploadKey === null ? NO_UPLOAD_BLOCK_ATOM : stagedUploadBlockReasonAtom(uploadKey));
-  return <ComposerPrimaryActions {...props} sendDisabledReason={props.sendDisabledReason ?? blockReason} />;
+  // web nowMinute: the offer appears once the prompt cache has gone cold, checked each minute.
+  const nowMinute = useNowMinute();
+  const compactTokens = resumeCompactionTokensAt(nowMinute);
+  const keepFullHistory = useAtomValue(keepFullHistoryThreadKeysAtom);
+  const keep = fullHistoryThreadKey !== null && keepFullHistory.has(fullHistoryThreadKey);
+  return (
+    <ComposerPrimaryActions
+      {...props}
+      sendDisabledReason={props.sendDisabledReason ?? blockReason}
+      compactBeforeSendTokens={compactTokens}
+      keepFullHistory={keep}
+      onToggleKeepFullHistory={() => {
+        if (fullHistoryThreadKey !== null) setKeepFullHistory(fullHistoryThreadKey, !keep);
+      }}
+    />
+  );
+}
+
+/** The current minute as an ISO string, re-rendering when the minute turns. */
+function useNowMinute(): string {
+  const [now, setNow] = useState(() => new Date(Math.floor(Date.now() / 60_000) * 60_000).toISOString());
+  useEffect(() => {
+    const timer = setTimeout(
+      () => setNow(new Date(Math.floor(Date.now() / 60_000) * 60_000).toISOString()),
+      60_000 - (Date.now() % 60_000) + 50,
+    );
+    return () => clearTimeout(timer);
+  }, [now]);
+  return now;
 }
 const NO_UPLOAD_BLOCK_ATOM = Atom.make<string | null>(null);
 

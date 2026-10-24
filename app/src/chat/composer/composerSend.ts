@@ -191,6 +191,11 @@ export interface ComposerSendInput {
   readonly background?: { readonly projectId: ProjectId | null };
   /** A run is in progress: a queued send waits behind it instead of showing in the timeline. */
   readonly running?: boolean;
+  /**
+   * web planComposerTurn compactBeforeSend: a stale Claude session runs /compact first and the
+   * message queues behind it, so the turn does not re-read the old history.
+   */
+  readonly compactBeforeSend?: boolean;
 }
 
 export async function sendComposerMessage(input: ComposerSendInput): Promise<boolean> {
@@ -250,6 +255,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
   const showsPendingDraft = input.target.kind === "draft" && !input.background;
   const optimisticThreadKey =
     input.target.kind === "thread" || showsPendingDraft ? scopedThreadKey(scopeThreadRef(input.environmentId, threadId)) : null;
+  const queuesBehind = input.compactBeforeSend === true || (input.running === true && input.dispatchMode === "queue");
   const optimisticMessage: ChatMessage = {
       id: messageId,
       role: "user",
@@ -271,7 +277,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
       streaming: false,
       createdAt,
       updatedAt: createdAt,
-      ...(input.running && input.dispatchMode === "queue"
+      ...(queuesBehind
         ? { inputIntent: "queued_turn" as const }
         : input.running && input.dispatchMode === "steer"
           ? { inputIntent: "steer" as const }
@@ -343,6 +349,25 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
           }
         : undefined;
     if (DEV_SEND_HOLD) await new Promise<never>(() => {});
+    if (input.compactBeforeSend && input.target.kind === "thread") {
+      const compact = await runAtomCommand(
+        appAtomRegistry,
+        threadEnvironment.startTurn,
+        {
+          environmentId: input.environmentId,
+          input: {
+            threadId,
+            message: { messageId: MessageId.make(newId()), role: "user", text: "/compact", attachments: [] },
+            modelSelection: input.modelSelection,
+            runtimeMode: input.runtimeMode,
+            interactionMode: input.interactionMode,
+            createdAt,
+          } as never,
+        },
+        { reportFailure: false },
+      );
+      if (compact._tag === "Failure") throw squashAtomCommandFailure(compact);
+    }
     const result = await runAtomCommand(
       appAtomRegistry,
       threadEnvironment.startTurn,
@@ -361,7 +386,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
           titleSeed: title,
           runtimeMode: input.runtimeMode,
           interactionMode: input.interactionMode,
-          dispatchMode: input.dispatchMode,
+          dispatchMode: input.compactBeforeSend ? "queue" : input.dispatchMode,
           ...(bootstrap ? { bootstrap } : {}),
           ...(input.sourceProposedPlan
             ? { sourceProposedPlan: input.sourceProposedPlan as never }
@@ -381,7 +406,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
     // The turn owns the uploaded records now.
     forgetAttachmentUploads(input.attachments.map((attachment) => attachment.id));
     // A queued message waits in the queue control, never in the timeline.
-    if (optimisticThreadKey !== null && input.running && input.dispatchMode === "queue") {
+    if (optimisticThreadKey !== null && queuesBehind) {
       removeOptimisticMessages(optimisticThreadKey, (message) => message.id === messageId);
     }
     if (input.background) {

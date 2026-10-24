@@ -688,6 +688,50 @@ export function sentImagePreviewPath(attachmentId: string): string | null {
   return null;
 }
 
+// ── Stale-session compaction (web ChatView resumeCompaction) ────────────
+
+/** Threads whose next send keeps the full history instead of compacting first (web: per view). */
+export const keepFullHistoryThreadKeysAtom = Atom.make<ReadonlySet<string>>(new Set<string>()).pipe(Atom.keepAlive);
+
+export function setKeepFullHistory(threadKey: string, keep: boolean): void {
+  const current = appAtomRegistry.get(keepFullHistoryThreadKeysAtom);
+  if (current.has(threadKey) === keep) return;
+  const next = new Set(current);
+  if (keep) next.add(threadKey);
+  else next.delete(threadKey);
+  appAtomRegistry.set(keepFullHistoryThreadKeysAtom, next);
+}
+
+const RESUME_COMPACTION_DISMISSED_FILE = "resume-compaction-dismissed.json";
+
+/**
+ * web useLocalStorage `t3code:resume-compaction-dismissed:<env>:<instance>`: answering Claude's
+ * own "never compact" question stops the offer for that provider instance, everywhere.
+ */
+export const resumeCompactionDismissedAtom = Atom.make<ReadonlySet<string>>(
+  ((): ReadonlySet<string> => {
+    try {
+      const parsed = JSON.parse(NodeFs.readFileSync(NodePath.join(termHome(), RESUME_COMPACTION_DISMISSED_FILE), "utf8"));
+      return new Set(Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : []);
+    } catch {
+      return new Set<string>();
+    }
+  })(),
+).pipe(Atom.keepAlive);
+
+export function dismissResumeCompactionForever(key: string): void {
+  const current = appAtomRegistry.get(resumeCompactionDismissedAtom);
+  if (current.has(key)) return;
+  const next = new Set(current).add(key);
+  appAtomRegistry.set(resumeCompactionDismissedAtom, next);
+  try {
+    NodeFs.mkdirSync(termHome(), { recursive: true });
+    NodeFs.writeFileSync(NodePath.join(termHome(), RESUME_COMPACTION_DISMISSED_FILE), JSON.stringify([...next]));
+  } catch (error) {
+    console.error("[composer] could not save the compaction dismissal", error);
+  }
+}
+
 // ── Settings the composer reads ─────────────────────────────────────────
 
 /**

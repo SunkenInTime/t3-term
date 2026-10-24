@@ -16,6 +16,7 @@ import { Menu, MenuItem, Tooltip } from "../../ui/overlay.tsx";
 import { Button } from "../../ui/primitives.tsx";
 import { FONTS, alpha, useTheme } from "../../ui/theme.ts";
 import { useSmallViewport } from "../../ui/viewport.tsx";
+import { formatContextWindowTokens } from "../../web/lib/contextWindow.ts";
 import { useStageIdentification } from "../../sidebar/SidebarChrome.tsx";
 import { stageArtSource } from "../../sidebar/StageBackdrop.tsx";
 
@@ -69,6 +70,10 @@ export function ComposerPrimaryActions(props: {
   isEditingQueuedMessage?: boolean;
   /** Keybinding label for `composer.sendAlternate` (Ctrl+Enter by default). */
   alternateShortcutLabel?: string | null;
+  /** web resumeCompactionTokens: a stale session's history the next send can compact first. */
+  compactBeforeSendTokens?: number | null;
+  keepFullHistory?: boolean;
+  onToggleKeepFullHistory?: () => void;
   onSubmit: (dispatchMode: ComposerDispatchMode) => void;
   onResume: () => void;
   onPreviousPendingQuestion: () => void;
@@ -172,11 +177,19 @@ export function ComposerPrimaryActions(props: {
   if (props.canInterrupt && !props.hasSendableContent && !isEditingQueuedMessage) return stopButton(false);
 
   const showResume = props.canResume && !props.hasSendableContent && !isEditingQueuedMessage;
+  const compactTokens =
+    (props.compactBeforeSendTokens ?? null) !== null && !showResume && !isEditingQueuedMessage
+      ? formatContextWindowTokens(props.compactBeforeSendTokens ?? null)
+      : null;
+  const keepFullHistory = props.keepFullHistory ?? false;
+  const compactsBeforeSend = compactTokens !== null && !keepFullHistory;
   const submitLabel = showResume
     ? "Resume thread"
     : isEditingQueuedMessage
       ? "Update queued message"
-      : isQueuing
+      : compactsBeforeSend
+        ? "Compact and send"
+        : isQueuing
       ? "Queue message"
       : props.isRunning
         ? "Steer message"
@@ -195,14 +208,16 @@ export function ComposerPrimaryActions(props: {
             : null));
   const submitTooltip =
     submitStatus ??
-    (props.isRunning && !isEditingQueuedMessage && props.canSteer
+    (compactsBeforeSend
+      ? `Summarize ${compactTokens} tokens of history, then send`
+      : props.isRunning && !isEditingQueuedMessage && props.canSteer
       ? `Click to ${props.followUpBehavior}, Ctrl/⌘-click${props.alternateShortcutLabel ? ` or ${props.alternateShortcutLabel}` : ""} to ${alternateAction}`
       : submitLabel);
   const disabled =
     busy || isSendDisabled || props.isEnvironmentUnavailable || (!props.hasSendableContent && !showResume);
   const runningIcon: IconName = isQueuing ? "list-plus" : "corner-up-right";
-  return (
-    <Tooltip content={submitTooltip} side="top">
+  const submit = (
+    <Tooltip content={submitTooltip} side="top" key="submit">
       <CircleButton
         testId="composer-send"
         size={small ? 36 : 32}
@@ -240,6 +255,43 @@ export function ComposerPrimaryActions(props: {
         )}
       </CircleButton>
     </Tooltip>
+  );
+  if (compactTokens === null) return submit;
+  // web data-chat-composer-compact-send: the Compact / Full pill before the send button.
+  return (
+    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <Tooltip
+        side="top"
+        content={`${keepFullHistory ? `Next send keeps all ${compactTokens} tokens.` : `Next send compacts ${compactTokens} tokens first.`}\n${keepFullHistory ? "Click to compact first" : "Click to keep full history"}`}
+      >
+        <div
+          testId="composer-compact-toggle"
+          onClick={props.canOperateThread ? props.onToggleKeepFullHistory : undefined}
+          style={{
+            display: "flex",
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+            height: small ? 36 : 32,
+            flexShrink: 0,
+            paddingLeft: 10,
+            paddingRight: 10,
+            borderRadius: 999,
+            borderWidth: 1,
+            borderColor: keepFullHistory ? theme.border : alpha(theme.warning, 0.4),
+            cursor: props.canOperateThread ? "pointer" : "default",
+            opacity: props.canOperateThread ? 1 : 0.64,
+            hover: keepFullHistory ? {} : { backgroundColor: alpha(theme.warning, 0.08) },
+          }}
+        >
+          <Icon name="minimize-2" size={14} color={keepFullHistory ? theme.mutedForeground : theme.warning} />
+          <text style={{ color: keepFullHistory ? theme.mutedForeground : theme.warning, fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans, pointerEvents: "none" }}>
+            {`${keepFullHistory ? "Full" : "Compact"} ${compactTokens}`}
+          </text>
+        </div>
+      </Tooltip>
+      {submit}
+    </div>
   );
 }
 
