@@ -120,6 +120,7 @@ import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import { chatLanePadding, useSmallViewport } from "../../ui/viewport.tsx";
 import { Text } from "../../ui/primitives.tsx";
+import { useTypingDeferredDraft, writeTypedPrompt } from "./useTypingDeferredDraft.ts";
 import {
   type ComposerSubmissionIntent,
   type ComposerTrigger,
@@ -547,7 +548,7 @@ function ComposerBody({
   const theme = useTheme();
   const renderer = useGpuixRequired();
   const draftKey = composerTargetKey(target);
-  const draft = useAtomValue(composerDraftAtom(draftKey));
+  const draft = useTypingDeferredDraft(draftKey);
   const restoredPrompt = useAtomValue(restoredPromptAtom);
   useEffect(() => {
     // "Edit from here" in the timeline hands the reverted prompt back to this thread's composer.
@@ -578,7 +579,7 @@ function ComposerBody({
   // submit saves it in place (web useQueuedRunEdit). Model and mode stay the thread's.
   const queuedEdit = useQueuedRunEdit({ environmentId, threadId });
   const promptKey = queuedEdit.isEditing ? queuedEdit.draftKey ?? draftKey : draftKey;
-  const promptDraft = useAtomValue(composerDraftAtom(promptKey));
+  const promptDraft = useTypingDeferredDraft(promptKey);
   // Staged attachments live with the prompt: a queued edit's new attachments in its edit draft.
   const stagedAttachments = promptDraft.attachments;
   const editingAttachments = queuedEdit.editingAttachments;
@@ -813,6 +814,9 @@ function ComposerBody({
   const setTrigger = (candidate: ComposerTrigger | null) => {
     const active = resolveTrigger(candidate);
     if (candidate === null || active !== null) dismissedTriggerRef.current = null;
+    // Setting null over null still runs ComposerBody before React bails out, and the editor
+    // reports every keystroke here (see useTypingDeferredDraft.ts).
+    if (active === null && trigger === null) return;
     setTriggerState(active);
   };
   const dismissTrigger = () => {
@@ -928,7 +932,7 @@ function ComposerBody({
     valueRef.current = nextValue;
     caretRef.current = caret;
     if (valueChanged) {
-      setSubmissionError(null);
+      if (submissionError !== null) setSubmissionError(null);
       typingGuard.onDraftChange();
       // web: typing is when the menu is about to need skills, so a snapshot past its TTL rescans.
       refreshWorkspaceSnapshotOnTyping();
@@ -938,7 +942,7 @@ function ComposerBody({
       promptHistoryPositionRef.current = null;
     }
     if (valueChanged) {
-      writeEditorValue(nextValue);
+      writeTypedPrompt(promptKey, nextValue, () => writeEditorValue(nextValue));
       if (restingRequested) appAtomRegistry.set(composerRestingAtom(draftKey), false);
     }
     setTrigger(isLiteralPendingAnswer || suppressTrigger ? null : detectComposerTrigger(nextValue, caret));
@@ -1709,7 +1713,7 @@ function ComposerBody({
       ? questionAttachmentDraftKey(environmentId, threadId, requests.pendingUserInputs[0].requestId, activeQuestionId)
       : null;
   const attachmentKey = questionAttachmentKey ?? promptKey;
-  const questionDraft = useAtomValue(composerDraftAtom(attachmentKey));
+  const questionDraft = useTypingDeferredDraft(attachmentKey);
   const visibleStaged = questionAttachmentKey !== null ? questionDraft.attachments : stagedAttachments;
   const fileStagingAllowed = !activePendingProgress || questionAttachmentKey !== null;
   // web useComposerAttachmentIntake: what this server cannot take is refused when it is staged,

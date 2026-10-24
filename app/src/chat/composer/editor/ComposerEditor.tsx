@@ -308,6 +308,7 @@ export const ComposerEditor = memo(
     const modeKeyRef = useRef("");
     const skillsKeyRef = useRef<ReadonlyArray<ServerProviderSkill> | null>(null);
     const lastCursorPropRef = useRef(props.cursor);
+    const lastValuePropRef = useRef(props.value);
     const goalXRef = useRef<number | null>(null);
     const [, setVersion] = useState(0);
     const bump = () => setVersion((value) => value + 1);
@@ -317,6 +318,11 @@ export const ComposerEditor = memo(
     const modeKey = `${props.codeBlocks ? "code" : "plain"}:${props.literal ? "literal" : "rich"}`;
     // Sync from props during render: a value from outside (menu insert, send clearing it,
     // a restored draft) rebuilds the document, the way web's controlled update calls setContent.
+    // Only a value that changed since the last render counts: the composer re-renders after
+    // typing pauses (useTypingDeferredDraft.ts), so while keys arrive the editor re-renders
+    // itself with the value it was last given, which is behind its own document.
+    const valuePropChanged = props.value !== lastValuePropRef.current;
+    lastValuePropRef.current = props.value;
     {
       const current = stateRef.current;
       const pending = pendingValuesRef.current;
@@ -330,7 +336,7 @@ export const ComposerEditor = memo(
         pending.length = 0;
       } else if (pendingIndex >= 0) {
         pending.splice(0, pendingIndex + 1);
-      } else if (props.value !== serializeDocCached(current.doc)) {
+      } else if (valuePropChanged && props.value !== serializeDocCached(current.doc)) {
         const doc = parseDoc(props.value, parseOptions());
         historyRef.current.record(current, "other", { block: 0, offset: 0 });
         historyRef.current.breakGroup();
