@@ -16,6 +16,18 @@ import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
 import { asKnownContextRecord } from "../../web/lib/userMessageContext.ts";
 import { contextDetails, type AnnotationImage } from "./UserMessageContextDetails.tsx";
 import { openExternalUrl } from "./system.ts";
+import { reviewCommentContextLabel } from "../../web/lib/composerContextRecords.ts";
+import { openPullRequestLink } from "../../pullRequests/openPullRequestLink.ts";
+import type { IconName } from "../../ui/Icon.tsx";
+
+/** web PULL_REQUEST_CHIP_KINDS with PULL_REQUEST_STATE_PRESENTATION's glyphs. */
+const PULL_REQUEST_CHIP = {
+  open: { kind: "pr-open", icon: "git-pull-request-arrow", label: "Open" },
+  draft: { kind: "pr-draft", icon: "git-pull-request-draft", label: "Draft" },
+  merged: { kind: "pr-merged", icon: "git-merge", label: "Merged" },
+  closed: { kind: "pr-closed", icon: "git-pull-request-closed", label: "Closed" },
+  unknown: { kind: "pull-request", icon: "git-pull-request-arrow", label: "" },
+} as const satisfies Record<string, { kind: ChipPayload["kind"]; icon: IconName; label: string }>;
 
 type PreviewAnnotationRecord = Extract<NonNullable<ReturnType<typeof asKnownContextRecord>>, { kind: "preview-annotation" }>;
 
@@ -149,23 +161,35 @@ export function userMessageContextChip(
         icon: { kind: "lucide", name: "mouse-pointer-click" },
         onActivate: () => contextDetails.previewAnnotation(reference.contextId, record, context.annotationImage?.(record) ?? null),
       };
-    case "review-comment":
-      // A pull-request summary keeps its tooltip: web shows it as a PR link chip, not this popup.
-      return record.pullRequest
-        ? {
-            type: "chip",
-            kind: "pull-request",
-            label: record.label,
-            icon: { kind: "lucide", name: "git-pull-request" },
-            tooltip: [record.filePath, `${record.sectionTitle} · ${record.rangeLabel}`, record.text].filter(Boolean).join("\n"),
-          }
-        : {
+    case "review-comment": {
+      // web UserMessagePullRequestContextChip: a pull-request summary is a link
+      // chip in its state's colour and icon that opens the pull request.
+      const pullRequest = record.pullRequest;
+      if (pullRequest) {
+        const state = pullRequest.state === "open" && pullRequest.isDraft ? "draft" : pullRequest.state;
+        const presentation = PULL_REQUEST_CHIP[state as keyof typeof PULL_REQUEST_CHIP] ?? PULL_REQUEST_CHIP.unknown;
+        return {
+          type: "chip",
+          kind: presentation.kind,
+          label: reviewCommentContextLabel(record as never),
+          icon: { kind: "lucide", name: presentation.icon },
+          // web pullRequestContextKindLabel: "Merged pull request", or "Pull request" without a state.
+          tooltip: `${pullRequest.title}\n${presentation.label ? `${presentation.label} pull request` : "Pull request"} #${pullRequest.number}`,
+          onActivate: (modifiers) =>
+            openPullRequestLink(pullRequest.url, {
+              threadRef: { environmentId: context.environmentId, threadId: context.threadId },
+              modifiers,
+            }),
+        };
+      }
+      return {
             type: "chip",
             kind: "review-comment",
             label: record.label,
             icon: { kind: "lucide", name: "message-circle" },
             onActivate: () => contextDetails.reviewComment(reference.contextId, record, context.workspaceRoot),
           };
+    }
     default:
       return unavailable(reference.label);
   }

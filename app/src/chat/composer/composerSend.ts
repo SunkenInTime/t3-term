@@ -11,12 +11,6 @@ import {
   type ThreadPendingApproval,
 } from "@t3tools/client-runtime/state/thread-requests";
 import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
-import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
-import {
-  clampFileAttachmentUploadBytes,
-  fileAttachmentTooLargeMessage,
-  runAttachmentUploadCycle,
-} from "@t3tools/client-runtime/state/attachments";
 import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import {
   type AtomCommandResult,
@@ -30,7 +24,6 @@ import {
   MessageId,
   type ModelSelection,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-  PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
   type ProjectId,
   type ProviderInteractionMode,
   type RuntimeMode,
@@ -38,7 +31,6 @@ import {
   ThreadId,
   type UploadChatAttachment,
 } from "@t3tools/contracts";
-import { imageMimeType } from "@t3tools/shared/image";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
@@ -48,26 +40,32 @@ import {
   type ComposerAttachmentDraft,
   type DraftThreadEnvMode,
   addOptimisticMessage,
+  draftPendingSendAtom,
+  rememberSentImagePreview,
   clearComposerContent,
   deleteComposerDraft,
   readComposerDraft,
   draftIdOfKey,
   removeOptimisticMessages,
-  composerAttachmentEnvironment,
   restoreComposerContent,
 } from "../../state/composer.ts";
 import { buildComposerMessageContext } from "../../web/lib/composerContextRecords.ts";
+import type { ChatMessage } from "../../web/types.ts";
 import { approvalRedirectNotice } from "../../web/components/chat/composerSend.logic.ts";
 import type { TerminalContextDraft } from "../../web/lib/terminalContext.ts";
 import type { ReviewCommentContext } from "../../web/reviewCommentContext.ts";
-import {
-  environmentServerConfigsAtom,
-  environmentSession,
-  threadEnvironment,
-} from "../../state/environment.ts";
+import { environmentSession, threadEnvironment } from "../../state/environment.ts";
 import { routeAtom } from "../../state/ui.ts";
 import { startNewThread } from "../../palette/actions.ts";
 import { toast } from "../../ui/toast.tsx";
+import { DEV_SEND_HOLD } from "./devComposerAttachments.ts";
+import {
+  attachmentUploadStateAtom,
+  environmentSupportsUploads,
+  forgetAttachmentUploads,
+  uploadedTurnAttachment,
+  wireMimeType,
+} from "./attachmentUploads.ts";
 
 /** Sends in flight per draft key: the composer shows a spinner and refuses a second send. */
 export const composerSendingAtom = Atom.family((_draftKey: string) =>
@@ -97,29 +95,15 @@ function failureMessage(result: AtomCommandResult<unknown, unknown>): string {
 
 // ── Attachments ─────────────────────────────────────────────────────────
 
-type SupportedImageMimeType = (typeof PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES)[number];
-
-function supportedImageWireMimeType(attachment: ComposerAttachmentDraft): SupportedImageMimeType {
-  const inferred = imageMimeType(attachment);
-  const mimeType = PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES.find(
-    (type) => type === attachment.mimeType.toLowerCase() || type === inferred,
-  );
-  if (!mimeType) throw new Error(`Unsupported image type for '${attachment.name}'.`);
-  return mimeType;
-}
-
-function wireMimeType(attachment: ComposerAttachmentDraft): string {
-  return attachment.type === "image" ? supportedImageWireMimeType(attachment) : attachment.mimeType;
-}
-
 async function readDataUrl(attachment: ComposerAttachmentDraft): Promise<string> {
   const bytes = await Bun.file(attachment.path).arrayBuffer();
   return `data:${wireMimeType(attachment)};base64,${Buffer.from(bytes).toString("base64")}`;
 }
 
 /**
- * The attachments a turn sends: the server's upload records when it takes uploads (the
- * client-runtime upload cycle, bytes POSTed from disk), otherwise images inlined as data URLs.
+ * The attachments a turn sends: the server's upload records when it takes uploads (each
+ * staged item's upload, started when it was added; attachmentUploads.ts), otherwise images
+ * inlined as data URLs.
  */
 export async function prepareTurnAttachments(
   environmentId: EnvironmentId,
@@ -130,23 +114,14 @@ export async function prepareTurnAttachments(
     throw new Error(`You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`);
   }
   for (const attachment of attachments) {
-    if (!NodeFs.existsSync(attachment.path)) {
+    if (!NodeFs.existsSync(attachment.path) && appAtomRegistry.get(attachmentUploadStateAtom(attachment.id))?.status !== "ready") {
       throw new Error(`'${attachment.name}' is no longer on disk. Remove it and attach it again.`);
     }
   }
-  const config = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId) ?? null;
-  const capabilities = config?.environment.capabilities;
-  const supportsUploads = capabilities?.attachmentUploads === true;
-  const files = attachments.filter((attachment) => attachment.type === "file");
-  if (files.length > 0) {
-    if (!supportsUploads || capabilities?.fileAttachments === undefined) {
+  if (!environmentSupportsUploads(environmentId)) {
+    if (attachments.some((attachment) => attachment.type === "file")) {
       throw new Error("This server does not support file attachments.");
     }
-    const maxBytes = clampFileAttachmentUploadBytes(capabilities.fileAttachments.maxUploadBytes);
-    const oversized = files.find((file) => file.sizeBytes > maxBytes);
-    if (oversized) throw new Error(fileAttachmentTooLargeMessage(oversized.name, maxBytes));
-  }
-  if (!supportsUploads) {
     return Promise.all(
       attachments.map(async (attachment) => ({
         type: "image" as const,
@@ -157,73 +132,9 @@ export async function prepareTurnAttachments(
       })),
     );
   }
-
   const connection = appAtomRegistry.get(environmentSession.preparedConnectionValueAtom(environmentId));
   if (Option.isNone(connection)) throw new Error("The environment is not connected.");
-
-  const uploaded: Array<ChatAttachment> = [];
-  for (const attachment of attachments) {
-    const mimeType = wireMimeType(attachment);
-    const upload =
-      attachment.type === "image"
-        ? {
-            name: attachment.name,
-            sizeBytes: attachment.sizeBytes,
-            mimeType: supportedImageWireMimeType(attachment),
-          }
-        : { type: "file" as const, name: attachment.name, sizeBytes: attachment.sizeBytes, mimeType };
-    const result = await runAttachmentUploadCycle({
-      registry: appAtomRegistry,
-      createUploadUrl: composerAttachmentEnvironment.createUploadUrl,
-      remove: composerAttachmentEnvironment.remove,
-      environmentId,
-      upload,
-      resolveUploadUrl: (relativeUrl) => {
-        const current = appAtomRegistry.get(environmentSession.preparedConnectionValueAtom(environmentId));
-        return Option.isNone(current) ? null : resolveAssetUrl(current.value.httpBaseUrl, relativeUrl);
-      },
-      transport: (url) => {
-        const controller = new AbortController();
-        return {
-          done: (async () => {
-            const response = await fetch(url, {
-              method: "POST",
-              headers: { "Content-Type": mimeType },
-              body: Bun.file(attachment.path),
-              signal: controller.signal,
-            });
-            if (!response.ok) {
-              throw new Error(`Upload failed for '${attachment.name}' (${response.status}).`);
-            }
-          })(),
-          abort: () => controller.abort(),
-        };
-      },
-    });
-    if (result.status !== "uploaded") {
-      throw result.status === "failed" && result.error !== undefined
-        ? result.error
-        : new Error(`Upload failed for '${attachment.name}'.`);
-    }
-    uploaded.push(
-      attachment.type === "image"
-        ? {
-            type: "image",
-            id: result.attachmentId as never,
-            name: attachment.name,
-            mimeType,
-            sizeBytes: attachment.sizeBytes,
-          }
-        : {
-            type: "file",
-            id: result.attachmentId as never,
-            name: attachment.name,
-            mimeType,
-            sizeBytes: attachment.sizeBytes,
-          },
-    );
-  }
-  return uploaded;
+  return Promise.all(attachments.map((attachment) => uploadedTurnAttachment(environmentId, attachment)));
 }
 
 // ── Send ────────────────────────────────────────────────────────────────
@@ -270,6 +181,8 @@ export interface ComposerSendInput {
   /** The thread's pending approvals and those being answered, read live (web refs). */
   readonly readPendingApprovalIds?: () => ReadonlyArray<string>;
   readonly readRespondingApprovalIds?: () => ReadonlyArray<string>;
+  /** Work still landing in the draft (a pasted image being prepared). */
+  readonly readDraftBusy?: () => boolean;
   /** Implements a proposed plan (web: sourceProposedPlan). */
   readonly sourceProposedPlan?: { readonly threadId: ThreadId; readonly planId: string };
   /**
@@ -280,6 +193,11 @@ export interface ComposerSendInput {
   readonly background?: { readonly projectId: ProjectId | null };
   /** A run is in progress: a queued send waits behind it instead of showing in the timeline. */
   readonly running?: boolean;
+  /**
+   * web planComposerTurn compactBeforeSend: a stale Claude session runs /compact first and the
+   * message queues behind it, so the turn does not re-read the old history.
+   */
+  readonly compactBeforeSend?: boolean;
 }
 
 export async function sendComposerMessage(input: ComposerSendInput): Promise<boolean> {
@@ -304,10 +222,13 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
   const approvalsToDecline = input.approvalsToDecline ?? [];
   if (approvalsToDecline.length > 0 && input.respondToApproval) {
     const attachmentIdsAtSend = input.attachments.map((attachment) => attachment.id).join("\n");
+    // A paste still landing in the draft (an image being prepared) changes it too.
     const draftChangedSinceSend = () => {
+      if (input.readDraftBusy?.()) return true;
       const live = readComposerDraft(input.draftKey);
       return live.prompt !== input.prompt || live.attachments.map((attachment) => attachment.id).join("\n") !== attachmentIdsAtSend;
     };
+    const draftBeforeDecline = readComposerDraft(input.draftKey);
     const changedBeforeDecline = draftChangedSinceSend();
     const pendingIdsBeforeDecline = input.readPendingApprovalIds?.() ?? approvalsToDecline.map((approval) => approval.requestId);
     const responding = input.readRespondingApprovalIds?.() ?? [];
@@ -316,7 +237,9 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
       !changedBeforeDecline &&
       !approvalResponding &&
       (await declinePendingApprovals(approvalsToDecline, input.respondToApproval).catch(() => false));
-    const draftChanged = changedBeforeDecline || draftChangedSinceSend();
+    // web compares the whole draft too: a context chip or model change during the decline is
+    // an edit the user made after sending.
+    const draftChanged = changedBeforeDecline || draftChangedSinceSend() || readComposerDraft(input.draftKey) !== draftBeforeDecline;
     const approvalArrived = (input.readPendingApprovalIds?.() ?? []).some((id) => !pendingIdsBeforeDecline.includes(id));
     if (!declined || draftChanged || approvalArrived) {
       appAtomRegistry.set(sendingAtom, false);
@@ -332,10 +255,15 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
   const messageId = MessageId.make(newId());
   // web useComposerSend: the message shows in the thread at once, before uploads and the
   // server round trip; images preview from their local files until the server's copy lands.
+  // A new thread's id is chosen here, so its first message can show before the server has it:
+  // the draft docks into a thread-like view (web promotes the draft at once) and the thread's
+  // timeline keeps the message until the server's copy arrives.
+  const threadId = input.target.kind === "thread" ? input.target.threadId : ThreadId.make(newId());
+  const showsPendingDraft = input.target.kind === "draft" && !input.background;
   const optimisticThreadKey =
-    input.target.kind === "thread" ? scopedThreadKey(scopeThreadRef(input.environmentId, input.target.threadId)) : null;
-  if (optimisticThreadKey !== null) {
-    addOptimisticMessage(optimisticThreadKey, {
+    input.target.kind === "thread" || showsPendingDraft ? scopedThreadKey(scopeThreadRef(input.environmentId, threadId)) : null;
+  const queuesBehind = input.compactBeforeSend === true || (input.running === true && input.dispatchMode === "queue");
+  const optimisticMessage: ChatMessage = {
       id: messageId,
       role: "user",
       text: input.outgoingText,
@@ -356,11 +284,18 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
       streaming: false,
       createdAt,
       updatedAt: createdAt,
-      ...(input.running && input.dispatchMode === "queue"
+      ...(queuesBehind
         ? { inputIntent: "queued_turn" as const }
         : input.running && input.dispatchMode === "steer"
           ? { inputIntent: "steer" as const }
           : {}),
+  };
+  if (optimisticThreadKey !== null) addOptimisticMessage(optimisticThreadKey, optimisticMessage);
+  if (showsPendingDraft) {
+    appAtomRegistry.set(draftPendingSendAtom(input.draftKey), {
+      threadId,
+      message: optimisticMessage,
+      title: deriveThreadTitleSeed({ text: input.prompt, attachments: input.attachments }),
     });
   }
   let failure: string | null = null;
@@ -390,9 +325,11 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
       throw new Error("Select a base branch before sending in New worktree mode.");
     }
     const attachments = await prepareTurnAttachments(input.environmentId, input.attachments);
+    attachments.forEach((attachment, index) => {
+      const local = input.attachments[index];
+      if (local?.type === "image" && attachment.type === "image" && "id" in attachment && attachment.id) rememberSentImagePreview(attachment.id, local.path);
+    });
     const title = deriveThreadTitleSeed({ text: input.prompt, attachments: input.attachments });
-    const threadId =
-      input.target.kind === "thread" ? input.target.threadId : ThreadId.make(newId());
     const bootstrap =
       input.target.kind === "draft"
         ? {
@@ -418,6 +355,26 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
               : {}),
           }
         : undefined;
+    if (DEV_SEND_HOLD) await new Promise<never>(() => {});
+    if (input.compactBeforeSend && input.target.kind === "thread") {
+      const compact = await runAtomCommand(
+        appAtomRegistry,
+        threadEnvironment.startTurn,
+        {
+          environmentId: input.environmentId,
+          input: {
+            threadId,
+            message: { messageId: MessageId.make(newId()), role: "user", text: "/compact", attachments: [] },
+            modelSelection: input.modelSelection,
+            runtimeMode: input.runtimeMode,
+            interactionMode: input.interactionMode,
+            createdAt,
+          } as never,
+        },
+        { reportFailure: false },
+      );
+      if (compact._tag === "Failure") throw squashAtomCommandFailure(compact);
+    }
     const result = await runAtomCommand(
       appAtomRegistry,
       threadEnvironment.startTurn,
@@ -436,7 +393,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
           titleSeed: title,
           runtimeMode: input.runtimeMode,
           interactionMode: input.interactionMode,
-          dispatchMode: input.dispatchMode,
+          dispatchMode: input.compactBeforeSend ? "queue" : input.dispatchMode,
           ...(bootstrap ? { bootstrap } : {}),
           ...(input.sourceProposedPlan
             ? { sourceProposedPlan: input.sourceProposedPlan as never }
@@ -453,8 +410,10 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
       }
       throw squashAtomCommandFailure(result);
     }
+    // The turn owns the uploaded records now.
+    forgetAttachmentUploads(input.attachments.map((attachment) => attachment.id));
     // A queued message waits in the queue control, never in the timeline.
-    if (optimisticThreadKey !== null && input.running && input.dispatchMode === "queue") {
+    if (optimisticThreadKey !== null && queuesBehind) {
       removeOptimisticMessages(optimisticThreadKey, (message) => message.id === messageId);
     }
     if (input.background) {
@@ -471,6 +430,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
     return false;
   } finally {
     appAtomRegistry.set(sendingAtom, false);
+    if (showsPendingDraft) appAtomRegistry.set(draftPendingSendAtom(input.draftKey), null);
     if (failure !== null) {
       if (optimisticThreadKey !== null) removeOptimisticMessages(optimisticThreadKey, (message) => message.id === messageId);
       restoreComposerContent(input.draftKey, snapshot);

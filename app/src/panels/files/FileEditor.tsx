@@ -12,10 +12,22 @@
 // only the chunks near the viewport. A comment form or comment under a line is a
 // chunk boundary too, since nothing can sit inside a textarea.
 //
-// Limits, all from having no caret API: the caret cannot cross a chunk boundary
-// (arrow keys stop at the chunk's first and last line, Backspace at a chunk's start
-// does not join it to the previous line, a selection cannot span two chunks); Tab
-// moves focus instead of indenting; the list does not scroll to follow the caret.
+// The textarea reports no caret, so fileEditorCaret.ts models where it can be from the
+// changes, key releases and presses JavaScript sees. On that model: arrows, Home/End
+// and Ctrl+Home/End carry the caret across chunks, Backspace at a chunk's start and
+// Delete at its end join the lines, Tab and Shift+Tab indent and outdent like pierre,
+// the list follows the caret, and Escape or a press outside drops the selection and
+// focus. The caret is moved into another chunk with one synthetic click, or one key
+// where the spot is off screen: each simulated key costs a full window draw.
+//
+// Limits:
+//   - A selection cannot span two chunks: each textarea owns its selection and copy.
+//   - A held arrow auto-repeats with one key release, which proves only one step, so
+//     it stops at a chunk edge until another press or an edit pins the caret down.
+//     Shift+Tab needs the caret's line pinned down too (a click or an edit on it).
+//   - Tab or Shift+Tab over several selected lines does nothing (pierre indents each).
+//   - A join resets the undo history of the two chunks (their values come from props).
+//   - Tab's two spaces undo in two steps: gpuix never merges whitespace into one step.
 import type { EventPayload } from "@gpuix/native";
 import { useGpuixRequired, type KeyEvent } from "@gpuix/react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -34,12 +46,61 @@ import { useSyntaxTokens, type SyntaxToken } from "../code/highlighter.ts";
 import { useListWindow } from "../code/listWindow.ts";
 import { diffPalette, mix, mixLab, type DiffPalette } from "../code/palette.ts";
 import { DiffCommentAnnotation } from "../diff/DiffCommentAnnotation.tsx";
+import {
+  caretAfterChange,
+  caretAfterRelease,
+  columnsBetween,
+  exactCaret,
+  fileIndentUnit,
+  indentUnitFor,
+  isExact,
+  layoutChunk,
+  lineAt,
+  offsetAtColumn,
+  outdentLength,
+  rowAt,
+  unknownCaret,
+  type Caret,
+  type CaretAction,
+  type ChunkLayout,
+} from "./fileEditorCaret.ts";
 
 /** Lines per textarea. Small enough that the chunks on screen stay cheap to rebuild per keystroke. */
 const CHUNK = 64;
 const WINDOW = 24;
 const PADDING_Y = 8;
 const HIGHLIGHT_DEBOUNCE_MS = 150;
+const IS_MAC = process.platform === "darwin";
+const MOVE_KEYS = new Set(["left", "right", "up", "down", "home", "end"]);
+
+function repeatKey(key: string, count: number): string {
+  return Array.from({ length: count }, () => key).join(" ");
+}
+
+/** gpuix's automation surface, which NativeRenderer's type leaves out. */
+interface HostRenderer {
+  simulateKeystrokes?: (keys: string) => void;
+  simulateClick?: (x: number, y: number, button?: number, modifiers?: string) => void;
+}
+function hostRenderer(): HostRenderer | undefined {
+  return (Reflect.get(globalThis, "__gpuixRenderHost") as { renderer?: HostRenderer } | undefined)?.renderer;
+}
+
+/**
+ * Sends keystrokes through the focused element's input pipeline. They are moves, deletes
+ * and typed whitespace only, so the textarea records them in its undo history like typing
+ * and the clipboard is never touched.
+ */
+function simulateKeystrokes(keys: string): boolean {
+  const host = hostRenderer();
+  if (!host?.simulateKeystrokes) return false;
+  try {
+    host.simulateKeystrokes(keys);
+  } catch {
+    // It stops waiting after 2 s of slow frames; the keys still land.
+  }
+  return true;
+}
 
 interface Chunk {
   readonly id: number;
@@ -212,6 +273,9 @@ export function FileEditor(props: FileEditorProps) {
     const chunk = current.chunks[index];
     if (!chunk) return;
     const chunkStart = current.chunks.slice(0, index).reduce((sum, item) => sum + item.count, 0);
+    const previousValue = current.lines.slice(chunkStart, chunkStart + chunk.count).join("\n");
+    if (previousValue === value) return;
+    noteChange(chunk.id, previousValue, value);
     const replacement = value.split("\n");
     const lines = [...current.lines.slice(0, chunkStart), ...replacement, ...current.lines.slice(chunkStart + chunk.count)];
     const chunks = current.chunks.map((item, candidate) => (candidate === index ? { ...item, count: replacement.length } : item));
@@ -392,14 +456,503 @@ export function FileEditor(props: FileEditorProps) {
   const selectedRange = selection ? { from: Math.min(selection.anchor, selection.focus), to: Math.max(selection.anchor, selection.focus) } : null;
   const revealColor = mix(theme.codeBackground.slice(0, 7), theme.primary.slice(0, 7), 0.18);
 
-  // web installFileEditorDismissal: Escape in the editor, or a press outside it, drops the
-  // line selection and the editor's focus, unless a comment form is open.
+  /** The editor's root element. */
   const rootRef = useRef<{ id: number } | null>(null);
+
+  // ── The caret (fileEditorCaret.ts) ──
+  // Refs, not state: nothing here is drawn by React, and typing must not re-render for it.
+  const caretRef = useRef<Caret | null>(null);
+  /** Textarea element id by chunk id, for moving focus between chunks. */
+  const textareaIds = useRef(new Map<number, number>());
+  /** Bumping a chunk's generation remounts its textarea: the one way to drop the selection of a textarea that no longer has focus. */
+  const [generations, setGenerations] = useState<ReadonlyMap<number, number>>(() => new Map());
+  // Backspace and Delete change the text unless the caret is at the very start or end, so
+  // a release with no change since the press began proves the caret is at that edge. Every
+  // event that starts a press (a key-down JavaScript sees, a mouse press, a move key's
+  // release) resets the baseline.
+  const changeSerial = useRef(0);
+  const pressBaseline = useRef(0);
+  /** Typed spaces a keystroke plan sent: their key-downs come back and are not the user's. */
+  const simulatedKeyDowns = useRef(0);
+  /** A plan in flight: its intermediate changes leave the model alone until the last one lands. */
+  const planRef = useRef<{ chunkId: number; text: string; caret: Caret; changesLeft: number } | null>(null);
+  const pressRef = useRef<{ chunkId: number; offset: number | null; clickCount: number; shift: boolean; resolved: boolean } | null>(null);
+  const annotationHeights = useRef(new Map<string, number>());
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const geometry = useRef({ wrap: props.wrap, codeWidth, ch, start, scrollX: clampedScrollX, maxScrollX });
+  geometry.current = { wrap: props.wrap, codeWidth, ch, start, scrollX: clampedScrollX, maxScrollX };
+
+  const chunkIndexOf = (chunkId: number) => docRef.current.chunks.findIndex((chunk) => chunk.id === chunkId);
+  const chunkStartOf = (index: number) => docRef.current.chunks.slice(0, index).reduce((sum, chunk) => sum + chunk.count, 0);
+  const itemIndexOf = (chunkId: number) => itemsRef.current.findIndex((item) => item.type === "chunk" && item.chunk.id === chunkId);
+  const layoutOf = (index: number): ChunkLayout => {
+    const current = docRef.current;
+    const begin = chunkStartOf(index);
+    const { wrap, codeWidth: width, ch: charWidth } = geometry.current;
+    return layoutChunk(
+      current.lines.slice(begin, begin + (current.chunks[index]?.count ?? 0)),
+      wrap ? (line) => gpuiWrapBoundaries(line, width, charWidth) : () => [],
+    );
+  };
+  const simulate = (keys: string): boolean => {
+    if (!keys) return true;
+    const typed = keys.split(" ").filter((key) => key.startsWith("space")).length;
+    simulatedKeyDowns.current += typed;
+    if (simulateKeystrokes(keys)) return true;
+    simulatedKeyDowns.current -= typed;
+    return false;
+  };
+
+  const noteChange = (chunkId: number, previous: string, next: string) => {
+    changeSerial.current += 1;
+    const plan = planRef.current;
+    if (plan && plan.chunkId === chunkId) {
+      plan.changesLeft -= 1;
+      if (next === plan.text) {
+        planRef.current = null;
+        caretRef.current = plan.caret;
+        scheduleFollow();
+        return;
+      }
+      if (plan.changesLeft > 0) return;
+      planRef.current = null;
+    }
+    caretRef.current = caretAfterChange(caretRef.current, chunkId, previous, next).caret;
+    scheduleFollow();
+  };
+
+  // ── Following the caret ──
+  const followTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (followTimer.current) clearTimeout(followTimer.current);
+  }, []);
+  /** Once per burst of events: a typing burst asks for the list position once. */
+  const scheduleFollow = () => {
+    if (followTimer.current) return;
+    followTimer.current = setTimeout(() => {
+      followTimer.current = null;
+      followRef.current();
+    }, 0);
+  };
+  const itemHeight = (item: EditorItem): number => {
+    if (item.type === "pad") return PADDING_Y;
+    if (item.type === "annotation") return annotationHeights.current.get(item.key) ?? CODE_LINE_HEIGHT * 4;
+    return layoutOf(item.index).rows.length * CODE_LINE_HEIGHT;
+  };
+  /** Scrolls the list the least that shows `height` px at `y` inside item `itemIndex`; true if it scrolled. */
+  const ensureVisible = (itemIndex: number, y: number, height: number): boolean => {
+    const list = listRef.current;
+    const top = list ? renderer.getListScrollTop?.(list.id) : null;
+    if (!list || !top) return false;
+    const [anchorIndex = 0, anchorOffset = 0, viewport = 0] = top;
+    const all = itemsRef.current;
+    // Target top minus viewport top.
+    let distance: number;
+    if (anchorIndex >= all.length) {
+      distance = y + viewport;
+      for (let index = itemIndex; index < all.length; index += 1) distance -= itemHeight(all[index]!);
+    } else if (itemIndex >= anchorIndex) {
+      distance = y - anchorOffset;
+      for (let index = anchorIndex; index < itemIndex && distance <= viewport; index += 1) distance += itemHeight(all[index]!);
+    } else {
+      distance = y - anchorOffset;
+      for (let index = itemIndex; index < anchorIndex && distance >= -height; index += 1) distance -= itemHeight(all[index]!);
+    }
+    let offset: number | null = null;
+    if (distance < 0) offset = y;
+    else if (distance + height > viewport) offset = y + height - viewport;
+    if (offset === null) return false;
+    const windowStart = geometry.current.start;
+    if (itemIndex < windowStart || itemIndex >= windowStart + WINDOW) reset(Math.max(0, itemIndex - 2));
+    renderer.scrollToItem?.(list.id, itemIndex, offset);
+    return true;
+  };
+  const followRef = useRef(() => {});
+  followRef.current = () => {
+    const caret = caretRef.current;
+    if (!caret || caret.guess === null) return;
+    const index = chunkIndexOf(caret.chunkId);
+    const itemIndex = itemIndexOf(caret.chunkId);
+    if (index < 0 || itemIndex < 0) return;
+    const layout = layoutOf(index);
+    const offset = Math.min(caret.guess, layout.text.length);
+    const row = rowAt(layout, offset);
+    ensureVisible(itemIndex, row * CODE_LINE_HEIGHT, CODE_LINE_HEIGHT);
+    const { wrap, scrollX: left, codeWidth: width, ch: charWidth, maxScrollX: maxLeft } = geometry.current;
+    if (wrap) return;
+    const x = columnsBetween(layout.text, layout.rows[row]!.start, offset) * charWidth;
+    if (x < left) setScrollX(Math.max(0, x - 4 * charWidth));
+    else if (x > left + width - charWidth) setScrollX(Math.min(maxLeft, x - width + 5 * charWidth));
+  };
+
+  // ── Putting the caret somewhere ──
+  // Every simulated key costs a full window draw before it is dispatched (GPUI draws a
+  // dirty window ahead of each key event): ~90 ms each in the hidden automation window
+  // here, and simulateKeystrokes stops waiting after 2 s. So the caret is placed with one
+  // synthetic click where the spot is on screen, and with one key otherwise.
+  /** The window point that puts the caret at `offset`, if that spot is on screen and nothing covers it. */
+  const clickPoint = (chunkId: number, offset: number, layout: ChunkLayout): { x: number; y: number } | null => {
+    const id = textareaIds.current.get(chunkId);
+    const bounds = id === undefined ? null : renderer.getElementBounds?.(id);
+    // The editor's root: a <virtual-list> registers no painted box of its own.
+    const view = rootRef.current ? renderer.getElementBounds?.(rootRef.current.id) : null;
+    if (id === undefined || !bounds || !view) return null;
+    const row = rowAt(layout, offset, "after");
+    const charWidth = geometry.current.ch;
+    // A quarter character in: the closest caret position to that x is `offset` itself.
+    const x = bounds.x + columnsBetween(layout.text, layout.rows[row]!.start, offset) * charWidth + charWidth / 4;
+    const y = bounds.y + row * CODE_LINE_HEIGHT + CODE_LINE_HEIGHT / 2;
+    if (y < view.y + 2 || y > view.y + view.height - 2) return null;
+    const hits = hostRenderer()?.simulateClick ? renderer.getElementsAt?.(x, y) : null;
+    return hits && hits[0] === id ? { x, y } : null;
+  };
+  const click = (point: { x: number; y: number }) => {
+    try {
+      hostRenderer()?.simulateClick?.(point.x, point.y, 0);
+    } catch {
+      // A slow frame times the call out; the click still lands.
+    }
+  };
+  /**
+   * Focuses a chunk's textarea without scrolling: focusElement scrolls the virtual list
+   * to put the row's top at the viewport top (renderer.rs request_focus →
+   * reveal_virtual_list_ancestor), so the list position is put back after it.
+   */
+  const focusChunk = (chunkId: number): boolean => {
+    const id = textareaIds.current.get(chunkId);
+    if (id === undefined) return false;
+    if (renderer.getFocusedElementId?.() === id) return true;
+    const list = listRef.current;
+    const top = list ? renderer.getListScrollTop?.(list.id) : null;
+    renderer.focusElement?.(id);
+    if (list && top) {
+      const all = itemsRef.current;
+      if (top[0]! < all.length) renderer.scrollToItem?.(list.id, top[0]!, top[1]!);
+      else renderer.scrollToItem?.(list.id, all.length - 1, PADDING_Y - top[2]!);
+    }
+    return renderer.getFocusedElementId?.() === id;
+  };
+  /**
+   * Puts the caret of chunk `chunkId` at `offset`: scrolls it into view, then clicks
+   * there. Where no click can reach it, focuses the chunk and sends `fallback` (one key),
+   * which leaves the caret at `fallbackOffset`.
+   */
+  const placeCaret = (chunkId: number, offset: number, fallback: string, fallbackOffset: number, attempt = 0) => {
+    const index = chunkIndexOf(chunkId);
+    const itemIndex = itemIndexOf(chunkId);
+    if (index < 0 || itemIndex < 0) return;
+    const layout = layoutOf(index);
+    const scrolled = ensureVisible(itemIndex, rowAt(layout, offset, "after") * CODE_LINE_HEIGHT, CODE_LINE_HEIGHT);
+    if ((scrolled || !textareaIds.current.has(chunkId)) && attempt < 6) {
+      // The scroll lands with the next frame; aim after it.
+      setTimeout(() => placeCaretRef.current(chunkId, offset, fallback, fallbackOffset, attempt + 1), 40);
+      return;
+    }
+    pressBaseline.current = changeSerial.current;
+    const point = clickPoint(chunkId, offset, layout);
+    if (point) {
+      click(point);
+      caretRef.current = exactCaret(chunkId, offset);
+      return;
+    }
+    if (!focusChunk(chunkId)) return;
+    caretRef.current = simulate(fallback) ? exactCaret(chunkId, fallbackOffset) : null;
+    scheduleFollow();
+  };
+  const placeCaretRef = useRef(placeCaret);
+  placeCaretRef.current = placeCaret;
+
+  const cross = (index: number, action: CaretAction) => {
+    const chunks = docRef.current.chunks;
+    const upward = action.type === "crossUp" || action.type === "crossLeft";
+    const targetIndex = upward ? index - 1 : index + 1;
+    const target = chunks[targetIndex];
+    if (!target) return;
+    const layout = layoutOf(targetIndex);
+    const length = layout.text.length;
+    if (action.type === "crossLeft") return placeCaret(target.id, length, "cmd-down", length);
+    if (action.type === "crossRight") return placeCaret(target.id, 0, "cmd-up", 0);
+    // Up and Down keep the caret's column, as they do inside a chunk.
+    const offset = offsetAtColumn(layout, upward ? layout.rows.length - 1 : 0, action.column);
+    if (upward) placeCaret(target.id, offset, "cmd-down", length);
+    else placeCaret(target.id, offset, "cmd-up", 0);
+  };
+
+  /** Ctrl+Home / Ctrl+End: the textarea binds document start and end to Cmd+Up/Down only. */
+  const toDocumentEdge = (end: boolean) => {
+    const chunks = docRef.current.chunks;
+    const index = end ? chunks.length - 1 : 0;
+    const target = chunks[index];
+    if (!target || !focusChunk(target.id)) return;
+    caretRef.current = simulate(end ? "cmd-down" : "cmd-up") ? exactCaret(target.id, end ? layoutOf(index).text.length : 0) : null;
+    pressBaseline.current = changeSerial.current;
+    scheduleFollow();
+  };
+
+  // ── Backspace at a chunk's start, Delete at its end ──
+  const pendingJoin = useRef<{ doc: EditorDoc; chunkId: number; moved: string } | null>(null);
+  /**
+   * Joins the first line of the lower chunk onto the last line of the upper one. Both
+   * textareas get new values, which resets their undo history (a value from props
+   * replaces the textarea's text: input.rs set_external_text).
+   */
+  const join = (index: number, backward: boolean) => {
+    const current = docRef.current;
+    const upper = backward ? index - 1 : index;
+    const lower = upper + 1;
+    const upperChunk = current.chunks[upper];
+    const lowerChunk = current.chunks[lower];
+    if (!upperChunk || !lowerChunk) return;
+    const lowerStart = chunkStartOf(lower);
+    const moved = current.lines[lowerStart] ?? "";
+    const lines = [...current.lines.slice(0, lowerStart - 1), (current.lines[lowerStart - 1] ?? "") + moved, ...current.lines.slice(lowerStart + 1)];
+    const chunks = current.chunks.flatMap((chunk, candidate): Chunk[] => {
+      if (candidate === lower) return chunk.count > 1 ? [{ ...chunk, count: chunk.count - 1 }] : [];
+      // A one-line chunk joined away hands its comments to the line it joined.
+      if (candidate === upper && lowerChunk.count === 1 && lowerChunk.entries.length > 0) return [{ ...chunk, entries: [...chunk.entries, ...lowerChunk.entries] }];
+      return [chunk];
+    });
+    const text = lines.join(current.eol);
+    const next: EditorDoc = { source: text, lines, eol: current.eol, chunks };
+    changeSerial.current += 1;
+    commitDoc(next);
+    props.onEdit(text);
+    resendComments(next);
+    pendingJoin.current = { doc: next, chunkId: upperChunk.id, moved };
+  };
+  useLayoutEffect(() => {
+    const pending = pendingJoin.current;
+    if (!pending || pending.doc !== doc) return;
+    pendingJoin.current = null;
+    // This commit flushed the new values; a click or key sent after it meets the updated textarea.
+    setTimeout(() => {
+      const index = chunkIndexOf(pending.chunkId);
+      if (index < 0) return;
+      const length = layoutOf(index).text.length;
+      placeCaretRef.current(pending.chunkId, length - pending.moved.length, "cmd-down", length);
+    }, 0);
+  }, [doc]);
+
+  // ── Tab and Shift+Tab (pierre's indent and outdent commands) ──
+  const indent = (index: number, outdent: boolean) => {
+    const chunk = docRef.current.chunks[index];
+    if (!chunk) return;
+    const layout = layoutOf(index);
+    const known = caretRef.current;
+    const caret = known && known.chunkId === chunk.id ? known : unknownCaret(chunk.id, layout.text.length);
+    const typeUnit = (unit: string) => simulate(unit === "\t" ? "space->\t" : repeatKey("space", unit.length));
+    const singleLine = typeof caret.anchor === "number" && isExact(caret) && lineAt(layout, caret.anchor) === lineAt(layout, caret.lo);
+    if (!outdent) {
+      if (caret.anchor === null || singleLine) {
+        // The unit depends only on the caret's line; with no line known, on the file's indent.
+        // Typing it replaces a selection inside one line, as pierre does.
+        const line = caret.guess === null ? null : layout.lines[lineAt(layout, caret.guess)];
+        typeUnit(line == null ? fileIndentUnit(docRef.current.lines) : indentUnitFor(line));
+      }
+      // A selection over several lines (pierre indents each line) is left alone: it would take keys per line.
+      return;
+    }
+    // Outdent edits the caret's line: only when that line is proven.
+    if (caret.anchor !== null || !isExact(caret)) return;
+    const line = lineAt(layout, caret.lo);
+    const lineStart = layout.lineStarts[line]!;
+    const remove = outdentLength(layout.lines[line] ?? "");
+    if (remove === 0) return;
+    if (rowAt(layout, caret.lo, "after") === rowAt(layout, lineStart)) {
+      if (!simulate("home")) return;
+    } else {
+      const point = clickPoint(chunk.id, lineStart, layout);
+      if (!point) return;
+      click(point);
+    }
+    const lines = layout.lines.map((text, candidate) => (candidate === line ? text.slice(remove) : text));
+    planRef.current = { chunkId: chunk.id, text: lines.join("\n"), caret: exactCaret(chunk.id, lineStart), changesLeft: remove };
+    simulate(repeatKey("delete", remove));
+    // pierre keeps the caret where it was in the line's text.
+    const target = Math.max(lineStart, caret.lo - remove);
+    if (target === lineStart) return;
+    const { wrap, codeWidth: width, ch: charWidth } = geometry.current;
+    const point = clickPoint(chunk.id, target, layoutChunk(lines, wrap ? (candidate) => gpuiWrapBoundaries(candidate, width, charWidth) : () => []));
+    if (point) {
+      click(point);
+      planRef.current = { ...planRef.current, caret: exactCaret(chunk.id, target) };
+    }
+  };
+
+  // ── Presses on a chunk ──
+  const offsetAtPoint = (index: number, x: number, y: number): number | null => {
+    const chunk = docRef.current.chunks[index];
+    const id = chunk ? textareaIds.current.get(chunk.id) : undefined;
+    const bounds = id === undefined ? null : renderer.getElementBounds?.(id);
+    if (!bounds) return null;
+    const layout = layoutOf(index);
+    const row = Math.max(0, Math.min(layout.rows.length - 1, Math.floor((y - bounds.y) / CODE_LINE_HEIGHT)));
+    return offsetAtColumn(layout, row, (x - bounds.x) / geometry.current.ch);
+  };
+  /** A press that was never released over its chunk (a drag that ended outside it) leaves the caret unknown. */
+  const settlePress = () => {
+    const press = pressRef.current;
+    if (!press || press.resolved) return;
+    pressRef.current = null;
+    const index = chunkIndexOf(press.chunkId);
+    if (index >= 0) caretRef.current = unknownCaret(press.chunkId, layoutOf(index).text.length);
+  };
+  /** Drops the selection a chunk keeps after focus moved to another chunk. */
+  const collapseIn = (chunkId: number, returnTo: number) => {
+    if (!focusChunk(chunkId)) return;
+    simulate("left");
+    focusChunk(returnTo);
+  };
+  const press = (index: number, phase: "down" | "up", event: EventPayload) => {
+    const chunk = docRef.current.chunks[index];
+    if (!chunk || (event.button ?? 0) !== 0) return;
+    const offset = offsetAtPoint(index, Number(event.x ?? 0), Number(event.y ?? 0));
+    const layout = layoutOf(index);
+    if (phase === "down") {
+      pressBaseline.current = changeSerial.current;
+      const previous = caretRef.current;
+      if (previous && previous.chunkId !== chunk.id && previous.anchor !== null) collapseIn(previous.chunkId, chunk.id);
+      const clickCount = Number(event.clickCount ?? 1);
+      const shift = event.modifiers?.shift === true;
+      pressRef.current = { chunkId: chunk.id, offset, clickCount, shift, resolved: false };
+      if (offset === null) caretRef.current = unknownCaret(chunk.id, layout.text.length);
+      else if (clickCount >= 3) caretRef.current = { ...exactCaret(chunk.id, layout.text.length), anchor: 0 };
+      else if (clickCount === 2) {
+        // A double press selects the word: somewhere on the pressed line.
+        const line = lineAt(layout, offset);
+        const lineStart = layout.lineStarts[line]!;
+        caretRef.current = { chunkId: chunk.id, lo: lineStart, hi: lineStart + layout.lines[line]!.length, guess: offset, anchor: "maybe" };
+      } else if (shift) {
+        const anchor = previous && previous.chunkId === chunk.id ? (previous.anchor ?? (isExact(previous) ? previous.lo : "maybe")) : "maybe";
+        caretRef.current = { chunkId: chunk.id, lo: offset, hi: offset, guess: offset, anchor: anchor === offset ? null : anchor };
+      } else caretRef.current = exactCaret(chunk.id, offset);
+      return;
+    }
+    const down = pressRef.current;
+    if (!down || down.chunkId !== chunk.id) return;
+    down.resolved = true;
+    if (down.clickCount !== 1 || offset === null || down.offset === null || offset === down.offset) return;
+    // A drag: the caret is where it ended, the selection's other end where it began.
+    const anchor = down.shift ? (caretRef.current?.anchor ?? down.offset) : down.offset;
+    caretRef.current = { chunkId: chunk.id, lo: offset, hi: offset, guess: offset, anchor: anchor === offset ? null : anchor };
+  };
+
+  // ── Keys ──
+  const keyDown = (index: number, event: KeyEvent) => {
+    if (event.key === "space" && simulatedKeyDowns.current > 0) {
+      simulatedKeyDowns.current -= 1;
+      return;
+    }
+    settlePress();
+    pressBaseline.current = changeSerial.current;
+    const modifiers = event.modifiers;
+    const shortcut = IS_MAC ? modifiers?.cmd === true : modifiers?.ctrl === true;
+    // Ctrl/Cmd+Enter belongs to the composer, not to a file.
+    if (event.key === "enter") event.stopPropagation();
+    if (event.key === "escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      dismissRef.current(true);
+      return;
+    }
+    if (event.key === "tab" && !modifiers?.ctrl && !modifiers?.alt && !modifiers?.cmd) {
+      // Tab indents instead of moving focus, like pierre's editor.
+      event.preventDefault();
+      event.stopPropagation();
+      indent(index, modifiers?.shift === true);
+      return;
+    }
+    if ((event.key === "home" || event.key === "end") && shortcut && !modifiers?.shift) {
+      event.preventDefault();
+      event.stopPropagation();
+      toDocumentEdge(event.key === "end");
+    }
+  };
+  const keyUp = (index: number, event: KeyEvent) => {
+    const chunk = docRef.current.chunks[index];
+    if (!chunk) return;
+    settlePress();
+    const key = event.key ?? "";
+    const modifiers = event.modifiers;
+    const modified = modifiers?.ctrl === true || modifiers?.alt === true || modifiers?.cmd === true;
+    if ((key === "backspace" || key === "delete") && !modified && !modifiers?.shift) {
+      const unchanged = changeSerial.current === pressBaseline.current;
+      pressBaseline.current = changeSerial.current;
+      // Nothing changed: the caret was at the chunk's first (last) character with no selection.
+      if (unchanged) join(index, key === "backspace");
+      return;
+    }
+    const layout = layoutOf(index);
+    const known = caretRef.current;
+    const base = known && known.chunkId === chunk.id ? known : unknownCaret(chunk.id, layout.text.length);
+    const { caret, action } = caretAfterRelease(
+      base,
+      {
+        key,
+        shift: modifiers?.shift === true,
+        word: IS_MAC ? modifiers?.alt === true : modifiers?.ctrl === true,
+        shortcut: IS_MAC ? modifiers?.cmd === true : modifiers?.ctrl === true,
+        modified,
+      },
+      layout,
+    );
+    caretRef.current = caret;
+    if (MOVE_KEYS.has(key)) pressBaseline.current = changeSerial.current;
+    if (action) cross(index, action);
+    else if (MOVE_KEYS.has(key)) scheduleFollow();
+  };
+
+  const chunkApiRef = useRef<ChunkApi>(null as never);
+  chunkApiRef.current = {
+    change: editChunk,
+    keyDown,
+    keyUp,
+    press,
+    register: (chunkId, id) => {
+      if (id === null) textareaIds.current.delete(chunkId);
+      else textareaIds.current.set(chunkId, id);
+    },
+  };
+  const chunkApi = useMemo<ChunkApi>(
+    () => ({
+      change: (index, value) => chunkApiRef.current.change(index, value),
+      keyDown: (index, event) => chunkApiRef.current.keyDown(index, event),
+      keyUp: (index, event) => chunkApiRef.current.keyUp(index, event),
+      press: (index, phase, event) => chunkApiRef.current.press(index, phase, event),
+      register: (chunkId, id) => chunkApiRef.current.register(chunkId, id),
+    }),
+    [],
+  );
+
+  // web installFileEditorDismissal: Escape in the editor, or a press outside it, drops the
+  // line selection and the editor's own selection and focus, unless a comment form is open.
   const dismissRef = useRef<(refocus: boolean) => void>(() => {});
   dismissRef.current = (refocus) => {
     if (hasOpenCommentForm) return;
     setSelection(null);
+    settlePress();
+    const caret = caretRef.current;
+    caretRef.current = null;
+    const own = new Set(textareaIds.current.values());
+    const focused = renderer.getFocusedElementId?.() ?? null;
+    const caretTextarea = caret ? textareaIds.current.get(caret.chunkId) : undefined;
+    // A textarea paints its selection whether or not it has focus (input.rs prepaint), so
+    // a selection has to be collapsed, which takes a key sent to the focused textarea.
+    if (caret && caret.anchor !== null && caretTextarea !== undefined) {
+      if (focused === caretTextarea) simulate("left");
+      else if (focused === null || own.has(focused)) {
+        if (focusChunk(caret.chunkId)) simulate("left");
+      } else {
+        // Focus went to another control: keys can't reach the textarea, so remount it.
+        setGenerations((current) => new Map(current).set(caret.chunkId, (current.get(caret.chunkId) ?? 0) + 1));
+      }
+    }
     if (refocus && rootRef.current) renderer.focusElement?.(rootRef.current.id);
+    else {
+      const now = renderer.getFocusedElementId?.() ?? null;
+      if (now !== null && own.has(now)) renderer.blur?.();
+    }
   };
   const dismiss = useCallback((refocus: boolean) => dismissRef.current(refocus), []);
 
@@ -414,7 +967,10 @@ export function FileEditor(props: FileEditorProps) {
         const height = Math.floor(Number(event.height ?? 0));
         if (width > 0 && (width !== size.width || height !== size.height)) setSize({ width, height });
       }}
-      onMouseUp={pointerUp}
+      onMouseUp={() => {
+        pointerUp();
+        settlePress();
+      }}
       onScroll={(event: EventPayload) => {
         if (props.wrap) return;
         const deltaX = Number(event.deltaX ?? 0);
@@ -444,6 +1000,9 @@ export function FileEditor(props: FileEditorProps) {
                 // pierre keeps the commented lines selected while the form is open, form included.
                 <div
                   key={item.key}
+                  onLayout={(event) => {
+                    annotationHeights.current.set(item.key, Number(event.height ?? 0));
+                  }}
                   style={{ display: "flex", flexDirection: "row", width: size.width, backgroundColor: hasDraft && selectedRange ? palette.selectedLine : theme.codeBackground }}
                 >
                   <div style={{ width: gutter, flexShrink: 0, backgroundColor: hasDraft && selectedRange ? palette.selectedGutter : theme.codeBackground }} />
@@ -471,6 +1030,8 @@ export function FileEditor(props: FileEditorProps) {
               <ChunkView
                 key={item.key}
                 index={item.index}
+                chunkId={item.chunk.id}
+                generation={generations.get(item.chunk.id) ?? 0}
                 start={item.start}
                 lines={doc.lines.slice(item.start, item.start + item.chunk.count)}
                 tokensFor={tokensFor}
@@ -490,8 +1051,7 @@ export function FileEditor(props: FileEditorProps) {
                 hoveredLine={gutterInput.current.enabled && hoveredLine !== null && hoveredLine > item.start && hoveredLine <= item.start + item.chunk.count ? hoveredLine : null}
                 hoverApi={hoverApi}
                 gutterApi={gutterApi}
-                onChange={editChunk}
-                onEscape={dismiss}
+                api={chunkApi}
               />
             );
           })}
@@ -513,8 +1073,20 @@ interface HoverApi {
   leave(line: number, via: "gutter" | "button"): void;
 }
 
+/** What a chunk's textarea reports to the editor; one stable object, so chunks stay memoized. */
+interface ChunkApi {
+  change(index: number, value: string): void;
+  keyDown(index: number, event: KeyEvent): void;
+  keyUp(index: number, event: KeyEvent): void;
+  press(index: number, phase: "down" | "up", event: EventPayload): void;
+  register(chunkId: number, elementId: number | null): void;
+}
+
 const ChunkView = memo(function ChunkView(props: {
   index: number;
+  chunkId: number;
+  /** Bumped to remount the textarea. */
+  generation: number;
   start: number;
   lines: ReadonlyArray<string>;
   tokensFor: (index: number) => ReadonlyArray<SyntaxToken> | null;
@@ -534,9 +1106,7 @@ const ChunkView = memo(function ChunkView(props: {
   hoveredLine: number | null;
   hoverApi: HoverApi;
   gutterApi: GutterApi;
-  onChange: (index: number, value: string) => void;
-  /** Escape in this chunk's textarea (installFileEditorDismissal). */
-  onEscape: (refocus: boolean) => void;
+  api: ChunkApi;
 }) {
   const { palette } = props;
   const value = props.lines.join("\n");
@@ -569,23 +1139,23 @@ const ChunkView = memo(function ChunkView(props: {
         );
       })}
       {/* The editing layer: the same lines, same metrics, transparent text. */}
-      <div style={{ position: "absolute", top: 0, bottom: 0, left: textLeft, width: props.codeWidth, overflow: "hidden" }}>
+      <div
+        // The textarea reports no caret; where presses land is part of how the editor tracks it.
+        onMouseDown={(event: EventPayload) => props.api.press(props.index, "down", event)}
+        onMouseUp={(event: EventPayload) => props.api.press(props.index, "up", event)}
+        style={{ position: "absolute", top: 0, bottom: 0, left: textLeft, width: props.codeWidth, overflow: "hidden" }}
+      >
         <textarea
+          key={props.generation}
+          ref={(instance: { id: number } | null) => props.api.register(props.chunkId, instance?.id ?? null)}
           testId={`file-editor-chunk-${props.index}`}
           value={value}
           // The box, not the row count, sizes it (an explicit height wins over the rows).
           minRows={1}
           maxRows={100_000}
-          onChange={(event: EventPayload) => props.onChange(props.index, String(event.value ?? ""))}
-          onKeyDown={(event: KeyEvent) => {
-            // Ctrl/Cmd+Enter belongs to the composer, not to a file.
-            if (event.key === "enter") event.stopPropagation();
-            if (event.key === "escape") {
-              event.preventDefault();
-              event.stopPropagation();
-              props.onEscape(true);
-            }
-          }}
+          onChange={(event: EventPayload) => props.api.change(props.index, String(event.value ?? ""))}
+          onKeyDown={(event: KeyEvent) => props.api.keyDown(props.index, event)}
+          onKeyUp={(event: KeyEvent) => props.api.keyUp(props.index, event)}
           theme={{ caret: props.caret }}
           style={{
             position: "absolute",

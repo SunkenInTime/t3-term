@@ -10,7 +10,8 @@ import { collectComposerContextReferences, replaceComposerContextReferences } fr
 import { buildNewThreadLink, PROMPT_LINK_MAX_PROMPT_LENGTH } from "@t3tools/shared/promptLinks";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
-import { createContext, memo, use, useMemo, useState, type ReactNode } from "react";
+import type { PublicInstance } from "@gpuix/react";
+import { createContext, memo, use, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { environmentSession, environmentThreadShells } from "../../state/environment.ts";
 import { timelineAssets } from "../../state/timeline.ts";
@@ -26,6 +27,7 @@ import { isFileAttachment, isImageAttachment, isVideoAttachment, videoMimeType, 
 import { VideoFrame } from "../media/VideoFallback.tsx";
 import { rightPanelActions, threadKeyOf } from "../../state/rightPanel.ts";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
+import { useFindFold } from "./findReveal.ts";
 import type { ChipPayload } from "../markdown/MarkdownChips.tsx";
 import { userMessageContextChip } from "./userMessageContextChips.ts";
 import { ContextPressProbe } from "./UserMessageContextDetails.tsx";
@@ -33,6 +35,7 @@ import { SNAP_SHOT_FRAME, SnapShotAttachmentDetails } from "./SnapShotAttachment
 
 /** Context kinds whose chip opens a details popup anchored at the press. */
 const POPUP_CONTEXT_KINDS = new Set(["terminal", "element", "review-comment", "preview-annotation"]);
+import { sentImagePreviewPath } from "../../state/composer.ts";
 import { resolvePreviewAnnotationImage } from "../../web/components/chat/TimelineUserMessageRow.logic.ts";
 import { WorkflowOpeningBlock } from "./WorkflowOpeningBlock.tsx";
 import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
@@ -226,6 +229,7 @@ function UserMessageMeta({ row, visible, copyText, promptLink, leading }: { row:
 function AutomationMessageRow({ row }: { row: MessageRow }) {
   const theme = useTheme();
   const [expanded, setExpanded] = useState(false);
+  useFindFold(row.id, "hidden", !expanded, () => setExpanded(true));
   const [hovered, hover] = useHover();
   const { text } = resolveUserMessagePresentation(row.message);
   const summary = text.trim().split(/\r?\n/, 1)[0] ?? "";
@@ -240,7 +244,7 @@ function AutomationMessageRow({ row }: { row: MessageRow }) {
           <FoldedMessageHeader icon="calendar-clock" label="Automation" summary={summary} expanded={expanded} onToggle={() => setExpanded((value) => !value)} />
           {expanded ? (
             <div style={{ paddingLeft: 12, paddingRight: 12, paddingBottom: 12 }}>
-              <CollapsibleUserMessageBody text={text} />
+              <CollapsibleUserMessageBody entryId={row.id} text={text} />
             </div>
           ) : null}
         </div>
@@ -264,6 +268,7 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
   // Messages from other agents fold to one line so the user's own messages stay easy to find.
   const folded = userMessage.attribution === "agent";
   const [expanded, setExpanded] = useState(false);
+  useFindFold(row.id, "hidden", folded && !expanded, () => setExpanded(true));
   const senderThreadId = row.message.senderThreadId;
   const senderShell = useAtomValue(
     folded && senderThreadId
@@ -359,7 +364,7 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
                 files={[...unchippedFiles, ...unknownAttachments]}
                 onOpen={(file) => rightPanelActions.openAttachment(threadKeyOf(ctx.threadRef.environmentId, ctx.threadRef.threadId), file)}
               /> : null}
-            {resolvedContext.text.trim().length > 0 ? <CollapsibleUserMessageBody text={resolvedContext.text} collapsible={!folded} contextChip={contextChip} /> : null}
+            {resolvedContext.text.trim().length > 0 ? <CollapsibleUserMessageBody entryId={row.id} text={resolvedContext.text} collapsible={!folded} contextChip={contextChip} /> : null}
           </div>
         ) : null}
       </div>
@@ -398,14 +403,14 @@ function UserImageGrid({ images, videos }: { images: ReadonlyArray<ChatAttachmen
   return (
     <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 8, maxWidth: 210, marginBottom: 8 }}>
       {images.map((image) => {
-        const url = urlById.get(image.id) ?? ("previewUrl" in image ? (image.previewUrl ?? null) : null);
+        const url = sentImagePreviewPath(image.id) ?? urlById.get(image.id) ?? ("previewUrl" in image ? (image.previewUrl ?? null) : null);
         // A SnapShot window capture takes both columns at h-28 w-52 and carries its source app's details.
         const snapShot = url && isImageAttachment(image) && image.source?.kind === "snap-shot" ? image.source : null;
         const tile = snapShot ? SNAP_SHOT_FRAME : { width: cellWidth, height: Math.round((cellWidth * 3) / 4) };
         const openImage = () => {
           // ExpandedImageDialog over the message's images, starting at this one.
           const gallery = images.flatMap((entry) => {
-            const src = urlById.get(entry.id) ?? ("previewUrl" in entry ? (entry.previewUrl ?? null) : null);
+            const src = sentImagePreviewPath(entry.id) ?? urlById.get(entry.id) ?? ("previewUrl" in entry ? (entry.previewUrl ?? null) : null);
             return src ? [{ src, name: entry.name }] : [];
           });
           openExpandedImage({ images: gallery, index: Math.max(0, gallery.findIndex((entry) => entry.src === url)) });
@@ -502,10 +507,12 @@ const FADE_HEIGHT = 28;
 
 /** Long messages collapse to 176px with a fade and a "Show full message" toggle. */
 const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody({
+  entryId,
   text,
   collapsible = true,
   contextChip,
 }: {
+  entryId: string;
   text: string;
   collapsible?: boolean;
   contextChip?: (reference: { kind: string; contextId: string; label: string }) => ChipPayload | null;
@@ -514,6 +521,8 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody({
   const [expanded, setExpanded] = useState(false);
   const canCollapse = collapsible && text.trim().length > 0 && shouldCollapseUserMessage(text);
   const isCollapsed = canCollapse && !expanded;
+  const clipRef = useRef<PublicInstance | null>(null);
+  useFindFold(entryId, "clipped", isCollapsed, () => setExpanded(true), () => clipRef.current?.id ?? null);
   const maxWidth = use(BubbleTextWidth);
   // The bubble shrinks to its text; definite widths down the chain keep Taffy
   // from laying the markdown out once per auto-width ancestor.
@@ -521,7 +530,7 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody({
   const width = fitWidth !== undefined ? { width: fitWidth } : {};
   return (
     <div style={{ display: "flex", flexDirection: "column", minWidth: 0, ...width }}>
-      <div style={{ position: "relative", minWidth: 0, ...width, ...(isCollapsed ? { height: COLLAPSED_HEIGHT, overflow: "hidden" } : {}) }}>
+      <div ref={clipRef} style={{ position: "relative", minWidth: 0, ...width, ...(isCollapsed ? { height: COLLAPSED_HEIGHT, overflow: "hidden" } : {}) }}>
         <ChatMarkdown text={text} tone="user" lineBreaks parseRawHtml={false} onFitWidth={setFitWidth} contextChip={contextChip} {...(maxWidth !== undefined ? { maxWidth } : {})} />
         {isCollapsed ? (
           <div

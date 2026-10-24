@@ -3,11 +3,11 @@
 // quote](t3-citation://...)` reference (AssistantCitation: the quote, its
 // offsets in the reply's rendered text, and context either side) into the
 // thread's composer. web finds the selection through DOM ranges; here the
-// selection is gpuix's selected text, located in the reply's rendered text.
+// selection is gpuix's selected text, located in the reply's rendered text
+// (timeline/findOccurrence.ts selectionSelector).
 import { DismissableLayer } from "@gpuix/react";
 import type { GpuixRenderer } from "@gpuix/native";
-import { ASSISTANT_CITATION_CONTEXT_LENGTH, ASSISTANT_CITATION_MAX_TEXT_LENGTH, MessageId, type AssistantCitation, type ScopedThreadRef } from "@t3tools/contracts";
-import type { Element, ElementContent, Root } from "hast";
+import { ASSISTANT_CITATION_MAX_TEXT_LENGTH, type AssistantCitation } from "@t3tools/contracts";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
 import { citeInComposer as insertCitation, composerTargetKey } from "../../state/composer.ts";
@@ -18,69 +18,7 @@ import { Button } from "../../ui/primitives.tsx";
 import { Icon } from "../../ui/Icon.tsx";
 import { FONTS, alpha, useTheme } from "../../ui/theme.ts";
 import { formatAssistantCitationForComposer } from "../../web/composer-logic.ts";
-import { cleanMarkdownSelection } from "./copy.ts";
 import { closeMarkdownOverlay, openMarkdownOverlay } from "./overlays.tsx";
-
-const BLOCK_TAGS = new Set([
-  "address", "article", "aside", "blockquote", "dd", "div", "dl", "dt", "figcaption", "figure", "footer",
-  "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section",
-  "table", "td", "th", "tr", "ul", "details", "summary",
-]);
-
-/** The reply's text as it renders, with blocks separated (lib/assistantTextSelection's text stream). */
-export function renderedPlainText(tree: Root): string {
-  let out = "";
-  const visit = (node: Root | ElementContent) => {
-    if (node.type === "text") {
-      out += node.value;
-      return;
-    }
-    if (node.type !== "element" && node.type !== "root") return;
-    const block = node.type === "element" && BLOCK_TAGS.has((node as Element).tagName);
-    if (block) out += "\n";
-    for (const child of node.children as ElementContent[]) visit(child);
-    if (block) out += "\n";
-  };
-  visit(tree);
-  return out;
-}
-
-function normalizeWhitespace(text: string): string {
-  return text.replace(/\s+/g, " ");
-}
-
-/** Builds the citation selector for a quote found in the rendered text (createAssistantTextSelector). */
-export function citationFromSelection(
-  threadRef: ScopedThreadRef,
-  messageId: string,
-  rendered: string,
-  selected: string,
-  /** Which occurrence of a repeated quote was selected (selectionOccurrence), 0 when unknown. */
-  occurrence = 0,
-): AssistantCitation | null {
-  const normalized = normalizeWhitespace(rendered);
-  const quote = normalizeWhitespace(cleanMarkdownSelection(selected)).trim();
-  if (quote.length === 0) return null;
-  let start = normalized.indexOf(quote);
-  if (start === -1) return null;
-  for (let skipped = 0; skipped < occurrence; skipped += 1) {
-    const next = normalized.indexOf(quote, start + 1);
-    if (next === -1) break;
-    start = next;
-  }
-  const end = start + quote.length;
-  return {
-    version: 1,
-    environmentId: threadRef.environmentId,
-    threadId: threadRef.threadId,
-    messageId: MessageId.make(messageId),
-    text: quote,
-    start,
-    end,
-    prefix: normalized.slice(Math.max(0, start - ASSISTANT_CITATION_CONTEXT_LENGTH), start),
-    suffix: normalized.slice(end, end + ASSISTANT_CITATION_CONTEXT_LENGTH),
-  };
-}
 
 function renderer(): GpuixRenderer | null {
   const slot = Reflect.get(globalThis, "__gpuixRenderHost") as { renderer?: GpuixRenderer } | undefined;

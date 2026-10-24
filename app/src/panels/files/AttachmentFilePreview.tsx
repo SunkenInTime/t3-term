@@ -25,6 +25,7 @@ import { Text } from "../../ui/primitives.tsx";
 import { FONTS, alpha, useTheme, type Palette } from "../../ui/theme.ts";
 import { toast } from "../../ui/toast.tsx";
 import { SourceView } from "../code/SourceView.tsx";
+import { ChatMarkdown } from "../../chat/timeline/ChatMarkdown.tsx";
 import { DelimitedTablePreview } from "./DelimitedTablePreview.tsx";
 import { useAssetUrlState } from "./fileAssets.ts";
 import { ExternalPreview } from "./ExternalPreview.tsx";
@@ -39,18 +40,6 @@ import {
 function renderedToggleLabel(mode: "markdown" | "table", rendered: boolean): string {
   if (mode === "markdown") return rendered ? "Show markdown source" : "Show rendered markdown";
   return rendered ? "Show source" : "Show table";
-}
-
-function markdownTheme(theme: Palette) {
-  return {
-    appearance: theme.appearance,
-    text: alpha(theme.foreground, 0.8),
-    bg: theme.background,
-    accent: theme.infoForeground,
-    fontSans: FONTS.sans,
-    fontMono: FONTS.mono,
-    metrics: { mdTextSize: 14, mdLineHeight: 23, mdBlockGap: 10, mdHeadingSizes: [20, 18, 16, 14] },
-  };
 }
 
 function uniqueDownloadPath(name: string): string {
@@ -156,7 +145,8 @@ export function AttachmentFilePreview(props: {
     ) : kind === "markdown" && rendered ? (
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexGrow: 1, minHeight: 0, overflowY: "scroll" }}>
         <div style={{ width: "100%", maxWidth: 896, paddingLeft: 24, paddingRight: 24, paddingTop: 20, paddingBottom: 20, flexShrink: 0 }}>
-          <markdown source={content.text} theme={markdownTheme(theme)} />
+          {/* web: ChatMarkdown with no thread, so code, tables, math and links render as in chat. */}
+          <ChatMarkdown text={content.text} />
         </div>
       </div>
     ) : (

@@ -40,14 +40,23 @@ import {
   isBrowserPreviewFile,
   openFileInEditor,
   openFileInIntegratedBrowser,
+  findWorkspaceFileMatch,
   openUrlInIntegratedBrowser,
+  resolveCopyPaths,
   revealFileInFileManager,
   revealMenuLabel,
 } from "../markdown/linkActions.ts";
+import { claimWorkspaceBasenameLookup, needsWorkspaceBasenameLookup, stripRepeatedWorkspacePrefix } from "@t3tools/client-runtime/workspace-basename-lookup";
+import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
+import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
+import { executeAtomQuery, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import * as Option from "effect/Option";
+import { environmentSession } from "../../state/environment.ts";
+import { timelineAssets } from "../../state/timeline.ts";
 import { chipAtom, checkboxAtom, CheckboxBox, ChipBox, faviconAtom, FaviconBox, type ChipPayload } from "../markdown/MarkdownChips.tsx";
 import { MarkdownCodeBlock } from "../markdown/MarkdownCodeBlock.tsx";
 import { InlineMathBox, inlineMathAtom, MathBlock, MermaidBlock } from "../markdown/MarkdownDiagrams.tsx";
-import { InlineImageBox, inlineImageAtom, MarkdownImage } from "../markdown/MarkdownMedia.tsx";
+import { InlineImageBox, inlineImageAtom, MarkdownImage, openExpandedImage } from "../markdown/MarkdownMedia.tsx";
 import { asyncLayoutEpoch, subscribeAsyncLayout } from "../markdown/diagrams.ts";
 import { MarkdownDetails } from "../markdown/MarkdownDetails.tsx";
 import { MarkdownTable } from "../markdown/MarkdownTable.tsx";
@@ -87,6 +96,19 @@ interface LinkContext {
   readonly contextChip: ((reference: { kind: string; contextId: string; label: string }) => ChipPayload | null) | undefined;
   /** usePullRequestLinking for the thread's environment, read at menu time. */
   readonly linking: { current: ReturnType<typeof usePullRequestLinking> | null };
+  /** web onTaskListChange: a rendered Markdown file's task checkbox was toggled. */
+  readonly onTaskListChange: ((input: { markerOffset: number; checked: boolean }) => void) | undefined;
+  /** The markdown source, to find a task's `[ ]` marker from its list item's offset. */
+  readonly text: string;
+}
+
+/** web ChatMarkdown findTaskListMarkerOffset. */
+function findTaskListMarkerOffset(markdown: string, listItemStart: number): number | null {
+  const firstLineEnd = markdown.indexOf("\n", listItemStart);
+  const firstLine = markdown.slice(listItemStart, firstLineEnd === -1 ? markdown.length : firstLineEnd);
+  const match = firstLine.match(/^(?:\s*(?:[-+*]|\d+[.)])\s+)(\[[ xX]\])/);
+  if (!match?.[1]) return null;
+  return listItemStart + firstLine.indexOf(match[1]);
 }
 
 function panelPathFor(target: FileChipTarget): string | null {
@@ -95,6 +117,17 @@ function panelPathFor(target: FileChipTarget): string | null {
   return meta.workspaceRelativePath ?? (!canPreviewMedia && isHostPath(meta.filePath) ? meta.filePath : null);
 }
 
+/** Whether a link names a media file web previews in its viewer rather than the Files panel. */
+function canPreviewMediaFile(target: FileChipTarget): boolean {
+  const basename = target.meta.basename;
+  return mediaMimeTypeFromExtension(basename.slice(basename.lastIndexOf("."))) !== null;
+}
+
+/**
+ * web ChatMarkdown openFileInPanel: a bare basename or a path that repeats the
+ * project's folders is looked up in the workspace first; the newest click wins
+ * over a lookup still in flight.
+ */
 function openFileInPanel(target: FileChipTarget, context: LinkContext) {
   const row = context.row;
   const panelPath = panelPathFor(target);
@@ -102,7 +135,65 @@ function openFileInPanel(target: FileChipTarget, context: LinkContext) {
     toast({ type: "info", title: "Can't open this file here", description: target.meta.targetPath });
     return;
   }
-  rightPanelActions.openFile(threadKeyOf(row.threadRef.environmentId, row.threadRef.threadId), panelPath, target.meta.line);
+  const threadKey = threadKeyOf(row.threadRef.environmentId, row.threadRef.threadId);
+  const isLatestLookup = claimWorkspaceBasenameLookup();
+  const openAt = (path: string) => rightPanelActions.openFile(threadKey, path, target.meta.line);
+  const cwd = row.markdownCwd;
+  if (
+    target.meta.workspaceLookupPath === null ||
+    !cwd ||
+    (!needsWorkspaceBasenameLookup(panelPath) && stripRepeatedWorkspacePrefix(panelPath, cwd) === null)
+  ) {
+    openAt(panelPath);
+    return;
+  }
+  void findWorkspaceFileMatch(row.threadRef.environmentId, target.meta, cwd).then((match) => {
+    if (isLatestLookup()) openAt(match ?? panelPath);
+  });
+}
+
+/**
+ * web openMarkdownMedia (resolveMarkdownMediaPreview): a media link with no
+ * Files-panel path, such as an image outside the workspace, opens in the
+ * image viewer through the server's asset URL. gpuix plays no video, so a
+ * video opens in the system browser, t3-term's video fallback (media/VideoFallback.tsx).
+ */
+async function openMarkdownMedia(target: FileChipTarget, context: LinkContext) {
+  const row = context.row;
+  if (!row) return;
+  const media = resolveMediaSource(target.meta.filePath, {
+    threadId: row.threadRef.threadId,
+    workspaceRoot: row.markdownCwd,
+    resolvedFilePath: target.meta.filePath,
+  });
+  if (!media) return;
+  try {
+    let src: string;
+    if (media.access === "direct") {
+      src = media.uri.startsWith("//") ? `https:${media.uri}` : media.uri;
+    } else {
+      const prepared = appAtomRegistry.get(environmentSession.preparedConnectionValueAtom(row.threadRef.environmentId));
+      const base = Option.isSome(prepared) ? prepared.value.httpBaseUrl : null;
+      if (media.access === "unavailable" || !base) throw new Error("Reconnect to this environment and open the media again.");
+      const result = await executeAtomQuery(
+        appAtomRegistry,
+        timelineAssets.createUrl({ environmentId: row.threadRef.environmentId, input: { resource: media.resource } } as never) as never,
+        { label: "markdown media preview", reportFailure: false },
+      );
+      if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      const url = resolveAssetUrl(base, (result.value as { relativeUrl: string }).relativeUrl);
+      if (url === null) throw new Error("The environment returned an invalid media URL.");
+      src = url + media.srcFragment;
+    }
+    if (media.kind === "video") openExternalUrl(src);
+    else openExpandedImage({ images: [{ src, name: media.name }], index: 0 });
+  } catch (error) {
+    toast({
+      type: "error",
+      title: "Unable to open media",
+      description: error instanceof Error ? error.message : "The file could not be loaded. It may have been moved or deleted.",
+    });
+  }
 }
 
 /** What a file link may do here, the props web's fileLinkChip hands MarkdownFileLink. */
@@ -116,6 +207,7 @@ function fileCapabilities(target: FileChipTarget, context: LinkContext) {
     canEditor,
     canBrowser: canOpenInIntegratedBrowser(threadRef) && isBrowserPreviewFile(target.meta.filePath),
     canPanel: threadRef !== null && panelPathFor(target) !== null,
+    canMedia: threadRef !== null && canPreviewMediaFile(target),
     revealLabel: canEditor && environmentId !== null ? revealMenuLabel(environmentId) : undefined,
   };
 }
@@ -132,7 +224,16 @@ function openFileTarget(target: FileChipTarget, context: LinkContext, modifiers?
     void openFileInIntegratedBrowser(can.threadRef, target.meta.filePath, cwd);
     return;
   }
-  if (can.canPanel || !can.canEditor || !can.environmentId) {
+  // MarkdownFileLink handleOpenInFilePreview: the panel, else the media viewer, else the editor.
+  if (can.canPanel) {
+    openFileInPanel(target, context);
+    return;
+  }
+  if (can.canMedia) {
+    void openMarkdownMedia(target, context);
+    return;
+  }
+  if (!can.canEditor || !can.environmentId) {
     openFileInPanel(target, context);
     return;
   }
@@ -157,17 +258,28 @@ function fileContextMenu(target: FileChipTarget, context: LinkContext, position:
   const cwd = context.row?.markdownCwd;
   // web MarkdownFileLink: a click opens the Files panel; the menu holds the other actions.
   const items: ContextMenuItem<string>[] = [
+    ...(can.canMedia ? [{ id: "preview-media", label: "Preview media" }] : []),
     ...(can.canEditor && can.environmentId ? [{ id: "open", label: editorMenuLabel(can.environmentId) }] : []),
     ...(can.canBrowser ? [{ id: "open-in-browser", label: "Open in integrated browser" }] : []),
     ...(can.revealLabel ? [{ id: "reveal", label: can.revealLabel }] : []),
     ...copyItems.map(({ id, label }) => ({ id, label })),
   ];
   void showMarkdownContextMenu(items, position).then((clicked) => {
+    if (clicked === "preview-media") void openMarkdownMedia(target, context);
     if (clicked === "open" && can.environmentId) void openFileInEditor(can.environmentId, target.meta, cwd);
     if (clicked === "open-in-browser" && can.threadRef) void openFileInIntegratedBrowser(can.threadRef, target.meta.filePath, cwd);
     if (clicked === "reveal" && can.environmentId) void revealFileInFileManager(can.environmentId, target.meta, cwd);
-    const copyItem = copyItems.find((item) => item.id === clicked);
-    if (copyItem) copyWithToast(copyItem.value, copyItem.title);
+    // web resolveCopyPaths: the paths after the workspace lookup, not the link's own text.
+    if (clicked === "copy-relative" || clicked === "copy-full") {
+      const title = clicked === "copy-relative" ? "Relative path" : "Full path";
+      void resolveCopyPaths(can.environmentId, target.meta, cwd).then(
+        (paths) => copyWithToast(clicked === "copy-relative" ? paths.relativePath : paths.fullPath, title),
+        () => {
+          const copyItem = copyItems.find((item) => item.id === clicked);
+          if (copyItem) copyWithToast(copyItem.value, copyItem.title);
+        },
+      );
+    }
   });
 }
 
@@ -322,8 +434,16 @@ function createBoxes(context: LinkContext): InlineBoxRenderers {
       };
       return chipAtom(id("skill"), payload, env.styles.body, lineWidth(env));
     },
-    checkbox(checked, env) {
-      return checkboxAtom(id("chk"), checked, env.styles.body, env.styles.listIndent);
+    checkbox(checked, env, listItemOffset) {
+      const onTaskListChange = context.onTaskListChange;
+      const toggle =
+        onTaskListChange && listItemOffset !== undefined
+          ? () => {
+              const markerOffset = findTaskListMarkerOffset(context.text, listItemOffset);
+              if (markerOffset !== null) onTaskListChange({ markerOffset, checked: !checked });
+            }
+          : undefined;
+      return checkboxAtom(id("chk"), checked, env.styles.body, env.styles.listIndent, toggle);
     },
     inlineMath(tex, display, env, style) {
       return inlineMathAtom(id("math"), tex, display, style, env.extent.root);
@@ -403,6 +523,8 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   onFitWidth,
   isStreaming = false,
   contextChip,
+  onTaskListChange,
+  imageBaseDir,
 }: {
   text: string;
   tone?: ChatMarkdownTone;
@@ -418,6 +540,10 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   isStreaming?: boolean;
   /** Chips for `t3-context:` references (user messages: UserMessageContextChips). */
   contextChip?: LinkContext["contextChip"];
+  /** web FileMarkdownPreview: task checkboxes toggle through this. */
+  onTaskListChange?: LinkContext["onTaskListChange"];
+  /** web imageBaseDir: images resolve against the Markdown file's folder; links keep the workspace. */
+  imageBaseDir?: string;
 }) {
   const palette = useTheme();
   const styles = markdownStyles(palette, tone, textSize);
@@ -435,7 +561,10 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   const linking = usePullRequestLinking(row?.threadRef.environmentId ?? null);
   const [linkingRef] = useState<LinkContext["linking"]>(() => ({ current: null }));
   linkingRef.current = linking;
-  const context = useMemo<LinkContext>(() => ({ row, contextChip, linking: linkingRef }), [row, contextChip, linkingRef]);
+  const context = useMemo<LinkContext>(
+    () => ({ row, contextChip, linking: linkingRef, onTaskListChange, text }),
+    [row, contextChip, linkingRef, onTaskListChange, text],
+  );
   const handlers = useMemo(() => ({ actions: createActions(context), boxes: createBoxes(context), blocks: createBlocks(context) }), [context]);
   const rendered = useMemo(() => {
     if (width <= 0) return null;
@@ -450,14 +579,14 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
       mathEnabled,
       skills: row?.skills ?? NO_SKILLS,
       extent: { width: 0, root: width },
-      media: { environmentId: row?.threadRef.environmentId ?? null, threadId: row?.threadRef.threadId ?? null, cwd, gallery: [] },
+      media: { environmentId: row?.threadRef.environmentId ?? null, threadId: row?.threadRef.threadId ?? null, cwd: imageBaseDir ?? cwd, gallery: [] },
       isStreaming,
       source: text,
     };
     const nodes = renderDocument(tree, width, env);
     return { nodes, extent: env.extent.width };
     // epoch: new text metrics re-lay out lines measured with estimates.
-  }, [tree, width, styles, text, cwd, row, hover, handlers, mathEnabled, epoch, asyncEpoch, isStreaming]);
+  }, [tree, width, styles, text, cwd, imageBaseDir, row, hover, handlers, mathEnabled, epoch, asyncEpoch, isStreaming]);
   const fitWidth = maxWidth !== undefined && rendered ? Math.min(maxWidth, Math.ceil(rendered.extent)) : undefined;
   useEffect(() => {
     if (fitWidth !== undefined) onFitWidth?.(fitWidth);

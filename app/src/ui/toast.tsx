@@ -298,7 +298,16 @@ export function isToastOpen(id: number): boolean {
 function activeToastScope(route: Route): { threadRef: ScopedThreadRef | null; draftKey: string | null } {
   if (route.kind === "thread") return { threadRef: { environmentId: route.environmentId, threadId: route.threadId }, draftKey: null };
   if (route.kind === "draft") {
-    return { threadRef: null, draftKey: composerTargetKey({ kind: "draft", environmentId: route.environmentId, projectId: route.projectId }) };
+    return {
+      threadRef: null,
+      // The draft id is part of the key DraftView scopes toasts by: two drafts of one project are distinct.
+      draftKey: composerTargetKey({
+        kind: "draft",
+        environmentId: route.environmentId,
+        projectId: route.projectId,
+        ...(route.draftId ? { draftId: route.draftId } : {}),
+      }),
+    };
   }
   return { threadRef: null, draftKey: null };
 }

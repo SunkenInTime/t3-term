@@ -31,7 +31,9 @@ import {
   readComposerDraft,
   setComposerInteractionMode,
   setComposerModelSelection,
+  setDraftWorkspace,
   reusableProjectDraftId,
+  type DraftThreadEnvMode,
 } from "../state/composer.ts";
 import {
   environmentCatalog,
@@ -209,16 +211,36 @@ function carryComposerStateInto(projectRef: ScopedProjectRef, draftId: string | 
   if (override) setComposerModelSelection(destinationKey, override, { sticky: false, explicit: false, replaceOptions: true });
 }
 
+/** useHandleNewThread's NewThreadWorkspaceOptions: where the new draft's thread will run. */
+export interface NewThreadWorkspaceOptions {
+  readonly branch?: string | null;
+  readonly worktreePath?: string | null;
+  readonly envMode?: DraftThreadEnvMode;
+  readonly startFromOrigin?: boolean;
+}
+
 /**
  * Returns the composer key of the draft it opened, which may carry a draft id: callers that write
  * into the new draft (PR hand-offs) must use this key, not the project's unsuffixed draft key.
  */
-export function startNewThread(projectRef: ScopedProjectRef): string {
+export function startNewThread(projectRef: ScopedProjectRef, workspace?: NewThreadWorkspaceOptions): string {
   // web useHandleNewThread: an empty draft of the project is reused; a draft with content
   // stays as it is (in the sidebar) and the new thread gets a draft of its own.
   const reusable = reusableProjectDraftId(projectRef.environmentId, projectRef.projectId);
   const draftId = reusable === null ? globalThis.crypto.randomUUID() : reusable;
   carryComposerStateInto(projectRef, draftId);
+  // web pickExplicitWorkspaceOptions: only the options given overwrite the draft's own.
+  if (workspace) {
+    const explicit = {
+      ...(workspace.branch !== undefined ? { branch: workspace.branch } : {}),
+      ...(workspace.worktreePath !== undefined ? { worktreePath: workspace.worktreePath } : {}),
+      ...(workspace.envMode !== undefined ? { envMode: workspace.envMode } : {}),
+      ...(workspace.startFromOrigin !== undefined ? { startFromOrigin: workspace.startFromOrigin } : {}),
+    };
+    if (Object.keys(explicit).length > 0) {
+      setDraftWorkspace(composerTargetKey({ kind: "draft", ...projectRef, ...(draftId ? { draftId } : {}) }), explicit);
+    }
+  }
   appAtomRegistry.set(routeAtom, {
     kind: "draft",
     environmentId: projectRef.environmentId,

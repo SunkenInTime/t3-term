@@ -47,6 +47,7 @@ import {
   isProviderNativeSubagentThread,
   MessageId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ModelSelection,
   type ProjectId,
@@ -73,6 +74,10 @@ import {
   type ComposerTarget,
   addComposerAttachments,
   composerDraftAtom,
+  dismissResumeCompactionForever,
+  keepFullHistoryThreadKeysAtom,
+  resumeCompactionDismissedAtom,
+  setKeepFullHistory,
   optimisticMessagesAtom,
   removeOptimisticMessages,
   focusComposer,
@@ -115,9 +120,12 @@ import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import { chatLanePadding, useSmallViewport } from "../../ui/viewport.tsx";
 import { Text } from "../../ui/primitives.tsx";
+import { useTypingDeferredDraft, writeTypedPrompt } from "./useTypingDeferredDraft.ts";
 import {
   type ComposerSubmissionIntent,
   type ComposerTrigger,
+  composerRequiresModifier,
+  composerSubmissionIntentForKey,
   detectComposerTrigger,
   extendReplacementRangeForTrailingSpace,
   parseStandaloneComposerSlashCommand,
@@ -199,6 +207,23 @@ import {
   type ComposerSendTarget,
 } from "./composerSend.ts";
 import { attachmentsFromPaths } from "./composerAttachmentPaths.ts";
+import {
+  attachmentStagingError,
+  attachmentUploadStateAtom,
+  environmentSupportsUploads,
+  releaseAttachmentUpload,
+  retryAttachmentUpload,
+  stagedUploadBlockReasonAtom,
+  startAttachmentUpload,
+} from "./attachmentUploads.ts";
+import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
+import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
+import * as NodeFs from "node:fs";
+import { takeDevAttachPaths } from "./devComposerAttachments.ts";
+import { prepareImageAttachment } from "./imagePreparation.ts";
+import { hasDismissedResumeCompaction, shouldOfferResumeCompaction } from "../../web/components/chat/ContextWindowMeter.logic.ts";
+import { resolveIdleCompaction } from "@t3tools/contracts/settings";
+import { environmentSupportsQuestionAttachments, questionAttachmentDraftKey } from "./questionAttachments.ts";
 import { readClipboardAttachmentPaths, writePastedTextFile } from "./clipboardAttachments.ts";
 import {
   nextPastedTextFileName,
@@ -212,16 +237,18 @@ import {
   registerShortcutHandler,
   registerTypeToFocusHandler,
   resolveKeyEventCommand,
+  toShortcutEvent,
 } from "../../keybindings/useGlobalKeybindings.ts";
 import { isConfirmDialogActive } from "../../dialogs/confirmDialog.ts";
 import { readClipboardText } from "../../terminal/clipboard.ts";
-import { composerFocusAtom, terminalFocusAtom } from "../../state/keybindings.ts";
+import { activeKeybindingsAtom, composerFocusAtom, terminalFocusAtom } from "../../state/keybindings.ts";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
 import type { KeybindingCommand } from "@t3tools/contracts";
 import { TraitsMenuContent, TraitsPicker } from "./TraitsPicker.tsx";
 import { type ComposerControlsMeasurer, useComposerControlsLayout } from "./useComposerControlsLayout.ts";
 import { resolveComposerProviderModel } from "./useComposerProviderModel.ts";
 import { useComposerMenuItems } from "./useComposerMenuItems.ts";
+import { useProviderWorkspaceSnapshotRefresh } from "./useProviderWorkspaceSnapshotRefresh.ts";
 import { ComposerStashBadge, ComposerStashMenu } from "./ComposerStash.tsx";
 import { useComposerStash } from "./useComposerStash.ts";
 import { sendQueuedRunNow } from "./QueuedRunsControl.tsx";
@@ -266,7 +293,7 @@ import { getTriggerDisplayModelName } from "../../web/components/chat/providerIc
 import { shouldShowInstanceBadge } from "../../web/providerInstances.ts";
 import { useProjectCloneBanner } from "./useProjectCloneBanner.tsx";
 import { composerProviderStatusAtom } from "./composerProviderStatus.ts";
-import { DEV_TERMINAL_CONTEXT, devComposerTasks, withDevProviderStatus } from "./devComposerBanners.ts";
+import { DEV_TERMINAL_CONTEXT, devComposerBanner, devComposerTasks, withDevProviderStatus } from "./devComposerBanners.ts";
 import { addTerminalContextToThreadComposer } from "./terminalContextIntake.ts";
 import { feedbackUploadsInFlight, upsertFeedbackSubmission } from "./ComposerFeedback.tsx";
 import { parseCodexFeedbackCommand, submitCodexFeedback } from "@t3tools/client-runtime/state/threads";
@@ -298,6 +325,19 @@ const ALL_RUNTIME_MODE_OPTIONS: ReadonlyArray<RuntimeModeOption> = runtimeModes.
 }));
 const NO_SKILLS: ServerProvider["skills"] = [];
 const NO_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
+/** Images still being converted or shrunk before staging, by draft key (web pendingImageCompressionsRef). */
+const pendingImagePreparations = new Map<string, number>();
+
+function unsupportedImageMessage(name: string): string {
+  return `'${name}' is not a supported image type. Attach GIF, HEIC, HEIF, JPEG, PNG, or WebP images.`;
+}
+
+/** The send chords the composer resolves itself (web composerSubmissionIntentForKey). */
+const COMPOSER_SEND_COMMANDS: ReadonlySet<KeybindingCommand> = new Set([
+  "composer.sendAlternate",
+  "composer.sendBackground",
+  "composer.sendAndNewThread",
+]);
 const DEFAULT_PLACEHOLDER = "Ask anything, @tag files/folders, $use skills, or / for commands";
 const PROMPT_LINE_HEIGHT = 23;
 
@@ -508,7 +548,7 @@ function ComposerBody({
   const theme = useTheme();
   const renderer = useGpuixRequired();
   const draftKey = composerTargetKey(target);
-  const draft = useAtomValue(composerDraftAtom(draftKey));
+  const draft = useTypingDeferredDraft(draftKey);
   const restoredPrompt = useAtomValue(restoredPromptAtom);
   useEffect(() => {
     // "Edit from here" in the timeline hands the reverted prompt back to this thread's composer.
@@ -539,7 +579,7 @@ function ComposerBody({
   // submit saves it in place (web useQueuedRunEdit). Model and mode stay the thread's.
   const queuedEdit = useQueuedRunEdit({ environmentId, threadId });
   const promptKey = queuedEdit.isEditing ? queuedEdit.draftKey ?? draftKey : draftKey;
-  const promptDraft = useAtomValue(composerDraftAtom(promptKey));
+  const promptDraft = useTypingDeferredDraft(promptKey);
   // Staged attachments live with the prompt: a queued edit's new attachments in its edit draft.
   const stagedAttachments = promptDraft.attachments;
   const editingAttachments = queuedEdit.editingAttachments;
@@ -561,7 +601,7 @@ function ComposerBody({
   const projectId = threadId ? (shell?.projectId ?? null) : draftProjectId;
   const project = projectId ? (projects.get(`${environmentId}:${projectId}`) ?? null) : null;
   // Keeps the prepared connection mounted: attachment uploads read its base URL at send time.
-  useAtomValue(environmentSession.preparedConnectionValueAtom(environmentId));
+  const connectionReady = Option.isSome(useAtomValue(environmentSession.preparedConnectionValueAtom(environmentId)));
   const sending = useAtomValue(composerSendingAtom(draftKey));
   const sendError = useAtomValue(composerSendErrorAtom(draftKey));
   const [modelPickerOpen, setModelPickerOpen] = [
@@ -774,6 +814,9 @@ function ComposerBody({
   const setTrigger = (candidate: ComposerTrigger | null) => {
     const active = resolveTrigger(candidate);
     if (candidate === null || active !== null) dismissedTriggerRef.current = null;
+    // Setting null over null still runs ComposerBody before React bails out, and the editor
+    // reports every keystroke here (see useTypingDeferredDraft.ts).
+    if (active === null && trigger === null) return;
     setTriggerState(active);
   };
   const dismissTrigger = () => {
@@ -819,6 +862,12 @@ function ComposerBody({
   }, []);
 
   // ── Command menu ──────────────────────────────────────────────────────
+  const refreshWorkspaceSnapshotOnTyping = useProviderWorkspaceSnapshotRefresh({
+    environmentId,
+    gitCwd: cwd,
+    selectedInstanceId: noProviderAvailable ? null : selectedInstanceId,
+    selectedProviderStatus,
+  });
   const selectedProviderSkills = selectedProviderStatus
     ? resolveProviderSkillsForCwd(selectedProviderStatus, cwd)
     : NO_SKILLS;
@@ -883,15 +932,17 @@ function ComposerBody({
     valueRef.current = nextValue;
     caretRef.current = caret;
     if (valueChanged) {
-      setSubmissionError(null);
+      if (submissionError !== null) setSubmissionError(null);
       typingGuard.onDraftChange();
+      // web: typing is when the menu is about to need skills, so a snapshot past its TTL rescans.
+      refreshWorkspaceSnapshotOnTyping();
     }
     if (isChoiceOnlyPendingQuestion) return;
     if (valueChanged && !activePendingProgress && promptHistoryPositionRef.current?.position.recalled !== nextValue) {
       promptHistoryPositionRef.current = null;
     }
     if (valueChanged) {
-      writeEditorValue(nextValue);
+      writeTypedPrompt(promptKey, nextValue, () => writeEditorValue(nextValue));
       if (restingRequested) appAtomRegistry.set(composerRestingAtom(draftKey), false);
     }
     setTrigger(isLiteralPendingAnswer || suppressTrigger ? null : detectComposerTrigger(nextValue, caret));
@@ -1165,7 +1216,62 @@ function ComposerBody({
     (multipleModelSelections === null ? providerSendBlockReason : null);
   const followUpBehavior: "queue" | "steer" =
     requests.pendingApprovals.length > 0 ? "steer" : settings.followUpBehavior;
-  const isCompacting = false;
+  // web ChatView isCompacting: a compaction (or a /compact turn) is the run in progress, so a
+  // follow-up queues behind it rather than steering (steering into it is rejected).
+  const isCompacting = useMemo(() => {
+    if (!projection || !(isRunning || phase === "connecting")) return false;
+    const activeRunId = runtime?.activeRunId ?? null;
+    let latestUser: (typeof projection.turnItems)[number] | null = null;
+    let compactionRunning = false;
+    let compactionSettled = false;
+    for (const item of projection.turnItems) {
+      if (item.type === "user_message") latestUser = item;
+      if (item.type !== "compaction") continue;
+      if (item.runId !== null && item.runId === activeRunId && item.status === "running") compactionRunning = true;
+      if (item.runId === activeActivityRun?.runId && item.status !== "running" && item.status !== "pending") compactionSettled = true;
+    }
+    const compactRequestIsActive =
+      latestUser?.type === "user_message" &&
+      latestUser.text.trim().toLowerCase() === "/compact" &&
+      latestUser.attachments.length === 0 &&
+      latestUser.runId === activeActivityRun?.runId &&
+      !activeActivityRunSettled;
+    return compactionRunning || (compactRequestIsActive && !compactionSettled);
+  }, [projection, isRunning, phase, runtime?.activeRunId, activeActivityRun?.runId, activeActivityRunSettled]);
+  // web resumeCompactionTokens: a Claude session idle past its prompt cache would re-read its
+  // whole history on the next turn; the send offers to compact it first (Compact / Full).
+  // Read with the time it is asked for: the send asks now, the primary actions each minute.
+  const resumeCompactionKey = `${environmentId}:${selectedInstanceId}`;
+  const resumeCompactionTokensAt = (now: string): number | null => {
+    if (threadId && compactCommandAvailable && devComposerBanner("resume-compaction")) return activeContextWindow?.usedTokens ?? 248_000;
+    if (!threadId || !activeContextWindow || !compactCommandAvailable || hasHeldQueuedRuns) return null;
+    if (multipleModelSelections !== null) return null;
+    if (serverConfig && resolveIdleCompaction(serverConfig.settings, selectedInstanceId) === "off") return null;
+    if (appAtomRegistry.get(resumeCompactionDismissedAtom).has(resumeCompactionKey)) return null;
+    return shouldOfferResumeCompaction({
+      provider: selectedProvider,
+      usedTokens: activeContextWindow.usedTokens,
+      updatedAt: activeContextWindow.updatedAt,
+      promptCacheTtlMs: liveTokenUsage?.promptCacheTtlMs,
+      now,
+    })
+      ? activeContextWindow.usedTokens
+      : null;
+  };
+  // web: Claude's own "never" answer to its compaction question stops the offer for good.
+  const nativeResumeCompactionDismissed = useMemo(
+    () =>
+      hasDismissedResumeCompaction(
+        (projection?.runtimeRequests ?? [])
+          .filter((request) => request.kind === "user_input" && request.status === "resolved")
+          .map((request) => ({ kind: "user-input.resolved", payload: { answers: (request as { answers?: unknown }).answers } })),
+      ),
+    [projection?.runtimeRequests],
+  );
+  useEffect(() => {
+    if (nativeResumeCompactionDismissed) dismissResumeCompactionForever(resumeCompactionKey);
+  }, [nativeResumeCompactionDismissed, resumeCompactionKey]);
+  const threadKeyForHistory = threadId ? scopedThreadKey(scopeThreadRef(environmentId, threadId)) : null;
 
   const submit = (dispatchMode?: ComposerDispatchMode, submissionIntent: ComposerSubmissionIntent = "foreground") => {
     // web useComposerSend: /usage-limits is answered locally from the Limits snapshot.
@@ -1187,6 +1293,18 @@ function ComposerBody({
       return;
     }
     if (sending || noProviderAvailable || sendDisabledReason !== null || environmentUnavailable) return;
+    if (uploadsEnabled && !queuedEdit.isEditing && appAtomRegistry.get(stagedUploadBlockReasonAtom(promptKey)) !== null) return;
+    // web opens a new draft only once its project's workspace defaults (a t3.json may decide)
+    // are known; here the draft opens at once, so its first send waits for them instead of
+    // starting in the wrong place.
+    if (target.kind === "draft" && readComposerDraft(draftKey).envMode === undefined) {
+      toast({ type: "info", title: "Loading this project's defaults", description: "Send again in a moment." });
+      return;
+    }
+    if ((pendingImagePreparations.get(draftKey) ?? 0) > 0) {
+      toast({ type: "info", title: "Still compressing a pasted image.", description: "Send again once its thumbnail appears." });
+      return;
+    }
     const promptAtSend = readComposerDraft(promptKey).prompt;
     if (queuedEdit.isEditing) {
       void queuedEdit.saveEdit(promptAtSend);
@@ -1238,11 +1356,17 @@ function ComposerBody({
       void submitMultipleModels(promptAtSend, attachments);
       return;
     }
+    // web planComposerTurn: compact first unless the user chose Full for this thread.
+    const compactBeforeSend =
+      resumeCompactionTokensAt(new Date().toISOString()) !== null &&
+      !(threadKeyForHistory !== null && appAtomRegistry.get(keepFullHistoryThreadKeysAtom).has(threadKeyForHistory)) &&
+      promptAtSend.trim().toLowerCase() !== "/compact";
     void dispatchSend({
       prompt: promptAtSend,
       text: promptAtSend.trim(),
       attachments,
       interactionMode,
+      compactBeforeSend,
       background: submissionIntent === "background",
       dispatchMode:
         dispatchMode ??
@@ -1342,6 +1466,7 @@ function ComposerBody({
     dispatchMode: ComposerDispatchMode;
     sourceProposedPlan?: { threadId: ThreadId; planId: string };
     background?: boolean;
+    compactBeforeSend?: boolean;
   }) => {
     if (!project && !threadId) {
       toast({ type: "warning", title: "Choose a project first" });
@@ -1378,9 +1503,17 @@ function ComposerBody({
         };
     setTriggerState(null);
     typingGuard.onSend();
-    const approvalsToDecline = requests.pendingApprovals.filter(
-      (approval) => !requests.respondingRequestIds.includes(approval.requestId),
-    );
+    // web shownPendingApprovalIds: only approvals the user could see are declined (not one the
+    // typing guard is still holding back), and only while this thread is still the one open.
+    const route = appAtomRegistry.get(routeAtom);
+    const stillOnThread =
+      threadId !== null && route.kind === "thread" && route.threadId === threadId && route.environmentId === environmentId;
+    const approvalsToDecline = stillOnThread
+      ? requests.pendingApprovals.filter(
+          (approval) =>
+            !typingGuard.heldRequestIds.has(approval.requestId) && !requests.respondingRequestIds.includes(approval.requestId),
+        )
+      : [];
     const sent = await sendComposerMessage({
       environmentId,
       draftKey,
@@ -1400,8 +1533,10 @@ function ComposerBody({
         (await requests.onRespondToApproval(requestId, decision)) as never,
       readPendingApprovalIds: () => liveRequestsRef.current.pendingApprovals.map((approval) => approval.requestId),
       readRespondingApprovalIds: () => liveRequestsRef.current.respondingRequestIds,
+      readDraftBusy: () => (pendingImagePreparations.get(draftKey) ?? 0) > 0,
       ...(input.sourceProposedPlan ? { sourceProposedPlan: input.sourceProposedPlan } : {}),
       ...(input.background ? { background: { projectId } } : {}),
+      ...(input.compactBeforeSend ? { compactBeforeSend: true } : {}),
       running: isRunning,
     });
     if (sent) {
@@ -1565,10 +1700,86 @@ function ComposerBody({
   });
 
   // ── Attachments ───────────────────────────────────────────────────────
-  const fileStagingAllowed = !activePendingProgress;
+  // web questionAttachmentTarget: while a question takes a typed answer, staged files belong to
+  // that question (where the server takes question attachments), not to the next message.
+  const activeQuestionId = activePendingProgress?.activeQuestion?.id ?? null;
+  const questionAttachmentKey =
+    threadId !== null &&
+    activeQuestionId !== null &&
+    requests.pendingUserInputs[0] &&
+    !isChoiceOnlyPendingQuestion &&
+    !requests.activePendingIsResponding &&
+    environmentSupportsQuestionAttachments(environmentId)
+      ? questionAttachmentDraftKey(environmentId, threadId, requests.pendingUserInputs[0].requestId, activeQuestionId)
+      : null;
+  const attachmentKey = questionAttachmentKey ?? promptKey;
+  const questionDraft = useTypingDeferredDraft(attachmentKey);
+  const visibleStaged = questionAttachmentKey !== null ? questionDraft.attachments : stagedAttachments;
+  const fileStagingAllowed = !activePendingProgress || questionAttachmentKey !== null;
+  // web useComposerAttachmentIntake: what this server cannot take is refused when it is staged,
+  // not at send time, and the attachment count is held to the per-message limit.
+  const stageAttachments = (
+    attachments: ReadonlyArray<ComposerAttachmentDraft>,
+    priorError: string | null = null,
+  ): ComposerAttachmentDraft[] => {
+    let error: string | null = priorError;
+    let reserved = readComposerDraft(attachmentKey).attachments.length + (questionAttachmentKey ? 0 : (editingAttachments?.length ?? 0));
+    const accepted: ComposerAttachmentDraft[] = [];
+    for (const attachment of attachments) {
+      if (reserved >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+        error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`;
+        continue;
+      }
+      const stagingError = attachmentStagingError(environmentId, attachment);
+      if (stagingError) {
+        error = stagingError;
+        continue;
+      }
+      accepted.push(attachment);
+      reserved += 1;
+    }
+    appAtomRegistry.set(composerSendErrorAtom(draftKey), error);
+    if (accepted.length > 0) addComposerAttachments(attachmentKey, accepted);
+    return accepted;
+  };
+  const removeStagedAttachment = (attachmentId: string) => {
+    removeComposerAttachment(attachmentKey, attachmentId);
+    releaseAttachmentUpload(attachmentId);
+  };
+  // web compressAndStoreImages: images are converted (HEIC) or shrunk to the provider's limit
+  // before they are staged; a send meanwhile waits, or the image would miss the turn.
+  const prepareAndStageImages = async (images: ReadonlyArray<ComposerAttachmentDraft>, priorError: string | null) => {
+    pendingImagePreparations.set(draftKey, (pendingImagePreparations.get(draftKey) ?? 0) + images.length);
+    try {
+      let error = priorError;
+      const prepared: ComposerAttachmentDraft[] = [];
+      for (const image of images) {
+        const result = await prepareImageAttachment(image, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES);
+        if (!result.ok) {
+          error =
+            result.reason === "unsupported"
+              ? unsupportedImageMessage(image.name)
+              : result.reason === "unreadable"
+                ? `'${image.name}' could not be read as an image.`
+                : `'${image.name}' is too large to attach, even after compression.`;
+          continue;
+        }
+        prepared.push({ ...image, path: result.path, name: result.name, mimeType: result.mimeType, sizeBytes: result.sizeBytes });
+      }
+      stageAttachments(prepared, error);
+    } finally {
+      const remaining = (pendingImagePreparations.get(draftKey) ?? 0) - images.length;
+      if (remaining > 0) pendingImagePreparations.set(draftKey, remaining);
+      else pendingImagePreparations.delete(draftKey);
+    }
+  };
   const addPaths = (paths: ReadonlyArray<string>) => {
-    const { attachments, folders } = attachmentsFromPaths(paths);
-    if (attachments.length > 0) addComposerAttachments(promptKey, attachments);
+    const { attachments, folders, unsupportedImages } = attachmentsFromPaths(paths);
+    const unsupportedError = unsupportedImages.length > 0 ? unsupportedImageMessage(unsupportedImages.at(-1)!) : null;
+    const images = attachments.filter((attachment) => attachment.type === "image");
+    const files = attachments.filter((attachment) => attachment.type !== "image");
+    if (files.length > 0 || (unsupportedError && images.length === 0)) stageAttachments(files, unsupportedError);
+    if (images.length > 0) void prepareAndStageImages(images, files.length > 0 ? null : unsupportedError);
     if (folders.length > 0) {
       const mentions = folders.map((folder) => serializeComposerFileLink(folder)).join(" ");
       const current = valueRef.current;
@@ -1592,9 +1803,8 @@ function ComposerBody({
     if (pastedTextDisposition({ text, canAttach: true, wouldExceedInputLimit }) !== "attachment") return false;
     const canStage =
       fileStagingAllowed &&
-      !queuedEdit.isEditing &&
       serverConfig?.environment.capabilities.fileAttachments !== undefined &&
-      current.attachments.length < PROVIDER_SEND_TURN_MAX_ATTACHMENTS;
+      current.attachments.length + (editingAttachments?.length ?? 0) < PROVIDER_SEND_TURN_MAX_ATTACHMENTS;
     if (!canStage) {
       if (!wouldExceedInputLimit) return false;
       toast({ type: "error", title: "Pasted text is too large for this message", description: "Remove some text or an attachment, then paste again." });
@@ -1602,20 +1812,82 @@ function ComposerBody({
     }
     const name = nextPastedTextFileName(current.attachments.map((attachment) => attachment.name));
     const { attachments } = attachmentsFromPaths([writePastedTextFile(name, text)]);
-    addComposerAttachments(promptKey, attachments.map((attachment) => ({ ...attachment, mimeType: "text/plain" })));
+    const stored = stageAttachments(attachments.map((attachment) => ({ ...attachment, mimeType: "text/plain" })));
+    const attached = stored[0];
+    if (attached) {
+      // web: the paste went somewhere the user did not put it; say where, and how to keep it inline.
+      toast({
+        type: "info",
+        title: `Large paste attached as ${attached.name}`,
+        description: `${formatAttachmentSize(attached.sizeBytes)} · Use ${process.platform === "darwin" ? "⌘⇧V" : "Ctrl+Shift+V"} to keep a large paste inline.`,
+      });
+    }
     return true;
+  };
+  // web onComposerPaste → shouldHandleComposerAttachmentPaste: a clipboard holding a picture
+  // pastes the picture even when it also holds text (an image copied from a page brings its
+  // alt text). gpuix pastes text first and cannot see the picture, so the text goes in at once
+  // and, when the clipboard turns out to hold an image, it is taken back out for the image.
+  const onPastedTextInline = (before: string) => {
+    if (!fileStagingAllowed || activePendingProgress) return;
+    // The editor reports its edit synchronously, so the draft already holds the paste.
+    const after = () => readComposerDraft(promptKey).prompt;
+    const inserted = after();
+    void readClipboardAttachmentPaths({ imagesOnly: true }).then((paths) => {
+      if (paths.length === 0) return;
+      // Only while nothing was typed since: then the prompt goes back to before the paste.
+      if (after() === inserted && inserted !== before) {
+        valueRef.current = before;
+        caretRef.current = before.length;
+        setComposerPrompt(promptKey, before);
+      }
+      addPaths(paths);
+    });
   };
   // web onComposerPaste with clipboardData.files: a copied file or a picture attaches.
   const onPasteNonText = () => {
-    if (!fileStagingAllowed || queuedEdit.isEditing) return;
+    if (!fileStagingAllowed) return;
     void readClipboardAttachmentPaths().then((paths) => {
       if (paths.length > 0) addPaths(paths);
     });
   };
+  useEffect(() => {
+    const devPaths = takeDevAttachPaths(project?.title ?? null, questionAttachmentKey !== null ? "question" : target.kind);
+    if (devPaths.length > 0) addPaths(devPaths);
+    // Once the project (or a question taking files) is known, like a drop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.title, questionAttachmentKey]);
   const onAttach = async () => {
     const paths = await renderer.promptForPaths?.({ files: true, multiple: true, prompt: "Attach" });
     if (paths && paths.length > 0) addPaths(paths);
   };
+  // Staged attachments start uploading as soon as they are in the draft (web
+  // attachmentUploadQueue), including ones restored from disk. Keyed on the attachment list,
+  // which keeps its identity while the prompt changes.
+  const uploadsEnabled = environmentSupportsUploads(environmentId);
+  useEffect(() => {
+    // Not before the connection is prepared: the upload URL resolves against it.
+    if (!uploadsEnabled || !connectionReady) return;
+    for (const attachment of visibleStaged) {
+      if (appAtomRegistry.get(attachmentUploadStateAtom(attachment.id)) !== null) continue;
+      if (!NodeFs.existsSync(attachment.path)) continue;
+      void startAttachmentUpload(environmentId, attachment);
+    }
+  }, [visibleStaged, environmentId, uploadsEnabled, connectionReady]);
+  // web composerFileNeedsReattach: a staged file whose bytes are gone, with nothing uploaded.
+  const missingAttachmentIds = useMemo(
+    () =>
+      new Set(
+        visibleStaged
+          .filter(
+            (attachment) =>
+              !NodeFs.existsSync(attachment.path) &&
+              appAtomRegistry.get(attachmentUploadStateAtom(attachment.id))?.status !== "ready",
+          )
+          .map((attachment) => attachment.id),
+      ),
+    [visibleStaged],
+  );
   // The queued message's own attachments come first, from the server; then staged ones.
   const images: ComposerMediaItem[] = [
     ...(editingAttachments ?? [])
@@ -1626,15 +1898,27 @@ function ComposerBody({
         src: editingImageUrls.get(attachment.id) ?? null,
         onRemove: () => queuedEdit.removeEditingAttachment(attachment.id),
       })),
-    ...stagedAttachments
+    ...visibleStaged
       .filter((attachment) => attachment.type === "image")
       .map((attachment) => ({
         id: attachment.id,
         name: attachment.name,
         src: attachment.path,
-        onRemove: () => removeComposerAttachment(promptKey, attachment.id),
+        onRemove: () => removeStagedAttachment(attachment.id),
+        ...(uploadsEnabled ? { uploadId: attachment.id, onRetry: () => retryAttachmentUpload(environmentId, attachment) } : {}),
       })),
-  ];
+  ].map((image, _index, all) =>
+    image.src
+      ? {
+          ...image,
+          // web buildExpandedImagePreview: the viewer opens on the pressed image, over all of them.
+          onExpand: () => {
+            const gallery = all.flatMap((entry) => (entry.src ? [{ src: entry.src, name: entry.name }] : []));
+            openExpandedImage({ images: gallery, index: Math.max(0, gallery.findIndex((entry) => entry.src === image.src)) });
+          },
+        }
+      : image,
+  );
   const files: ComposerFileItem[] = [
     ...(editingAttachments ?? [])
       .filter((attachment) => attachment.type !== "image")
@@ -1644,13 +1928,15 @@ function ComposerBody({
         sizeBytes: "sizeBytes" in attachment ? Number(attachment.sizeBytes) : 0,
         onRemove: () => queuedEdit.removeEditingAttachment(attachment.id),
       })),
-    ...stagedAttachments
+    ...visibleStaged
       .filter((attachment) => attachment.type === "file")
       .map((attachment) => ({
         id: attachment.id,
         name: attachment.name,
         sizeBytes: attachment.sizeBytes,
-        onRemove: () => removeComposerAttachment(promptKey, attachment.id),
+        onRemove: () => removeStagedAttachment(attachment.id),
+        ...(uploadsEnabled ? { uploadId: attachment.id, onRetry: () => retryAttachmentUpload(environmentId, attachment) } : {}),
+        needsReattach: missingAttachmentIds.has(attachment.id),
       })),
   ];
 
@@ -1718,7 +2004,7 @@ function ComposerBody({
 
   // ── Keyboard (web useComposerCommandKey) ──────────────────────────────
   /** Keys the composer takes before the editor; true when handled. */
-  const onEditorKeyCommand = (event: KeyEvent, _context: ComposerEditorKeyContext): boolean => {
+  const onEditorKeyCommand = (event: KeyEvent, _context: ComposerEditorKeyContext): boolean | "pass" => {
     const key = event.key;
     const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
     const ctrl = Boolean(mods.ctrl || mods.cmd);
@@ -1747,56 +2033,64 @@ function ComposerBody({
         return true;
       }
     }
+    // web composerSubmissionIntentForKey: the send-modifier setting decides whether plain Enter
+    // sends or breaks the line, and the send commands go wherever they are bound.
+    const shortcutContext = {
+      composerFocus: true,
+      editableFocus: true,
+      draftThreadRoute: target.kind === "draft",
+      turnRunning: isRunning,
+      composerRequiresModifier: composerRequiresModifier(settings.sendShortcut, valueRef.current),
+    };
+    const command = resolveKeyEventCommand(event, shortcutContext);
+    const shortcutEvent = toShortcutEvent(event);
+    const submissionIntent = composerSubmissionIntentForKey({
+      event: { ...shortcutEvent, key: shortcutEvent.key === "enter" ? "Enter" : shortcutEvent.key, repeat: false },
+      keybindings: appAtomRegistry.get(activeKeybindingsAtom),
+      isSoftwareKeyboardOpen: false,
+      isDraftThread: target.kind === "draft",
+      isRunning,
+      ...(settings.sendShortcut ? { sendShortcut: settings.sendShortcut } : {}),
+      prompt: valueRef.current,
+    });
     if (menuIsOpen) {
       if (key === "escape") {
         dismissTrigger();
         return true;
       }
-      const item = activeMenuItem ?? menu.items[0];
-      if ((plainEnter || (key === "tab" && !mods.shift && !ctrl)) && item) {
-        onSelectMenuItem(item);
-        return true;
-      }
-      if (((key === "tab" && mods.shift) || (ctrl && (key === "p" || key === "k")) || (key === "up" && !mods.shift && !ctrl && !mods.alt)) && menu.items.length > 0) {
-        nudgeMenuHighlight(-1);
-        return true;
-      }
-      if (((ctrl && (key === "n" || key === "j")) || (key === "down" && !mods.shift && !ctrl && !mods.alt)) && menu.items.length > 0) {
-        nudgeMenuHighlight(1);
-        return true;
+      if (submissionIntent === null || submissionIntent === "foreground") {
+        const item = activeMenuItem ?? menu.items[0];
+        if ((key === "enter" || (key === "tab" && !mods.shift && !ctrl)) && item) {
+          onSelectMenuItem(item);
+          return true;
+        }
+        if (((key === "tab" && mods.shift) || (ctrl && (key === "p" || key === "k")) || (key === "up" && !mods.shift && !ctrl && !mods.alt)) && menu.items.length > 0) {
+          nudgeMenuHighlight(-1);
+          return true;
+        }
+        if (((ctrl && (key === "n" || key === "j")) || (key === "down" && !mods.shift && !ctrl && !mods.alt)) && menu.items.length > 0) {
+          nudgeMenuHighlight(1);
+          return true;
+        }
       }
     }
-    if (key === "tab" && mods.shift && !ctrl && !mods.alt) {
+    // web's chat shortcuts listen on the window in the capture phase, ahead of the editor: a
+    // chord bound to a command (Alt+Up edits the last queued message, Mod+Shift+Enter steers)
+    // runs it before the editor treats the key as caret movement or a line break. The commands
+    // this composer owns run here; any other goes on to the window dispatcher untouched.
+    if (command !== null && !COMPOSER_SEND_COMMANDS.has(command)) {
+      const handler = shortcutCommandsRef.current[command];
+      if (!handler) return "pass";
+      if (handler(event)) return true;
+    }
+    if (key === "tab" && mods.shift && !ctrl && !mods.alt && submissionIntent === null) {
       toggleInteractionMode();
       return true;
     }
-    if (key === "up" || key === "down") {
+    if ((key === "up" || key === "down") && submissionIntent === null) {
       return navigatePromptHistory(key === "up" ? "backward" : "forward", event);
     }
-    if (plainEnter) {
-      if (event.isHeld) return true;
-      submit();
-      return true;
-    }
-    // web composerSubmissionIntentForKey. A chord bound to another command (mod+shift+enter
-    // steers the queue) is left to the window dispatcher.
-    if (key === "enter" && (ctrl || mods.alt)) {
-      const command = resolveKeyEventCommand(event, {
-        composerFocus: true,
-        draftThreadRoute: target.kind === "draft",
-        turnRunning: isRunning,
-      });
-      const submissionIntent: ComposerSubmissionIntent | null =
-        command === "composer.sendAlternate" && isRunning
-          ? "alternate"
-          : command === "composer.sendBackground" && target.kind === "draft"
-            ? "background"
-            : command === "composer.sendAndNewThread" && target.kind === "thread"
-              ? "background"
-              : command === null && !mods.shift && !mods.alt
-                ? "foreground"
-                : null;
-      if (submissionIntent === null) return false;
+    if (submissionIntent !== null) {
       if (event.isHeld) return true;
       submit(
         resolveComposerDispatchMode({
@@ -2019,7 +2313,11 @@ function ComposerBody({
       void readClipboardText().then(
         (text) => {
           if (text.length === 0) onPasteNonText();
-          else if (!onPasteText(text.replace(/\r\n?/g, "\n"))) appendToEditor(text);
+          else if (!onPasteText(text.replace(/\r\n?/g, "\n"))) {
+            const before = readComposerDraft(promptKey).prompt;
+            appendToEditor(text);
+            onPastedTextInline(before);
+          }
         },
         () => onPasteNonText(),
       );
@@ -2235,7 +2533,10 @@ function ComposerBody({
   const footerGap = isComposerFooterCompact ? 6 : windowWidth >= SM_BREAKPOINT ? 0 : 8;
 
   const primaryActions = (
-    <ComposerPrimaryActions
+    <UploadGatedPrimaryActions
+      uploadKey={uploadsEnabled && !queuedEdit.isEditing ? promptKey : null}
+      resumeCompactionTokensAt={resumeCompactionTokensAt}
+      fullHistoryThreadKey={threadKeyForHistory}
       compact={isResting || isComposerPrimaryActionsCompact}
       canOperateThread={true}
       pendingAction={pendingAction}
@@ -2491,7 +2792,8 @@ function ComposerBody({
               codeBlocks={settings.composerRichTextEnabled}
               literal={isLiteralPendingAnswer}
               readOnly={isChoiceOnlyPendingQuestion || requests.activePendingIsResponding}
-              placeholder={placeholder}
+              // web hides the placeholder while the draft holds attachments (they count as context).
+              placeholder={images.length > 0 || files.length > 0 ? "" : placeholder}
               resting={isResting}
               minRows={isResting ? 1 : 3}
               maxRows={isResting ? 1 : 9}
@@ -2501,6 +2803,7 @@ function ComposerBody({
               onChange={onEditorChange}
               onKeyCommand={onEditorKeyCommand}
               onPasteText={onPasteText}
+              onPastedTextInline={onPastedTextInline}
               onPasteNonText={onPasteNonText}
               onFocus={onEditorFocus}
               onBlur={onEditorBlur}
@@ -2681,6 +2984,53 @@ function OptimisticMessageWatcher({
   }, [items, threadKey]);
   return null;
 }
+
+/**
+ * web attachmentUploadBlockReason on the send button: subscribed here rather than in the
+ * composer body, so upload progress re-renders only the primary actions.
+ */
+function UploadGatedPrimaryActions({
+  uploadKey,
+  resumeCompactionTokensAt,
+  fullHistoryThreadKey,
+  ...props
+}: Parameters<typeof ComposerPrimaryActions>[0] & {
+  uploadKey: string | null;
+  resumeCompactionTokensAt: (now: string) => number | null;
+  fullHistoryThreadKey: string | null;
+}) {
+  const blockReason = useAtomValue(uploadKey === null ? NO_UPLOAD_BLOCK_ATOM : stagedUploadBlockReasonAtom(uploadKey));
+  // web nowMinute: the offer appears once the prompt cache has gone cold, checked each minute.
+  const nowMinute = useNowMinute();
+  const compactTokens = resumeCompactionTokensAt(nowMinute);
+  const keepFullHistory = useAtomValue(keepFullHistoryThreadKeysAtom);
+  const keep = fullHistoryThreadKey !== null && keepFullHistory.has(fullHistoryThreadKey);
+  return (
+    <ComposerPrimaryActions
+      {...props}
+      sendDisabledReason={props.sendDisabledReason ?? blockReason}
+      compactBeforeSendTokens={compactTokens}
+      keepFullHistory={keep}
+      onToggleKeepFullHistory={() => {
+        if (fullHistoryThreadKey !== null) setKeepFullHistory(fullHistoryThreadKey, !keep);
+      }}
+    />
+  );
+}
+
+/** The current minute as an ISO string, re-rendering when the minute turns. */
+function useNowMinute(): string {
+  const [now, setNow] = useState(() => new Date(Math.floor(Date.now() / 60_000) * 60_000).toISOString());
+  useEffect(() => {
+    const timer = setTimeout(
+      () => setNow(new Date(Math.floor(Date.now() / 60_000) * 60_000).toISOString()),
+      60_000 - (Date.now() % 60_000) + 50,
+    );
+    return () => clearTimeout(timer);
+  }, [now]);
+  return now;
+}
+const NO_UPLOAD_BLOCK_ATOM = Atom.make<string | null>(null);
 
 /**
  * web ComposerSurface.ContextStrip: a strip under the composer, inset 22px a side, whose top

@@ -654,6 +654,84 @@ export function removeOptimisticMessages(threadKey: string, remove: (message: Ch
   if (next.length !== current.length) appAtomRegistry.set(atom, next.length === 0 ? NO_OPTIMISTIC_MESSAGES : next);
 }
 
+/**
+ * A new-thread draft's first send while it is on its way (web promotes the draft at once):
+ * the draft shows the message and the thread-to-be's title until the thread opens.
+ */
+export interface DraftPendingSend {
+  readonly threadId: ThreadId;
+  readonly message: ChatMessage;
+  readonly title: string;
+}
+
+export const draftPendingSendAtom = Atom.family((_draftKey: string) =>
+  Atom.make<DraftPendingSend | null>(null).pipe(Atom.keepAlive),
+);
+
+/**
+ * web useAttachmentPreviewHandoff: a sent image keeps showing from its local file once the
+ * server's message replaces the optimistic one, instead of an empty tile while the server's
+ * copy loads (gpuix <img> has no load event to wait for). By the server's attachment id, for
+ * this session; the files stay on disk.
+ */
+const sentImagePreviews = new Map<string, string>();
+
+export function rememberSentImagePreview(attachmentId: string, path: string): void {
+  sentImagePreviews.set(attachmentId, path);
+}
+
+export function sentImagePreviewPath(attachmentId: string): string | null {
+  const path = sentImagePreviews.get(attachmentId);
+  if (path === undefined) return null;
+  if (NodeFs.existsSync(path)) return path;
+  sentImagePreviews.delete(attachmentId);
+  return null;
+}
+
+// ── Stale-session compaction (web ChatView resumeCompaction) ────────────
+
+/** Threads whose next send keeps the full history instead of compacting first (web: per view). */
+export const keepFullHistoryThreadKeysAtom = Atom.make<ReadonlySet<string>>(new Set<string>()).pipe(Atom.keepAlive);
+
+export function setKeepFullHistory(threadKey: string, keep: boolean): void {
+  const current = appAtomRegistry.get(keepFullHistoryThreadKeysAtom);
+  if (current.has(threadKey) === keep) return;
+  const next = new Set(current);
+  if (keep) next.add(threadKey);
+  else next.delete(threadKey);
+  appAtomRegistry.set(keepFullHistoryThreadKeysAtom, next);
+}
+
+const RESUME_COMPACTION_DISMISSED_FILE = "resume-compaction-dismissed.json";
+
+/**
+ * web useLocalStorage `t3code:resume-compaction-dismissed:<env>:<instance>`: answering Claude's
+ * own "never compact" question stops the offer for that provider instance, everywhere.
+ */
+export const resumeCompactionDismissedAtom = Atom.make<ReadonlySet<string>>(
+  ((): ReadonlySet<string> => {
+    try {
+      const parsed = JSON.parse(NodeFs.readFileSync(NodePath.join(termHome(), RESUME_COMPACTION_DISMISSED_FILE), "utf8"));
+      return new Set(Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : []);
+    } catch {
+      return new Set<string>();
+    }
+  })(),
+).pipe(Atom.keepAlive);
+
+export function dismissResumeCompactionForever(key: string): void {
+  const current = appAtomRegistry.get(resumeCompactionDismissedAtom);
+  if (current.has(key)) return;
+  const next = new Set(current).add(key);
+  appAtomRegistry.set(resumeCompactionDismissedAtom, next);
+  try {
+    NodeFs.mkdirSync(termHome(), { recursive: true });
+    NodeFs.writeFileSync(NodePath.join(termHome(), RESUME_COMPACTION_DISMISSED_FILE), JSON.stringify([...next]));
+  } catch (error) {
+    console.error("[composer] could not save the compaction dismissal", error);
+  }
+}
+
 // ── Settings the composer reads ─────────────────────────────────────────
 
 /**

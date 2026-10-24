@@ -180,7 +180,9 @@ export function useQueuedRunEdit(input: {
         edit = {
           messageId: editing.messageId,
           attachments: [...editing.existingAttachments, ...uploads],
-          ...(records.length > 0 ? { context: { version: 1, records } as OrchestrationMessageContext } : {}),
+          // Always sent, even empty, like web: an omitted context keeps the server's old records,
+          // so removing the last attachment-linked record would not stick.
+          context: { version: 1, records } as OrchestrationMessageContext,
         };
       }
       const result = await runAtomCommand(

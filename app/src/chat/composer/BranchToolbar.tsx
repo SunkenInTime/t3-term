@@ -22,18 +22,26 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import { resolveNewThreadEnvMode, resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import * as Option from "effect/Option";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import type { KeyEvent } from "@gpuix/react";
+import type { KeybindingCommand } from "@t3tools/contracts";
+import { registerShortcutHandler } from "../../keybindings/useGlobalKeybindings.ts";
+import { composerRestingAtom } from "./composerResting.ts";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
 import {
   composerDraftAtom,
   composerMenuOpenAtom,
   composerSettingsAtom,
+  draftPendingSendAtom,
   moveComposerDraftContent,
+  readComposerDraft,
+  setComposerRuntimeMode,
   setDraftWorkspace,
 } from "../../state/composer.ts";
 import { composerSendingAtom } from "./composerSend.ts";
-import { openScratchProject } from "../../palette/actions.ts";
+import { openScratchProject, scratchWorkspaceRootFor } from "../../palette/actions.ts";
+import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { composerVcsEnvironment, useEnvironmentQuery } from "../../state/composerQueries.ts";
 import {
   environmentCatalog,
@@ -95,6 +103,9 @@ export function BranchToolbar({ environmentId, projectId, draftKey, onComposerFo
   const projectThreads = useAtomValue(environmentThreadShells.threadShellsForProjectRefsAtom([projectRef]));
   const [menuOpen, setMenuOpen] = useAtom(composerMenuOpenAtom);
   const environments = useLogicalProjectEnvironments(project);
+  const pendingSend = useAtomValue(draftPendingSendAtom(draftKey));
+  const environmentChangeRef = useRef<{ readonly environmentId: EnvironmentId; readonly scope: string } | null>(null);
+  const mountedScopeRef = useRef(new Set<string>());
 
   const projectCwd = project?.workspaceRoot ?? null;
   const activeWorktreePath = draft.worktreePath ?? null;
@@ -140,13 +151,19 @@ export function BranchToolbar({ environmentId, projectId, draftKey, onComposerFo
         })
       : null;
   const newWorktreesStartFromOrigin = projectSettings?.settings.newWorktreesStartFromOrigin ?? false;
+  // web useHandleNewThread stamps the runtime mode default with the workspace defaults, so a
+  // later change to the project's settings does not move a draft already open.
+  const defaultRuntimeMode = projectSettings?.settings.defaultRuntimeMode ?? null;
   useEffect(() => {
     if (draft.envMode !== undefined || defaultEnvMode === null) return;
     setDraftWorkspace(draftKey, {
       envMode: defaultEnvMode,
       startFromOrigin: defaultEnvMode === "worktree" && newWorktreesStartFromOrigin,
     });
-  }, [defaultEnvMode, draft.envMode, draftKey, newWorktreesStartFromOrigin]);
+    if (defaultRuntimeMode !== null && readComposerDraft(draftKey).runtimeMode === null) {
+      setComposerRuntimeMode(draftKey, defaultRuntimeMode);
+    }
+  }, [defaultEnvMode, draft.envMode, draftKey, newWorktreesStartFromOrigin, defaultRuntimeMode]);
 
   const effectiveEnvMode: EnvMode = activeWorktreePath ? "local" : (draft.envMode ?? defaultEnvMode ?? "local");
   const startFromOrigin = draft.startFromOrigin ?? false;
@@ -160,9 +177,6 @@ export function BranchToolbar({ environmentId, projectId, draftKey, onComposerFo
   const activeEnvironment = environments.find((env) => env.environmentId === environmentId) ?? null;
   const canPickEnvironment = environments.length > 1;
   const showEnvironmentIndicator = shouldShowEnvironmentIndicator({ activeEnvironment, canPickEnvironment });
-
-  if (!project || projectCwd === null) return null;
-  if (!showGitControls && !showEnvironmentIndicator) return null;
 
   const onEnvModeChange = (mode: EnvMode) => {
     setDraftWorkspace(draftKey, {
@@ -181,12 +195,18 @@ export function BranchToolbar({ environmentId, projectId, draftKey, onComposerFo
     });
     onComposerFocusRequest();
   };
+  // web useDraftEnvironmentRouting: a switch in flight belongs to the draft it started on. A
+  // newer switch, a send, or leaving the draft abandons it, so a late scratch project cannot
+  // pull the draft somewhere the user no longer asked for.
   const onEnvironmentChange = (option: EnvironmentOption) => {
     if (option.environmentId === environmentId) return;
     // The draft goes along to the other machine (web retargets it rather than opening another).
     if (appAtomRegistry.get(composerSendingAtom(draftKey))) return;
+    const request = { environmentId: option.environmentId, scope: draftKey };
+    environmentChangeRef.current = request;
     const retarget = (projectId: ProjectId) => {
-      // A send that started meanwhile owns the draft.
+      // A send that started meanwhile owns the draft; so does a newer switch.
+      if (environmentChangeRef.current !== request || !mountedScopeRef.current.has(request.scope)) return;
       if (appAtomRegistry.get(composerSendingAtom(draftKey))) return;
       const draftId = moveComposerDraftContent(draftKey, { environmentId: option.environmentId, projectId });
       appAtomRegistry.set(routeAtom, {
@@ -196,15 +216,64 @@ export function BranchToolbar({ environmentId, projectId, draftKey, onComposerFo
         ...(draftId ? { draftId } : {}),
       });
     };
+    const finish = () => {
+      if (environmentChangeRef.current === request) environmentChangeRef.current = null;
+    };
     if (option.projectId !== null) {
       retarget(option.projectId);
+      finish();
       return;
     }
     // web: a machine without this project gets the draft in its scratch project.
-    void openScratchProject(option.environmentId, "Could not switch machine").then((project) => {
-      if (project) retarget(project.id);
-    });
+    void openScratchProject(option.environmentId, "Could not switch machine")
+      .then((project) => {
+        if (project) retarget(project.id);
+      })
+      .finally(finish);
   };
+
+  // web composerShortcutCommands composer.host / composer.previousWorktree and ChatView's
+  // composer.cycleHost: the machine and previous-worktree chords act on this draft's strip.
+  const shortcutsRef = useRef<Partial<Record<KeybindingCommand, (event: KeyEvent) => boolean>>>({});
+  shortcutsRef.current = {
+    "composer.host": (event) => {
+      if (!project || !canPickEnvironment) return false;
+      if (!event.isHeld) {
+        appAtomRegistry.set(composerRestingAtom(draftKey), false);
+        setMenuOpen(menuOpen === "environment" || menuOpen === "env-mode" ? null : "environment");
+      }
+      return true;
+    },
+    "composer.cycleHost": (event) => {
+      if (!project || environments.length < 2) return false;
+      if (event.isHeld) return true;
+      const currentId = environmentChangeRef.current?.environmentId ?? environmentId;
+      const index = environments.findIndex((env) => env.environmentId === currentId);
+      const next = environments[(index + 1) % environments.length];
+      if (next) onEnvironmentChange(next);
+      return true;
+    },
+    "composer.previousWorktree": (event) => {
+      if (!project || !showGitControls || !previousWorktreeSeed) return false;
+      if (!event.isHeld) onUsePreviousWorktree();
+      return true;
+    },
+  };
+  useEffect(() => {
+    mountedScopeRef.current.add(draftKey);
+    const dispose = (["composer.host", "composer.cycleHost", "composer.previousWorktree"] as const).map((command) =>
+      registerShortcutHandler(command, (resolved, event) => shortcutsRef.current[resolved]?.(event) ?? false),
+    );
+    return () => {
+      mountedScopeRef.current.delete(draftKey);
+      for (const unregister of dispose) unregister();
+    };
+  }, [draftKey]);
+
+  if (!project || projectCwd === null) return null;
+  if (!showGitControls && !showEnvironmentIndicator) return null;
+  // The first send is becoming a thread: web's thread composer has no context strip.
+  if (pendingSend !== null) return null;
 
   const runContextOpen = menuOpen === "env-mode" || menuOpen === "environment";
   const setRunContextOpen = (open: boolean) => {
@@ -402,33 +471,50 @@ function useLogicalProjectEnvironments(
   const configs = useAtomValue(environmentServerConfigsAtom);
   if (!activeProject) return [];
   const groupingSettings = selectProjectGroupingSettings(settings);
-  const logicalKey = deriveLogicalProjectKeyFromSettings(activeProject, groupingSettings);
   const enabledIds = [...catalog.entries.entries()]
     .filter(([, entry]) => entry.enabled && entry.unsupportedReason === undefined)
     .map(([id]) => id);
   // t3-term has no local desktop server; the first connection plays the primary's part.
   const primaryEnvironmentId = enabledIds[0] ?? null;
-  const seen = new Set<string>();
   const envs: EnvironmentOption[] = [];
-  for (const project of allProjects) {
-    if (seen.has(project.environmentId)) continue;
-    if (deriveLogicalProjectKeyFromSettings(project, groupingSettings) !== logicalKey) continue;
-    seen.add(project.environmentId);
-    const entry = catalog.entries.get(project.environmentId);
-    const config = configs.get(project.environmentId) ?? null;
-    const isPrimary = project.environmentId === primaryEnvironmentId;
+  const pushEnvironment = (environmentId: EnvironmentId, projectId: ProjectId | null) => {
+    const entry = catalog.entries.get(environmentId);
+    const config = configs.get(environmentId) ?? null;
+    const isPrimary = environmentId === primaryEnvironmentId;
     envs.push({
-      environmentId: project.environmentId,
-      projectId: project.id,
+      environmentId,
+      projectId,
       label: resolveEnvironmentOptionLabel({
         isPrimary,
-        environmentId: project.environmentId,
+        environmentId,
         runtimeLabel: config?.environment.label ?? null,
         savedLabel: entry ? (Option.getOrNull(entry.profile)?.label ?? null) : null,
       }),
       isPrimary,
       machine: resolveEnvironmentMachineKind(config),
     });
+  };
+  if (activeProject.isScratch === true) {
+    // A scratch draft can go to any machine that offers a scratch workspace; one without its
+    // scratch project yet gets it created on the switch (projectId null).
+    for (const environmentId of enabledIds) {
+      const scratchRoot = scratchWorkspaceRootFor(environmentId);
+      if (scratchRoot === null && environmentId !== activeProject.environmentId) continue;
+      const scratchProject =
+        environmentId === activeProject.environmentId
+          ? activeProject
+          : allProjects.find((project) => project.environmentId === environmentId && isScratchProject(project, scratchRoot));
+      pushEnvironment(environmentId, scratchProject?.id ?? null);
+    }
+  } else {
+    const logicalKey = deriveLogicalProjectKeyFromSettings(activeProject, groupingSettings);
+    const seen = new Set<string>();
+    for (const project of allProjects) {
+      if (seen.has(project.environmentId)) continue;
+      if (deriveLogicalProjectKeyFromSettings(project, groupingSettings) !== logicalKey) continue;
+      seen.add(project.environmentId);
+      pushEnvironment(project.environmentId, project.id);
+    }
   }
   envs.sort((a, b) => {
     if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
