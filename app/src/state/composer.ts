@@ -54,13 +54,24 @@ export type ComposerTarget =
       readonly kind: "draft";
       readonly environmentId: EnvironmentId | null;
       readonly projectId: ProjectId | null;
+      /** Further drafts in the same project (web draftId); absent for the first. */
+      readonly draftId?: string;
     };
 
-/** One draft per thread, and one new-thread draft per project. */
+/**
+ * One draft per thread. New-thread drafts: the project's first draft, plus any number of
+ * further ones (web useHandleNewThread keeps a draft that has content and opens another).
+ */
 export function composerTargetKey(target: ComposerTarget): string {
-  return target.kind === "thread"
-    ? `thread:${target.environmentId}:${target.threadId}`
-    : `draft:${target.environmentId ?? "-"}:${target.projectId ?? "-"}`;
+  if (target.kind === "thread") return `thread:${target.environmentId}:${target.threadId}`;
+  const base = `draft:${target.environmentId ?? "-"}:${target.projectId ?? "-"}`;
+  return target.draftId ? `${base}:${target.draftId}` : base;
+}
+
+/** The draft id in a new-thread draft key (`draft:<env>:<project>:<draftId>`), if any. */
+export function draftIdOfKey(key: string): string | undefined {
+  if (!key.startsWith("draft:")) return undefined;
+  return key.split(":")[3] || undefined;
 }
 
 // ── Draft shape ─────────────────────────────────────────────────────────
@@ -526,6 +537,29 @@ export function setDraftWorkspace(
   },
 ): void {
   updateComposerDraft(key, (draft) => ({ ...draft, ...workspace }));
+}
+
+/**
+ * web useHandleNewThread: New thread reuses a draft of the project that holds nothing yet,
+ * the first draft before the others. `null` when every one of them has content.
+ */
+export function reusableProjectDraftId(environmentId: EnvironmentId, projectId: ProjectId): string | undefined | null {
+  const base = composerTargetKey({ kind: "draft", environmentId, projectId });
+  const drafts = appAtomRegistry.get(composerDraftsAtom);
+  if (!composerDraftHasUserContent(drafts[base])) return undefined;
+  for (const [key, draft] of Object.entries(drafts)) {
+    if (key.startsWith(`${base}:`) && !composerDraftHasUserContent(draft)) return draftIdOfKey(key);
+  }
+  return null;
+}
+
+/** Drops a draft entry: a further draft is done once its thread exists. */
+export function deleteComposerDraft(key: string): void {
+  const drafts = appAtomRegistry.get(composerDraftsAtom);
+  if (!(key in drafts)) return;
+  const { [key]: _removed, ...rest } = drafts;
+  appAtomRegistry.set(composerDraftsAtom, rest);
+  schedulePersist();
 }
 
 // ── Optimistic sent messages ────────────────────────────────────────────

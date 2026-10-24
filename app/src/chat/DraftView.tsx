@@ -25,7 +25,16 @@ import { DraftDetailsCard } from "./details/ThreadDetailsCard.tsx";
 import { DraftHeroHeadline } from "./draft/DraftHeroHeadline.tsx";
 import { NoActiveThreadState, NoProjectsHero } from "./draft/EmptyStates.tsx";
 
-export function DraftView({ environmentId, projectId }: { environmentId: EnvironmentId | null; projectId: ProjectId | null }) {
+export function DraftView({
+  environmentId,
+  projectId,
+  draftId,
+}: {
+  environmentId: EnvironmentId | null;
+  projectId: ProjectId | null;
+  draftId?: string | undefined;
+}) {
+  const target = { kind: "draft" as const, environmentId, projectId, ...(draftId ? { draftId } : {}) };
   const theme = useTheme();
   const cardInline = useDetailsCardInline();
   const small = useSmallViewport();
@@ -76,20 +85,20 @@ export function DraftView({ environmentId, projectId }: { environmentId: Environ
           </div>
           <div style={{ display: "flex", flexDirection: "column", flexShrink: 0 }}>
             <ChatLane cardInline={cardInline}>
-              <Composer target={{ kind: "draft", environmentId, projectId }} layout="lane" />
+              <Composer target={target} layout="lane" />
               <div style={{ height: small ? 16 : 20, flexShrink: 0 }} />
             </ChatLane>
           </div>
           <div style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, minHeight: 0 }} />
         </div>
         {environmentId !== null && projectId !== null ? (
-          <ChatBannerLane composerTargetKey={composerTargetKey({ kind: "draft", environmentId, projectId })} overlay />
+          <ChatBannerLane composerTargetKey={composerTargetKey(target)} overlay />
         ) : null}
         {project && environmentId !== null && projectId !== null ? (
           <DraftDetailsCard
             environmentId={environmentId}
             projectId={projectId}
-            draftKey={composerTargetKey({ kind: "draft", environmentId, projectId })}
+            draftKey={composerTargetKey(target)}
           />
         ) : null}
       </div>

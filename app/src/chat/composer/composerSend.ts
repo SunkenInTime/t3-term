@@ -49,6 +49,8 @@ import {
   type DraftThreadEnvMode,
   addOptimisticMessage,
   clearComposerContent,
+  deleteComposerDraft,
+  draftIdOfKey,
   removeOptimisticMessages,
   composerAttachmentEnvironment,
   restoreComposerContent,
@@ -424,6 +426,9 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
     } else if (input.target.kind === "draft") {
       appAtomRegistry.set(routeAtom, { kind: "thread", environmentId: input.environmentId, threadId });
     }
+    // A further draft of the project has become its thread; the first draft stays as the
+    // project's empty new-thread composer.
+    if (input.target.kind === "draft" && draftIdOfKey(input.draftKey) && !input.background) deleteComposerDraft(input.draftKey);
     return true;
   } catch (error) {
     failure = errorMessage(error);

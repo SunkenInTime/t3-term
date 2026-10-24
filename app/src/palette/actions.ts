@@ -31,6 +31,7 @@ import {
   readComposerDraft,
   setComposerInteractionMode,
   setComposerModelSelection,
+  reusableProjectDraftId,
 } from "../state/composer.ts";
 import {
   environmentCatalog,
@@ -166,14 +167,19 @@ export function openThread(ref: Pick<ScopedThreadRef, "environmentId" | "threadI
  * first, then the thread's own), unless the user already picked one in that draft.
  * The interaction mode (Build/Plan) comes along too.
  */
-function carryComposerStateInto(projectRef: ScopedProjectRef): void {
-  const destinationKey = composerTargetKey({ kind: "draft", ...projectRef });
+function carryComposerStateInto(projectRef: ScopedProjectRef, draftId: string | undefined): void {
+  const destinationKey = composerTargetKey({ kind: "draft", ...projectRef, ...(draftId ? { draftId } : {}) });
   const route = appAtomRegistry.get(routeAtom);
   const sourceKey =
     route.kind === "thread"
       ? composerTargetKey({ kind: "thread", environmentId: route.environmentId, threadId: route.threadId })
       : route.kind === "draft"
-        ? composerTargetKey({ kind: "draft", environmentId: route.environmentId, projectId: route.projectId })
+        ? composerTargetKey({
+            kind: "draft",
+            environmentId: route.environmentId,
+            projectId: route.projectId,
+            ...(route.draftId ? { draftId: route.draftId } : {}),
+          })
         : null;
   const sourceShell = route.kind === "thread" ? readThreadShell(scopeThreadRef(route.environmentId, route.threadId)) : null;
   const sourceComposer = sourceKey ? readComposerDraft(sourceKey) : null;
@@ -204,11 +210,16 @@ function carryComposerStateInto(projectRef: ScopedProjectRef): void {
 }
 
 export function startNewThread(projectRef: ScopedProjectRef): void {
-  carryComposerStateInto(projectRef);
+  // web useHandleNewThread: an empty draft of the project is reused; a draft with content
+  // stays as it is (in the sidebar) and the new thread gets a draft of its own.
+  const reusable = reusableProjectDraftId(projectRef.environmentId, projectRef.projectId);
+  const draftId = reusable === null ? globalThis.crypto.randomUUID() : reusable;
+  carryComposerStateInto(projectRef, draftId);
   appAtomRegistry.set(routeAtom, {
     kind: "draft",
     environmentId: projectRef.environmentId,
     projectId: projectRef.projectId,
+    ...(draftId ? { draftId } : {}),
   });
 }
 

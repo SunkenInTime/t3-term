@@ -47,7 +47,7 @@ export function MainView() {
       {route.kind === "thread" ? (
         <ChatView environmentId={route.environmentId} threadId={route.threadId} />
       ) : route.kind === "draft" ? (
-        <DraftView environmentId={route.environmentId} projectId={route.projectId} />
+        <DraftView environmentId={route.environmentId} projectId={route.projectId} draftId={route.draftId} />
       ) : route.kind === "settings" ? (
         <SettingsView page={route.page} />
       ) : route.kind === "usage" ? (
