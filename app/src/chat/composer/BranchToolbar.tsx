@@ -13,12 +13,14 @@ import {
 } from "@t3tools/client-runtime/state/project-grouping";
 import {
   resolveEnvironmentMachineKind,
+  T3_PROJECT_FILE_NAME,
   type EnvironmentId,
   type EnvironmentMachineKind,
   type ProjectId,
 } from "@t3tools/contracts";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import { resolveNewThreadEnvMode, resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import * as Option from "effect/Option";
 import { useEffect } from "react";
 
@@ -38,6 +40,7 @@ import {
   environmentProjects,
   environmentServerConfigsAtom,
   environmentThreadShells,
+  projectEnvironment,
   serverEnvironment,
 } from "../../state/environment.ts";
 import { routeAtom } from "../../state/ui.ts";
@@ -104,9 +107,29 @@ export function BranchToolbar({ environmentId, projectId, draftKey, onComposerFo
   const currentGitBranch = status.data?.refName ?? null;
 
   // The default the web app stamps on a new draft (useHandleNewThread resolveDefaultEnvMode).
-  // The .t3 project file is not read here, so a project-file default does not apply.
-  const projectSettings =
+  // With no env mode in the server's project settings, the project's .t3 file decides.
+  const settingsOnly =
     serverConfig && project ? resolveProjectSettings(serverConfig.settings, project.id, project, null) : null;
+  const consultProjectFile = settingsOnly !== null && project !== null && settingsOnly.settings.defaultThreadEnvMode === null;
+  const projectFileQuery = useEnvironmentQuery(
+    consultProjectFile && project
+      ? projectEnvironment.readFile({
+          environmentId,
+          input: { cwd: project.workspaceRoot, relativePath: T3_PROJECT_FILE_NAME, allowMissing: true },
+        })
+      : null,
+  );
+  const projectFileData = projectFileQuery.data as { exists?: boolean; truncated?: boolean; contents?: string } | null;
+  const projectFile =
+    projectFileData && projectFileData.exists !== false && !projectFileData.truncated && typeof projectFileData.contents === "string"
+      ? parseT3ProjectFile(projectFileData.contents)
+      : null;
+  // Wait for the file before stamping a default, as web awaits it.
+  const projectFileSettled = !consultProjectFile || projectFileQuery.data !== null || projectFileQuery.error !== null;
+  const projectSettings =
+    serverConfig && project && projectFileSettled
+      ? resolveProjectSettings(serverConfig.settings, project.id, project, projectFile)
+      : null;
   const defaultEnvMode: EnvMode | null =
     projectSettings && project
       ? resolveNewThreadEnvMode({

@@ -58,6 +58,7 @@ import {
 } from "@t3tools/contracts";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { createModelSelection } from "@t3tools/shared/model";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { proposedPlanTitle } from "@t3tools/shared/proposedPlanText";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -654,8 +655,13 @@ function ComposerBody({
   );
 
   // ── Modes ─────────────────────────────────────────────────────────────
+  // web useHandleNewThread seeds a draft with its project's runtime mode default.
+  const projectRuntimeMode =
+    threadId === null && project && serverConfig
+      ? (resolveProjectSettings(serverConfig.settings, project.id, project).settings.defaultRuntimeMode ?? null)
+      : null;
   const requestedRuntimeMode: RuntimeMode =
-    draft.runtimeMode ?? shell?.runtimeMode ?? settings.defaultRuntimeMode ?? "full-access";
+    draft.runtimeMode ?? shell?.runtimeMode ?? projectRuntimeMode ?? settings.defaultRuntimeMode ?? "full-access";
   const requestedInteractionMode: ProviderInteractionMode =
     draft.interactionMode ?? shell?.interactionMode ?? "default";
   const { enabled: planModeUiEnabled, interactionMode } = resolveComposerInteractionMode({
