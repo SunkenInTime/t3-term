@@ -7,6 +7,7 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import { isHostPath } from "@t3tools/shared/path";
+import { assistantCitationLabel } from "@t3tools/shared/assistantCitations";
 import { formatProviderSkillDisplayName, type InlineSkill } from "@t3tools/shared/inlineSkills";
 import { SKILL_CHIP_ICON_SVG } from "../markdown/chipIcons.ts";
 import { mediaMimeTypeFromExtension } from "@t3tools/shared/filePreview";
@@ -196,9 +197,18 @@ function createBoxes(context: LinkContext): InlineBoxRenderers {
       return payload ? chipAtom(id("ctx"), payload, env.styles.body, lineWidth(env)) : null;
     },
     citationChip(entry: LinkEntry, env) {
-      const label = entry.kind.kind === "citation" ? "Quote" : "Citation";
-      const payload: ChipPayload = { type: "chip", kind: "citation", label, icon: { kind: "lucide", name: "quote" } };
-      return chipAtom(id("cite"), payload, env.styles.body, lineWidth(env));
+      // AssistantCitationChip: the quote (or its comment) as the label; the source opens on click.
+      if (entry.kind.kind !== "citation") return chipAtom(id("cite"), { type: "chip", kind: "citation", label: "Quote", icon: { kind: "lucide", name: "quote" } }, env.styles.body, lineWidth(env));
+      const citation = entry.kind.citation;
+      const payload: ChipPayload = {
+        type: "chip",
+        kind: "citation",
+        label: assistantCitationLabel(citation),
+        icon: { kind: "lucide", name: "quote" },
+        tooltip: citation.comment ? `${citation.text}\n\n${citation.comment}` : citation.text,
+        onActivate: () => navigateToThread(citation.environmentId, citation.threadId),
+      };
+      return chipAtom(id("cite"), payload, env.styles.body, Math.min(lineWidth(env), env.styles.body.size * 0.86 * 16 + 40));
     },
     favicon(host, link, env) {
       return faviconAtom(id("fav"), host, env.styles.body, link);
