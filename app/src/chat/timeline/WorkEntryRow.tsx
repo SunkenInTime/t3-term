@@ -14,7 +14,7 @@ import {
   turnItemOutputImages,
   turnItemOutputText,
 } from "@t3tools/client-runtime/work-log/item-detail";
-import { workEntryViewedImagePath } from "@t3tools/client-runtime/work-log/presentation";
+import { resolveViewedImageAsset, workEntryViewedImagePath } from "@t3tools/client-runtime/work-log/presentation";
 import {
   getQuestionAnswerPreview,
   getQuestionAnswerText,
@@ -258,26 +258,30 @@ function WorkEntryLogRow({ workEntry, workspaceRoot, displayLabel }: WorkEntryRo
   const skill = payload?.type === "dynamic_tool" ? claudeSkillInvocation(payload.toolName, payload.input) : undefined;
   const plainOutput =
     toolGroupAction(workEntry) === "read" ? workEntryReadOutput(workEntry, workspaceRoot) : skill ? (skill.args ?? null) : undefined;
+  // The picture a Read/view tool looked at, served from the workspace like web's media details.
+  const viewedImage = viewedImagePath ? resolveViewedImageAsset(viewedImagePath, { threadId: ctx.threadRef.threadId, workspaceRoot }) : null;
   const canExpand =
     previewText.trim().length > 0 ||
     (workEntry.itemType === "dynamic_tool" && workEntry.toolData !== undefined) ||
-    Boolean(workEntryRawCommand(workEntry) || workEntry.command?.trim() || workEntry.detail?.trim() || workEntry.changedFiles?.length);
+    Boolean(
+      workEntryRawCommand(workEntry) || workEntry.command?.trim() || workEntry.detail?.trim() || workEntry.changedFiles?.length || viewedImage,
+    );
   const expandedBody =
     expanded && !isReasoning
       ? plainOutput !== undefined
         ? plainOutput
-        : buildToolCallExpandedBody(workEntry, workspaceRoot, previewText, viewedImagePath)
+        : buildToolCallExpandedBody(workEntry, workspaceRoot, previewText, viewedImage ? viewedImagePath : null)
       : null;
   const plainOutputFetches =
     plainOutput !== undefined && workEntry.projectedItem !== undefined && turnItemNeedsDetailFetch(workEntry.projectedItem.item);
   const canExpandProjectedItem =
     plainOutput !== undefined
-      ? Boolean(plainOutput || viewedImagePath || workEntry.questionAnswer || plainOutputFetches)
+      ? Boolean(plainOutput || viewedImage || workEntry.questionAnswer || plainOutputFetches)
       : workEntry.projectedItem === undefined
         ? canExpand
         : isReasoning
           ? Boolean(workEntry.detail?.trim())
-          : Boolean(viewedImagePath || workEntry.questionAnswer || turnItemHasDetail(workEntry.projectedItem.item));
+          : Boolean(viewedImage || workEntry.questionAnswer || turnItemHasDetail(workEntry.projectedItem.item));
   const iconColor = showWarningIndicator
     ? theme.warning
     : showDestructiveRowStyle
@@ -359,6 +363,11 @@ function WorkEntryLogRow({ workEntry, workspaceRoot, displayLabel }: WorkEntryRo
         </>
       }
     >
+      {expanded && viewedImage ? (
+        <WorkLogDetails kind="media">
+          <AssetImage environmentId={ctx.threadRef.environmentId} resource={viewedImage.resource} alt={viewedImage.alt} maxHeight={256} />
+        </WorkLogDetails>
+      ) : null}
       {expanded && workEntry.questionAnswer ? <QuestionAnswerHistory answer={workEntry.questionAnswer} /> : null}
       {expanded && isReasoning ? <ReasoningTraceContent entries={[workEntry]} /> : null}
       {expanded &&
