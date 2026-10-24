@@ -134,7 +134,7 @@ export function readShortcutContext(overrides?: Partial<ShortcutMatchContext>): 
   const composerFocus = focus ? focus.composer : appAtomRegistry.get(composerFocusAtom);
   const threadRef = route.kind === "thread" ? scopeThreadRef(route.environmentId, route.threadId) : null;
   const rightPanelOpen = threadRef !== null && appAtomRegistry.get(rightPanelOpenAtom);
-  const terminalFocus = appAtomRegistry.get(terminalFocusAtom);
+  const terminalFocus = overrides?.terminalFocus ?? appAtomRegistry.get(terminalFocusAtom);
   return {
     terminalFocus,
     composerFocus,
