@@ -48,6 +48,12 @@ import {
 } from "./sidebarGesture.ts";
 import type { SidebarSweepAction } from "./SidebarThreadRow.tsx";
 import {
+  dropThreadContext,
+  endThreadContextDrag,
+  moveThreadContextDrag,
+  type ThreadContextDragSource,
+} from "../chat/composer/threadContextDrag.tsx";
+import {
   attemptSettle,
   attemptUnsettle,
   attemptUnsnooze,
@@ -310,6 +316,15 @@ export function useSidebarThreadDrag(input: Input): {
 
   const host = useMemo((): SidebarGestureHost => {
     let session: DragSession | null = null;
+    // web Sidebar moveThreadContextDrag: past the list's side edges a row drags as chat
+    // context onto the composer (chat/composer/threadContextDrag.tsx). Working rows only
+    // ever drag that way.
+    let contextSource: ThreadContextDragSource | null = null;
+    let contextOnly = false;
+    const outsideList = (point: SidebarGesturePoint) => {
+      const metrics = latest.current.metrics.current;
+      return point.x < metrics.x || point.x > metrics.x + metrics.width;
+    };
     let sweepState: {
       readonly originKey: string;
       readonly action: SidebarSweepAction;
@@ -439,10 +454,20 @@ export function useSidebarThreadDrag(input: Input): {
       startDrag(threadKey, origin, point) {
         const { list, items, renamingThreadKey, measure } = latest.current;
         if (appAtomRegistry.get(sidebarOptimisticDropAtom) !== null) return false;
+        const contextThread = list.threadByKey.get(threadKey);
+        contextSource = contextThread
+          ? { environmentId: contextThread.environmentId, threadId: contextThread.id, title: contextThread.title.trim() || "Thread" }
+          : null;
+        contextOnly = false;
+        // Working rows (beta shelf) only drag out as chat context, never between sections.
+        if (contextThread && renamingThreadKey !== threadKey && list.sectionByThreadKey.get(threadKey) === "working") {
+          contextOnly = true;
+          if (outsideList(point)) moveThreadContextDrag(point, contextSource!);
+          return true;
+        }
         if (renamingThreadKey === threadKey || !list.draggableThreadKeys.has(threadKey)) return false;
         const thread = list.threadByKey.get(threadKey);
         const activeSection = list.sectionByThreadKey.get(threadKey);
-        // Working rows (beta shelf) only drag out as chat context, never between sections.
         if (!thread || activeSection === undefined || activeSection === "working") return false;
         if (!readCanOperate(thread.environmentId)) return false;
         const activeIndex = items.findIndex((item) => item.kind === "thread" && item.key === threadKey);
@@ -485,9 +510,28 @@ export function useSidebarThreadDrag(input: Input): {
         return true;
       },
       moveDrag(point) {
-        update(point);
+        if (contextSource && outsideList(point)) {
+          moveThreadContextDrag(point, contextSource);
+          return;
+        }
+        endThreadContextDrag();
+        if (!contextOnly) update(point);
       },
       endDrag(point) {
+        const source = contextSource;
+        contextSource = null;
+        if (point !== null && source && outsideList(point)) {
+          stopAutoScroll();
+          session = null;
+          setDragView(null);
+          dropThreadContext(point, source);
+          return;
+        }
+        endThreadContextDrag();
+        if (contextOnly) {
+          contextOnly = false;
+          return;
+        }
         const current = session;
         if (current === null) return;
         if (point !== null) update(point, false);
