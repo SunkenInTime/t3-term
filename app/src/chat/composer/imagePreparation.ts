@@ -11,8 +11,9 @@
 // Re-encodes are always JPEG: web probes WebP first, but neither WIC nor sips can write it.
 import { spawn } from "node:child_process";
 import * as NodeFs from "node:fs";
-import * as NodeOs from "node:os";
 import * as NodePath from "node:path";
+
+import { termHome } from "../../runtime/paths.ts";
 
 import {
   downscalableImageMimeType,
@@ -416,7 +417,7 @@ function encode(src: string, dir: string, attempts: ReadonlyArray<Attempt>, maxB
 /**
  * Returns the original path untouched when it is already a supported type within maxBytes (and,
  * for PNG/JPEG, within 2000px on a side, as web fitImageToMaxEdge). Otherwise writes a JPEG (or a
- * fitted PNG) under os.tmpdir()/t3term-images/<id>/, named after the original.
+ * fitted PNG) under $T3TERM_HOME/prepared/<id>/, named after the original.
  */
 export async function prepareImageAttachment(
   input: { path: string; name: string; mimeType: string; sizeBytes: number },
@@ -461,7 +462,8 @@ export async function prepareImageAttachment(
     }
   }
 
-  const dir = NodePath.join(NodeOs.tmpdir(), "t3term-images", globalThis.crypto.randomUUID());
+  // Next to pasted pictures under $T3TERM_HOME: the draft keeps the path until the send.
+  const dir = NodePath.join(termHome(), "prepared", globalThis.crypto.randomUUID());
   let result: EncodeResult;
   try {
     NodeFs.mkdirSync(dir, { recursive: true });

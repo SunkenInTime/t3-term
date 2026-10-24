@@ -47,6 +47,7 @@ import {
   isProviderNativeSubagentThread,
   MessageId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ModelSelection,
   type ProjectId,
@@ -213,6 +214,7 @@ import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import * as NodeFs from "node:fs";
 import { takeDevAttachPaths } from "./devComposerAttachments.ts";
+import { prepareImageAttachment } from "./imagePreparation.ts";
 import { readClipboardAttachmentPaths, writePastedTextFile } from "./clipboardAttachments.ts";
 import {
   nextPastedTextFileName,
@@ -313,6 +315,13 @@ const ALL_RUNTIME_MODE_OPTIONS: ReadonlyArray<RuntimeModeOption> = runtimeModes.
 }));
 const NO_SKILLS: ServerProvider["skills"] = [];
 const NO_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
+/** Images still being converted or shrunk before staging, by draft key (web pendingImageCompressionsRef). */
+const pendingImagePreparations = new Map<string, number>();
+
+function unsupportedImageMessage(name: string): string {
+  return `'${name}' is not a supported image type. Attach GIF, HEIC, HEIF, JPEG, PNG, or WebP images.`;
+}
+
 /** The send chords the composer resolves itself (web composerSubmissionIntentForKey). */
 const COMPOSER_SEND_COMMANDS: ReadonlySet<KeybindingCommand> = new Set([
   "composer.sendAlternate",
@@ -1208,6 +1217,10 @@ function ComposerBody({
       return;
     }
     if (sending || noProviderAvailable || sendDisabledReason !== null || environmentUnavailable) return;
+    if ((pendingImagePreparations.get(draftKey) ?? 0) > 0) {
+      toast({ type: "info", title: "Still compressing a pasted image.", description: "Send again once its thumbnail appears." });
+      return;
+    }
     const promptAtSend = readComposerDraft(promptKey).prompt;
     if (queuedEdit.isEditing) {
       void queuedEdit.saveEdit(promptAtSend);
@@ -1589,8 +1602,11 @@ function ComposerBody({
   const fileStagingAllowed = !activePendingProgress;
   // web useComposerAttachmentIntake: what this server cannot take is refused when it is staged,
   // not at send time, and the attachment count is held to the per-message limit.
-  const stageAttachments = (attachments: ReadonlyArray<ComposerAttachmentDraft>): ComposerAttachmentDraft[] => {
-    let error: string | null = null;
+  const stageAttachments = (
+    attachments: ReadonlyArray<ComposerAttachmentDraft>,
+    priorError: string | null = null,
+  ): ComposerAttachmentDraft[] => {
+    let error: string | null = priorError;
     let reserved = readComposerDraft(promptKey).attachments.length + (editingAttachments?.length ?? 0);
     const accepted: ComposerAttachmentDraft[] = [];
     for (const attachment of attachments) {
@@ -1614,9 +1630,40 @@ function ComposerBody({
     removeComposerAttachment(promptKey, attachmentId);
     releaseAttachmentUpload(attachmentId);
   };
+  // web compressAndStoreImages: images are converted (HEIC) or shrunk to the provider's limit
+  // before they are staged; a send meanwhile waits, or the image would miss the turn.
+  const prepareAndStageImages = async (images: ReadonlyArray<ComposerAttachmentDraft>, priorError: string | null) => {
+    pendingImagePreparations.set(draftKey, (pendingImagePreparations.get(draftKey) ?? 0) + images.length);
+    try {
+      let error = priorError;
+      const prepared: ComposerAttachmentDraft[] = [];
+      for (const image of images) {
+        const result = await prepareImageAttachment(image, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES);
+        if (!result.ok) {
+          error =
+            result.reason === "unsupported"
+              ? unsupportedImageMessage(image.name)
+              : result.reason === "unreadable"
+                ? `'${image.name}' could not be read as an image.`
+                : `'${image.name}' is too large to attach, even after compression.`;
+          continue;
+        }
+        prepared.push({ ...image, path: result.path, name: result.name, mimeType: result.mimeType, sizeBytes: result.sizeBytes });
+      }
+      stageAttachments(prepared, error);
+    } finally {
+      const remaining = (pendingImagePreparations.get(draftKey) ?? 0) - images.length;
+      if (remaining > 0) pendingImagePreparations.set(draftKey, remaining);
+      else pendingImagePreparations.delete(draftKey);
+    }
+  };
   const addPaths = (paths: ReadonlyArray<string>) => {
-    const { attachments, folders } = attachmentsFromPaths(paths);
-    if (attachments.length > 0) stageAttachments(attachments);
+    const { attachments, folders, unsupportedImages } = attachmentsFromPaths(paths);
+    const unsupportedError = unsupportedImages.length > 0 ? unsupportedImageMessage(unsupportedImages.at(-1)!) : null;
+    const images = attachments.filter((attachment) => attachment.type === "image");
+    const files = attachments.filter((attachment) => attachment.type !== "image");
+    if (files.length > 0 || (unsupportedError && images.length === 0)) stageAttachments(files, unsupportedError);
+    if (images.length > 0) void prepareAndStageImages(images, files.length > 0 ? null : unsupportedError);
     if (folders.length > 0) {
       const mentions = folders.map((folder) => serializeComposerFileLink(folder)).join(" ");
       const current = valueRef.current;
