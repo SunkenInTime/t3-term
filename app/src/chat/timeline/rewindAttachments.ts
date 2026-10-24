@@ -40,7 +40,7 @@ export async function prepareRevertedMessageAttachments(input: {
   if (Option.isNone(prepared)) throw new Error("The environment is not connected.");
   const httpBaseUrl = prepared.value.httpBaseUrl;
   const folder = NodePath.join(termHome(), "restored-attachments", crypto.randomUUID());
-  return Promise.all(
+  const restored = await Promise.all(
     attachments.map(async (attachment, index): Promise<ComposerAttachmentDraft> => {
       if (attachment.type !== "image" && attachment.type !== "file") {
         throw new Error("This message has an attachment that cannot be restored.");
@@ -74,4 +74,12 @@ export async function prepareRevertedMessageAttachments(input: {
       };
     }),
   );
+  // web revertToTurn checks the live draft again: attachments added while these
+  // downloaded could leave the restored draft over the limit.
+  const live = appAtomRegistry.get(composerDraftAtom(input.draftKey));
+  if ((live?.attachments.length ?? 0) + restored.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+    NodeFs.rmSync(folder, { recursive: true, force: true });
+    throw new Error("Make room for this message's attachments in the composer before rewinding.");
+  }
+  return restored;
 }
