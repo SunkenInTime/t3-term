@@ -201,6 +201,18 @@ import {
   type ComposerSendTarget,
 } from "./composerSend.ts";
 import { attachmentsFromPaths } from "./composerAttachmentPaths.ts";
+import {
+  attachmentStagingError,
+  attachmentUploadStateAtom,
+  environmentSupportsUploads,
+  releaseAttachmentUpload,
+  retryAttachmentUpload,
+  startAttachmentUpload,
+} from "./attachmentUploads.ts";
+import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
+import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
+import * as NodeFs from "node:fs";
+import { takeDevAttachPaths } from "./devComposerAttachments.ts";
 import { readClipboardAttachmentPaths, writePastedTextFile } from "./clipboardAttachments.ts";
 import {
   nextPastedTextFileName,
@@ -570,7 +582,7 @@ function ComposerBody({
   const projectId = threadId ? (shell?.projectId ?? null) : draftProjectId;
   const project = projectId ? (projects.get(`${environmentId}:${projectId}`) ?? null) : null;
   // Keeps the prepared connection mounted: attachment uploads read its base URL at send time.
-  useAtomValue(environmentSession.preparedConnectionValueAtom(environmentId));
+  const connectionReady = Option.isSome(useAtomValue(environmentSession.preparedConnectionValueAtom(environmentId)));
   const sending = useAtomValue(composerSendingAtom(draftKey));
   const sendError = useAtomValue(composerSendErrorAtom(draftKey));
   const [modelPickerOpen, setModelPickerOpen] = [
@@ -1575,9 +1587,36 @@ function ComposerBody({
 
   // ── Attachments ───────────────────────────────────────────────────────
   const fileStagingAllowed = !activePendingProgress;
+  // web useComposerAttachmentIntake: what this server cannot take is refused when it is staged,
+  // not at send time, and the attachment count is held to the per-message limit.
+  const stageAttachments = (attachments: ReadonlyArray<ComposerAttachmentDraft>): ComposerAttachmentDraft[] => {
+    let error: string | null = null;
+    let reserved = readComposerDraft(promptKey).attachments.length + (editingAttachments?.length ?? 0);
+    const accepted: ComposerAttachmentDraft[] = [];
+    for (const attachment of attachments) {
+      if (reserved >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+        error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`;
+        continue;
+      }
+      const stagingError = attachmentStagingError(environmentId, attachment);
+      if (stagingError) {
+        error = stagingError;
+        continue;
+      }
+      accepted.push(attachment);
+      reserved += 1;
+    }
+    appAtomRegistry.set(composerSendErrorAtom(draftKey), error);
+    if (accepted.length > 0) addComposerAttachments(promptKey, accepted);
+    return accepted;
+  };
+  const removeStagedAttachment = (attachmentId: string) => {
+    removeComposerAttachment(promptKey, attachmentId);
+    releaseAttachmentUpload(attachmentId);
+  };
   const addPaths = (paths: ReadonlyArray<string>) => {
     const { attachments, folders } = attachmentsFromPaths(paths);
-    if (attachments.length > 0) addComposerAttachments(promptKey, attachments);
+    if (attachments.length > 0) stageAttachments(attachments);
     if (folders.length > 0) {
       const mentions = folders.map((folder) => serializeComposerFileLink(folder)).join(" ");
       const current = valueRef.current;
@@ -1601,9 +1640,8 @@ function ComposerBody({
     if (pastedTextDisposition({ text, canAttach: true, wouldExceedInputLimit }) !== "attachment") return false;
     const canStage =
       fileStagingAllowed &&
-      !queuedEdit.isEditing &&
       serverConfig?.environment.capabilities.fileAttachments !== undefined &&
-      current.attachments.length < PROVIDER_SEND_TURN_MAX_ATTACHMENTS;
+      current.attachments.length + (editingAttachments?.length ?? 0) < PROVIDER_SEND_TURN_MAX_ATTACHMENTS;
     if (!canStage) {
       if (!wouldExceedInputLimit) return false;
       toast({ type: "error", title: "Pasted text is too large for this message", description: "Remove some text or an attachment, then paste again." });
@@ -1611,20 +1649,82 @@ function ComposerBody({
     }
     const name = nextPastedTextFileName(current.attachments.map((attachment) => attachment.name));
     const { attachments } = attachmentsFromPaths([writePastedTextFile(name, text)]);
-    addComposerAttachments(promptKey, attachments.map((attachment) => ({ ...attachment, mimeType: "text/plain" })));
+    const stored = stageAttachments(attachments.map((attachment) => ({ ...attachment, mimeType: "text/plain" })));
+    const attached = stored[0];
+    if (attached) {
+      // web: the paste went somewhere the user did not put it; say where, and how to keep it inline.
+      toast({
+        type: "info",
+        title: `Large paste attached as ${attached.name}`,
+        description: `${formatAttachmentSize(attached.sizeBytes)} · Use ${process.platform === "darwin" ? "⌘⇧V" : "Ctrl+Shift+V"} to keep a large paste inline.`,
+      });
+    }
     return true;
+  };
+  // web onComposerPaste → shouldHandleComposerAttachmentPaste: a clipboard holding a picture
+  // pastes the picture even when it also holds text (an image copied from a page brings its
+  // alt text). gpuix pastes text first and cannot see the picture, so the text goes in at once
+  // and, when the clipboard turns out to hold an image, it is taken back out for the image.
+  const onPastedTextInline = (before: string) => {
+    if (!fileStagingAllowed || activePendingProgress) return;
+    // The editor reports its edit synchronously, so the draft already holds the paste.
+    const after = () => readComposerDraft(promptKey).prompt;
+    const inserted = after();
+    void readClipboardAttachmentPaths({ imagesOnly: true }).then((paths) => {
+      if (paths.length === 0) return;
+      // Only while nothing was typed since: then the prompt goes back to before the paste.
+      if (after() === inserted && inserted !== before) {
+        valueRef.current = before;
+        caretRef.current = before.length;
+        setComposerPrompt(promptKey, before);
+      }
+      addPaths(paths);
+    });
   };
   // web onComposerPaste with clipboardData.files: a copied file or a picture attaches.
   const onPasteNonText = () => {
-    if (!fileStagingAllowed || queuedEdit.isEditing) return;
+    if (!fileStagingAllowed) return;
     void readClipboardAttachmentPaths().then((paths) => {
       if (paths.length > 0) addPaths(paths);
     });
   };
+  useEffect(() => {
+    const devPaths = takeDevAttachPaths(project?.title ?? null, target.kind);
+    if (devPaths.length > 0) addPaths(devPaths);
+    // Once the project is known, like a drop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.title]);
   const onAttach = async () => {
     const paths = await renderer.promptForPaths?.({ files: true, multiple: true, prompt: "Attach" });
     if (paths && paths.length > 0) addPaths(paths);
   };
+  // Staged attachments start uploading as soon as they are in the draft (web
+  // attachmentUploadQueue), including ones restored from disk. Keyed on the attachment list,
+  // which keeps its identity while the prompt changes.
+  const uploadsEnabled = environmentSupportsUploads(environmentId);
+  useEffect(() => {
+    // Not before the connection is prepared: the upload URL resolves against it.
+    if (!uploadsEnabled || !connectionReady) return;
+    for (const attachment of stagedAttachments) {
+      if (appAtomRegistry.get(attachmentUploadStateAtom(attachment.id)) !== null) continue;
+      if (!NodeFs.existsSync(attachment.path)) continue;
+      void startAttachmentUpload(environmentId, attachment);
+    }
+  }, [stagedAttachments, environmentId, uploadsEnabled, connectionReady]);
+  // web composerFileNeedsReattach: a staged file whose bytes are gone, with nothing uploaded.
+  const missingAttachmentIds = useMemo(
+    () =>
+      new Set(
+        stagedAttachments
+          .filter(
+            (attachment) =>
+              !NodeFs.existsSync(attachment.path) &&
+              appAtomRegistry.get(attachmentUploadStateAtom(attachment.id))?.status !== "ready",
+          )
+          .map((attachment) => attachment.id),
+      ),
+    [stagedAttachments],
+  );
   // The queued message's own attachments come first, from the server; then staged ones.
   const images: ComposerMediaItem[] = [
     ...(editingAttachments ?? [])
@@ -1641,9 +1741,21 @@ function ComposerBody({
         id: attachment.id,
         name: attachment.name,
         src: attachment.path,
-        onRemove: () => removeComposerAttachment(promptKey, attachment.id),
+        onRemove: () => removeStagedAttachment(attachment.id),
+        ...(uploadsEnabled ? { uploadId: attachment.id, onRetry: () => retryAttachmentUpload(environmentId, attachment) } : {}),
       })),
-  ];
+  ].map((image, _index, all) =>
+    image.src
+      ? {
+          ...image,
+          // web buildExpandedImagePreview: the viewer opens on the pressed image, over all of them.
+          onExpand: () => {
+            const gallery = all.flatMap((entry) => (entry.src ? [{ src: entry.src, name: entry.name }] : []));
+            openExpandedImage({ images: gallery, index: Math.max(0, gallery.findIndex((entry) => entry.src === image.src)) });
+          },
+        }
+      : image,
+  );
   const files: ComposerFileItem[] = [
     ...(editingAttachments ?? [])
       .filter((attachment) => attachment.type !== "image")
@@ -1659,7 +1771,9 @@ function ComposerBody({
         id: attachment.id,
         name: attachment.name,
         sizeBytes: attachment.sizeBytes,
-        onRemove: () => removeComposerAttachment(promptKey, attachment.id),
+        onRemove: () => removeStagedAttachment(attachment.id),
+        ...(uploadsEnabled ? { uploadId: attachment.id, onRetry: () => retryAttachmentUpload(environmentId, attachment) } : {}),
+        needsReattach: missingAttachmentIds.has(attachment.id),
       })),
   ];
 
@@ -2036,7 +2150,11 @@ function ComposerBody({
       void readClipboardText().then(
         (text) => {
           if (text.length === 0) onPasteNonText();
-          else if (!onPasteText(text.replace(/\r\n?/g, "\n"))) appendToEditor(text);
+          else if (!onPasteText(text.replace(/\r\n?/g, "\n"))) {
+            const before = readComposerDraft(promptKey).prompt;
+            appendToEditor(text);
+            onPastedTextInline(before);
+          }
         },
         () => onPasteNonText(),
       );
@@ -2518,6 +2636,7 @@ function ComposerBody({
               onChange={onEditorChange}
               onKeyCommand={onEditorKeyCommand}
               onPasteText={onPasteText}
+              onPastedTextInline={onPastedTextInline}
               onPasteNonText={onPasteNonText}
               onFocus={onEditorFocus}
               onBlur={onEditorBlur}

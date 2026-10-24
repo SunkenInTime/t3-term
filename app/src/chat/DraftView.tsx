@@ -25,6 +25,7 @@ import { DraftDetailsCard } from "./details/ThreadDetailsCard.tsx";
 import { DraftHeroHeadline } from "./draft/DraftHeroHeadline.tsx";
 import { NoActiveThreadState, NoProjectsHero } from "./draft/EmptyStates.tsx";
 import { DraftPullRequestPanel } from "../pullRequests/DraftPullRequestPanel.tsx";
+import { MarkdownOverlayHost } from "./markdown/overlays.tsx";
 
 export function DraftView({
   environmentId,
@@ -117,6 +118,8 @@ function DraftCanvas({
         {environmentId !== null && projectId !== null ? (
           <ChatBannerLane composerTargetKey={composerTargetKey(target)} overlay />
         ) : null}
+        {/* The image viewer a staged image opens (a thread hosts it in its timeline). */}
+        <MarkdownOverlayHost />
         {project && environmentId !== null && projectId !== null ? (
           <DraftDetailsCard
             environmentId={environmentId}
