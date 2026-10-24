@@ -39,6 +39,7 @@ import {
   type UploadChatAttachment,
 } from "@t3tools/contracts";
 import { imageMimeType } from "@t3tools/shared/image";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 
@@ -46,7 +47,9 @@ import { appAtomRegistry } from "../../runtime/runtime.ts";
 import {
   type ComposerAttachmentDraft,
   type DraftThreadEnvMode,
+  addOptimisticMessage,
   clearComposerContent,
+  removeOptimisticMessages,
   composerAttachmentEnvironment,
   restoreComposerContent,
 } from "../../state/composer.ts";
@@ -268,6 +271,8 @@ export interface ComposerSendInput {
    * `backgroundProjectId` once the send lands (send and new thread).
    */
   readonly background?: { readonly projectId: ProjectId | null };
+  /** A run is in progress: a queued send waits behind it instead of showing in the timeline. */
+  readonly running?: boolean;
 }
 
 export async function sendComposerMessage(input: ComposerSendInput): Promise<boolean> {
@@ -289,6 +294,40 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
   // Clear first, like web: the prompt leaves the composer the moment the user sends.
   clearComposerContent(input.draftKey);
   const createdAt = new Date().toISOString();
+  const messageId = MessageId.make(newId());
+  // web useComposerSend: the message shows in the thread at once, before uploads and the
+  // server round trip; images preview from their local files until the server's copy lands.
+  const optimisticThreadKey =
+    input.target.kind === "thread" ? scopedThreadKey(scopeThreadRef(input.environmentId, input.target.threadId)) : null;
+  if (optimisticThreadKey !== null) {
+    addOptimisticMessage(optimisticThreadKey, {
+      id: messageId,
+      role: "user",
+      text: input.outgoingText,
+      ...(input.attachments.length > 0
+        ? {
+            attachments: input.attachments.map((attachment) => ({
+              type: attachment.type,
+              id: attachment.id as never,
+              name: attachment.name,
+              mimeType: attachment.mimeType,
+              sizeBytes: attachment.sizeBytes,
+              ...(attachment.type === "image" ? { previewUrl: attachment.path } : {}),
+            })),
+          }
+        : {}),
+      ...(messageContext ? { context: messageContext } : {}),
+      runId: null,
+      streaming: false,
+      createdAt,
+      updatedAt: createdAt,
+      ...(input.running && input.dispatchMode === "queue"
+        ? { inputIntent: "queued_turn" as const }
+        : input.running && input.dispatchMode === "steer"
+          ? { inputIntent: "steer" as const }
+          : {}),
+    });
+  }
   let failure: string | null = null;
   try {
     if (input.approvalsToDecline && input.approvalsToDecline.length > 0 && input.respondToApproval) {
@@ -349,7 +388,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
         input: {
           threadId,
           message: {
-            messageId: MessageId.make(newId()),
+            messageId,
             role: "user",
             text: input.outgoingText,
             ...(messageContext ? { context: messageContext } : {}),
@@ -370,8 +409,15 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
       { reportFailure: false },
     );
     if (result._tag === "Failure") {
-      if (isAtomCommandInterrupted(result)) return false;
+      if (isAtomCommandInterrupted(result)) {
+        if (optimisticThreadKey !== null) removeOptimisticMessages(optimisticThreadKey, (message) => message.id === messageId);
+        return false;
+      }
       throw squashAtomCommandFailure(result);
+    }
+    // A queued message waits in the queue control, never in the timeline.
+    if (optimisticThreadKey !== null && input.running && input.dispatchMode === "queue") {
+      removeOptimisticMessages(optimisticThreadKey, (message) => message.id === messageId);
     }
     if (input.background) {
       finishBackgroundSend(input.environmentId, input.target.kind, threadId, input.background.projectId);
@@ -385,6 +431,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
   } finally {
     appAtomRegistry.set(sendingAtom, false);
     if (failure !== null) {
+      if (optimisticThreadKey !== null) removeOptimisticMessages(optimisticThreadKey, (message) => message.id === messageId);
       restoreComposerContent(input.draftKey, snapshot);
       appAtomRegistry.set(composerSendErrorAtom(input.draftKey), failure);
       toast({

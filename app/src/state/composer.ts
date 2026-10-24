@@ -37,6 +37,7 @@ import {
 } from "../web/lib/composerContextRecords.ts";
 import type { TerminalContextDraft } from "../web/lib/terminalContext.ts";
 import type { ReviewCommentContext } from "../web/reviewCommentContext.ts";
+import type { ChatMessage } from "../web/types.ts";
 import { clientSettingsAtom } from "./clientSettings.ts";
 import { termHome } from "../runtime/paths.ts";
 import { serverEnvironment } from "./environment.ts";
@@ -525,6 +526,31 @@ export function setDraftWorkspace(
   },
 ): void {
   updateComposerDraft(key, (draft) => ({ ...draft, ...workspace }));
+}
+
+// ── Optimistic sent messages ────────────────────────────────────────────
+
+const NO_OPTIMISTIC_MESSAGES: ReadonlyArray<ChatMessage> = [];
+
+/**
+ * A sent message shown in its thread's timeline from the moment of the send until the
+ * server's copy arrives (web ChatView optimisticUserMessages), by scoped thread key.
+ * The timeline drops one whose id is already committed, so a late removal only costs memory.
+ */
+export const optimisticMessagesAtom = Atom.family((_threadKey: string) =>
+  Atom.make<ReadonlyArray<ChatMessage>>(NO_OPTIMISTIC_MESSAGES).pipe(Atom.keepAlive),
+);
+
+export function addOptimisticMessage(threadKey: string, message: ChatMessage): void {
+  const atom = optimisticMessagesAtom(threadKey);
+  appAtomRegistry.set(atom, [...appAtomRegistry.get(atom), message]);
+}
+
+export function removeOptimisticMessages(threadKey: string, remove: (message: ChatMessage) => boolean): void {
+  const atom = optimisticMessagesAtom(threadKey);
+  const current = appAtomRegistry.get(atom);
+  const next = current.filter((message) => !remove(message));
+  if (next.length !== current.length) appAtomRegistry.set(atom, next.length === 0 ? NO_OPTIMISTIC_MESSAGES : next);
 }
 
 // ── Settings the composer reads ─────────────────────────────────────────

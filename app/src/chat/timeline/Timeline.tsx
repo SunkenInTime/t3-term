@@ -1,6 +1,7 @@
 // The chat timeline: apps/web/src/components/chat/ThreadTimeline.tsx +
 // MessagesTimeline.tsx, with the thread-state wiring ChatView.tsx does for them
 // (latest run, working state, checkpoints, history paging, rewind and fork).
+import { optimisticMessagesAtom } from "../../state/composer.ts";
 import { openDiffSurface } from "../../state/git.ts";
 import { useAtomValue } from "@effect/atom-react";
 
@@ -93,7 +94,6 @@ import {
   type WorkGroupViewState,
 } from "./rowContext.ts";
 
-const EMPTY_MESSAGES: ReadonlyArray<ChatMessage> = [];
 const EMPTY_RUN_IDS: ReadonlySet<RunId> = new Set();
 
 /** Disclosure state per thread, so returning to a thread reopens what the reader opened. */
@@ -261,9 +261,11 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
   );
 
   // ── Entries and rows ──────────────────────────────────────────────────────
+  // Sent messages shown before the server has them (state/composer.ts, set by the composer's send).
+  const optimisticMessages = useAtomValue(optimisticMessagesAtom(threadKey));
   const timelineEntries = useIncrementalTimelineEntries(threadKey, {
     visibleTurnItems,
-    optimisticMessages: EMPTY_MESSAGES,
+    optimisticMessages: optimisticMessages,
     ...(projection === null ? {} : { attempts: projection.attempts, nodes: projection.nodes, plans: projection.plans }),
   });
   const remembered = rememberedFor(threadKey);

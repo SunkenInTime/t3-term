@@ -40,7 +40,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-execution";
 import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thread-workflows";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   type EnvironmentId,
   isProviderNativeSubagentThread,
@@ -67,6 +67,8 @@ import {
   type ComposerTarget,
   addComposerAttachments,
   composerDraftAtom,
+  optimisticMessagesAtom,
+  removeOptimisticMessages,
   focusComposer,
   restoreComposerContent,
   setDraftWorkspace,
@@ -1305,6 +1307,7 @@ function ComposerBody({
         (await requests.onRespondToApproval(requestId, decision)) as never,
       ...(input.sourceProposedPlan ? { sourceProposedPlan: input.sourceProposedPlan } : {}),
       ...(input.background ? { background: { projectId } } : {}),
+      running: isRunning,
     });
     if (sent) {
       valueRef.current = "";
@@ -2214,6 +2217,7 @@ function ComposerBody({
         }}
       >
         <ThreadContextDragGhost />
+        {threadId ? <OptimisticMessageReconciler environmentId={environmentId} threadId={threadId} /> : null}
         <SurfaceHighlight />
         {stash.menuOpen && !menuIsOpen && surfaceWidth !== null ? (
           <ComposerCommandMenuLayer surfaceWidth={surfaceWidth}>
@@ -2456,6 +2460,36 @@ function CollapsedMobilePromptRow({
 
 const COLLAPSED_SEND_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3L8 13M8 3L4 7M8 3L12 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+/**
+ * web ChatView: an optimistic message leaves once the server's copy is in the thread. Only
+ * subscribes to the thread's items while one is pending, so streaming does not re-render
+ * the composer.
+ */
+function OptimisticMessageReconciler({ environmentId, threadId }: { environmentId: EnvironmentId; threadId: ThreadId }) {
+  const threadKey = useMemo(() => scopedThreadKey(scopeThreadRef(environmentId, threadId)), [environmentId, threadId]);
+  const pending = useAtomValue(optimisticMessagesAtom(threadKey));
+  if (pending.length === 0) return null;
+  return <OptimisticMessageWatcher environmentId={environmentId} threadId={threadId} threadKey={threadKey} />;
+}
+
+function OptimisticMessageWatcher({
+  environmentId,
+  threadId,
+  threadKey,
+}: {
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  threadKey: string;
+}) {
+  const items = useAtomValue(environmentThreadDetails.visibleTurnItemsAtom(scopeThreadRef(environmentId, threadId)));
+  useEffect(() => {
+    const committed = new Set<string>();
+    for (const { item } of items) if (item.type === "user_message") committed.add(item.messageId);
+    if (committed.size > 0) removeOptimisticMessages(threadKey, (message) => committed.has(message.id));
+  }, [items, threadKey]);
+  return null;
+}
 
 /**
  * web ComposerSurface.ContextStrip: a strip under the composer, inset 22px a side, whose top
