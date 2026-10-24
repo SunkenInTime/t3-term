@@ -226,6 +226,7 @@ import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
 import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
 import { useComposerTypingGuard } from "../../web/components/chat/useComposerTypingGuard.ts";
+import { handlePendingQuestionDigit } from "./ComposerPendingUserInputPanel.tsx";
 import { filterTerminalContextsWithText, type TerminalContextDraft } from "../../web/lib/terminalContext.ts";
 import {
   ComposerEditor,
@@ -307,13 +308,21 @@ const editableById = new Map<number, boolean>();
  * prevent them before the window sees them.
  */
 function hasEditableFocus(renderer: unknown, editorId: number | null): boolean {
+  return focusKind(renderer, editorId) === "editable";
+}
+
+/**
+ * What holds focus: an editable element, a control still on screen (a row or button a
+ * click focused), or nothing (no focus, or the focused element is gone).
+ */
+function focusKind(renderer: unknown, editorId: number | null): "editable" | "control" | "none" {
   const host = renderer as
     | { getFocusedElementId?: () => number | null; getElementBounds?: (id: number) => unknown; getAutomationTree?: () => string }
     | undefined;
   const id = host?.getFocusedElementId?.();
-  if (id === null || id === undefined) return false;
-  if (id === editorId) return true;
-  if (host?.getElementBounds && host.getElementBounds(id) == null) return false;
+  if (id === null || id === undefined) return "none";
+  if (id === editorId) return "editable";
+  if (host?.getElementBounds && host.getElementBounds(id) == null) return "none";
   let editable = editableById.get(id);
   if (editable === undefined) {
     editable = false;
@@ -333,7 +342,7 @@ function hasEditableFocus(renderer: unknown, editorId: number | null): boolean {
     }
     editableById.set(id, editable);
   }
-  return editable;
+  return editable ? "editable" : "control";
 }
 
 /** Mixes `color` over `base` at `amount`, for opaque stand-ins of web's translucent glass. */
@@ -1684,6 +1693,10 @@ function ComposerBody({
     // A key here proves editor focus even when focus moved without onFocus (focusElement).
     if (!appAtomRegistry.get(composerFocusAtom)) appAtomRegistry.set(composerFocusAtom, true);
     const plainEnter = key === "enter" && !ctrl && !mods.alt && !mods.shift;
+    // A choice-only question leaves the editor read-only: digits pick its options.
+    if (isChoiceOnlyPendingQuestion && !ctrl && !mods.alt && /^[1-9]$/.test(key ?? "") && handlePendingQuestionDigit(Number(key))) {
+      return true;
+    }
     if (stash.menuOpen && !menuIsOpen) {
       if (key === "escape") {
         stash.close();
@@ -1946,7 +1959,20 @@ function ComposerBody({
     }
     // A focused field or this editor keeps its own keys (web shouldRedirectInputToComposer);
     // a focused row or control, or an element no longer on screen, does not.
-    if (hasEditableFocus(eventRenderer, editor?.id ?? null)) return false;
+    const focus = focusKind(eventRenderer, editor?.id ?? null);
+    if (focus === "editable") return false;
+    // web ComposerPendingUserInputPanel: 1-9 pick an option when the key has no editor to go
+    // to: focus on a control (an option just clicked), or a question without a custom answer.
+    if (
+      !mods.ctrl &&
+      !mods.cmd &&
+      !mods.alt &&
+      /^[1-9]$/.test(event.key ?? "") &&
+      (focus === "control" || isChoiceOnlyPendingQuestion) &&
+      handlePendingQuestionDigit(Number(event.key))
+    ) {
+      return true;
+    }
     if (
       appAtomRegistry.get(terminalFocusAtom) ||
       appAtomRegistry.get(modelPickerOpenAtom) ||
