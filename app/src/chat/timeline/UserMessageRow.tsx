@@ -23,6 +23,7 @@ import { asKnownContextRecord, resolveUserMessageContext } from "../../web/lib/u
 import { selectMessageImageResources } from "../../web/session-logic.ts";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../web/timestampFormat.ts";
 import { isFileAttachment, isImageAttachment, isVideoAttachment, type ChatAttachment, type ChatFileAttachment } from "../../web/types.ts";
+import { rightPanelActions, threadKeyOf } from "../../state/rightPanel.ts";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
 import type { ChipPayload } from "../markdown/MarkdownChips.tsx";
 import { userMessageContextChip } from "./userMessageContextChips.ts";
@@ -308,7 +309,10 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
         {!folded || expanded ? (
           <div style={{ display: "flex", flexDirection: "column", minWidth: 0, ...(folded ? { paddingLeft: 12, paddingRight: 12, paddingBottom: 12 } : {}) }}>
             {regularImages.length > 0 || videos.length > 0 ? <UserImageGrid images={regularImages} videos={videos} /> : null}
-            {unchippedFiles.length > 0 || unknownAttachments.length > 0 ? <UserFileList files={[...unchippedFiles, ...unknownAttachments]} /> : null}
+            {unchippedFiles.length > 0 || unknownAttachments.length > 0 ? <UserFileList
+                files={[...unchippedFiles, ...unknownAttachments]}
+                onOpen={(file) => rightPanelActions.openAttachment(threadKeyOf(ctx.threadRef.environmentId, ctx.threadRef.threadId), file)}
+              /> : null}
             {resolvedContext.text.trim().length > 0 ? <CollapsibleUserMessageBody text={resolvedContext.text} collapsible={!folded} contextChip={contextChip} /> : null}
           </div>
         ) : null}
@@ -410,12 +414,33 @@ function UserImageGrid({ images, videos }: { images: ReadonlyArray<ChatAttachmen
   );
 }
 
-function UserFileList({ files }: { files: ReadonlyArray<ChatAttachment> }) {
+function UserFileList({
+  files,
+  onOpen,
+}: {
+  files: ReadonlyArray<ChatAttachment>;
+  /** web ctx.onFileOpen: a file attachment opens in the Files surface. */
+  onOpen: (file: ChatFileAttachment) => void;
+}) {
   const theme = useTheme();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 }}>
       {files.map((file) => (
-        <div key={file.id} style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0, paddingTop: 4, paddingBottom: 4 }}>
+        <div
+          key={file.id}
+          testId={`user-file-attachment-${file.name}`}
+          onClick={isFileAttachment(file) ? () => onOpen(file) : undefined}
+          style={{
+            display: "flex",
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 8,
+            minWidth: 0,
+            paddingTop: 4,
+            paddingBottom: 4,
+            ...(isFileAttachment(file) ? { cursor: "pointer" } : {}),
+          }}
+        >
           <Icon name="file" size={16} color={theme.mutedForeground} />
           <Text size="sm" truncate style={{ flexGrow: 1, flexBasis: 0 }}>
             {file.name}

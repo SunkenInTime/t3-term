@@ -234,3 +234,67 @@ export function hatchSvg(width: number, height: number): string {
   hatchCache.set(key, svg);
   return svg;
 }
+
+/**
+ * gpui's word-character test (LineWrapper::is_word_char at the pinned zed commit): a
+ * break may not fall before these.
+ */
+function isGpuiWordChar(char: string): boolean {
+  const code = char.codePointAt(0) ?? 0;
+  if (/^[A-Za-z0-9]$/.test(char)) return true;
+  if ((code >= 0xc0 && code <= 0xff) || (code >= 0x100 && code <= 0x24f) || (code >= 0x400 && code <= 0x4ff)) return true;
+  if ((code >= 0x1e00 && code <= 0x1eff) || (code >= 0x300 && code <= 0x36f) || (code >= 0x980 && code <= 0x9ff)) return true;
+  return "-_.'’‘$%@#^~,=:;!)]}\"”»…⋯  ‑".includes(char);
+}
+
+/**
+ * Where GPUI soft-wraps one line of monospaced text (WrappedLineLayout's
+ * compute_wrap_boundaries with every glyph `ch` wide): the UTF-16 offsets that start
+ * a new visual row. Painting rows from these lines them up with a <textarea>, which
+ * wraps through that code, at the same width.
+ */
+export function gpuiWrapBoundaries(text: string, wrapWidth: number, ch: number): number[] {
+  const boundaries: number[] = [];
+  if (text.length === 0 || wrapWidth <= 0) return boundaries;
+  const chars = Array.from(text);
+  const offsets: number[] = [];
+  let offset = 0;
+  for (const char of chars) {
+    offsets.push(offset);
+    offset += char.length;
+  }
+  let firstNonWhitespace = false;
+  let lastCandidate: number | null = null;
+  let lastCandidateX = 0;
+  let lastBoundary = 0;
+  let lastBoundaryX = 0;
+  let previous = "\0";
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = chars[index]!;
+    const x = index * ch;
+    if (isGpuiWordChar(char)) {
+      if (previous === " " && char !== " " && firstNonWhitespace) {
+        lastCandidate = index;
+        lastCandidateX = x;
+      }
+    } else if (char !== " " && firstNonWhitespace) {
+      lastCandidate = index;
+      lastCandidateX = x;
+    }
+    if (char !== " ") firstNonWhitespace = true;
+    const nextX = (index + 1) * ch;
+    if (nextX - lastBoundaryX > wrapWidth && index > lastBoundary) {
+      if (lastCandidate !== null) {
+        lastBoundary = lastCandidate;
+        lastBoundaryX = lastCandidateX;
+        lastCandidate = null;
+      } else {
+        lastBoundary = index;
+        lastBoundaryX = x;
+      }
+      boundaries.push(offsets[lastBoundary]!);
+    }
+    previous = char;
+  }
+  return boundaries;
+}

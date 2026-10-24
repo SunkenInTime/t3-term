@@ -1,6 +1,7 @@
 // Ported from apps/web/src/rightPanelStore.ts (pure reducers only). The zustand
 // store, its persistence and the closed-view memory stay behind; state/rightPanel.ts
 // wraps these reducers in atoms.
+import type { ChatFileAttachment } from "./types.ts";
 
 export type RightPanelKind =
   | "diff"
@@ -41,11 +42,13 @@ export type RightPanelSurface =
       folderTrail?: string;
     }
   | {
-      id: `file:${string}`;
+      id: `file:${string}` | `attachment:${string}`;
       kind: "file";
       relativePath: string;
       revealLine: number | null;
       revealRequestId: number;
+      /** A chat file attachment previewed in the Files surface (web openAttachment). */
+      attachment?: ChatFileAttachment;
       folderTrail?: string;
     }
   | {
@@ -107,6 +110,21 @@ export const fileSurface = (
   revealLine,
   revealRequestId,
 });
+
+export const attachmentSurface = (attachment: ChatFileAttachment): RightPanelSurface => ({
+  id: `attachment:${attachment.id}`,
+  kind: "file",
+  relativePath: attachment.name,
+  revealLine: null,
+  revealRequestId: 0,
+  attachment,
+});
+
+/** web rightPanelStore.openAttachment: an attachment tab replaces the standalone explorer. */
+export function openAttachment(current: ThreadRightPanelState, attachment: ChatFileAttachment): ThreadRightPanelState {
+  const withoutStandaloneExplorer = current.surfaces.filter((surface) => surface.kind !== "files");
+  return upsertSurface({ ...current, surfaces: withoutStandaloneExplorer }, attachmentSurface(attachment));
+}
 
 export const terminalSurface = (terminalId: string): RightPanelSurface => ({
   id: `terminal:${terminalId}`,
