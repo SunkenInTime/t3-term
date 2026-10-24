@@ -23,20 +23,18 @@ import {
 } from "../../state/sidebar.ts";
 import { startNewThread } from "../../palette/actions.ts";
 import { Icon } from "../../ui/Icon.tsx";
-import { Tooltip } from "../../ui/overlay.tsx";
 import { Text } from "../../ui/primitives.tsx";
 import { RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import type { SidebarProjectSnapshot } from "../../web/sidebarProjectGrouping.ts";
 import { ProjectFavicon } from "../ProjectFavicon.tsx";
 import {
-  claimProjectPress,
   consumeProjectClick,
   projectMouseDown,
   projectMouseMove,
   projectMouseUp,
 } from "./legacyProjectGesture.ts";
 import { LegacyThreadRow } from "./LegacyThreadRow.tsx";
-import { StatusDot, ThreadStatusLabel, legacyTones } from "./legacyStatus.tsx";
+import { StatusDot, ThreadStatusLabel, legacyTones, PassiveTooltip } from "./legacyStatus.tsx";
 
 export interface LegacyProjectItemProps {
   readonly project: SidebarProjectSnapshot;
@@ -159,7 +157,7 @@ function LegacyProjectHeader(props: LegacyProjectItemProps & { projectStatus: Le
       onMouseMove={projectMouseMove}
       onMouseUp={projectMouseUp}
       onClick={() => {
-        if (consumeProjectClick(project.projectKey) !== "row") return;
+        if (!consumeProjectClick(project.projectKey)) return;
         toggle();
       }}
       onAuxClick={(event) => {
@@ -187,7 +185,7 @@ function LegacyProjectHeader(props: LegacyProjectItemProps & { projectStatus: Le
     >
       {!projectExpanded && projectStatus ? (
         // The wrapper takes the box's size itself: it measured 0 wide around a negative margin.
-        <Tooltip content={projectStatus.label} side="top" rootStyle={{ flexShrink: 0, width: 14, height: 14, marginLeft: -2 }}>
+        <PassiveTooltip content={projectStatus.label} side="top" rootStyle={{ flexShrink: 0, width: 14, height: 14, marginLeft: -2 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 14, height: 14, flexShrink: 0 }}>
             {hovered ? (
               <Icon name="chevron-right" size={14} color={tones.iconMuted} />
@@ -195,7 +193,7 @@ function LegacyProjectHeader(props: LegacyProjectItemProps & { projectStatus: Le
               <StatusDot status={projectStatus} size={9} />
             )}
           </div>
-        </Tooltip>
+        </PassiveTooltip>
       ) : (
         <div style={{ display: "flex", marginLeft: -2, flexShrink: 0 }}>
           <Icon
@@ -218,20 +216,20 @@ function LegacyProjectHeader(props: LegacyProjectItemProps & { projectStatus: Le
       </div>
       <div style={{ width: 16, flexShrink: 0 }} />
       {remoteOnly && !hovered ? (
-        <Tooltip content={`Remote environment: ${project.remoteEnvironmentLabels.join(", ")}`} side="top">
+        <PassiveTooltip content={`Remote environment: ${project.remoteEnvironmentLabels.join(", ")}`} side="top">
           <div style={{ position: "absolute", top: 6, right: 6, display: "flex", alignItems: "center", justifyContent: "center", width: 20, height: 20 }}>
             <Icon name="cloud" size={12} color={tones.iconMuted} />
           </div>
-        </Tooltip>
+        </PassiveTooltip>
       ) : null}
       {hovered ? (
         <div style={{ position: "absolute", top: 5, right: 2, display: "flex" }}>
-          <Tooltip
+          <PassiveTooltip
             content={props.newThreadShortcutLabel ? `New thread (${props.newThreadShortcutLabel})` : "New thread"}
             side="top"
           >
             <NewThreadButton projectKey={project.projectKey} onCreate={createThread} />
-          </Tooltip>
+          </PassiveTooltip>
         </div>
       ) : null}
     </div>
@@ -244,10 +242,8 @@ function NewThreadButton({ projectKey, onCreate }: { projectKey: string; onCreat
   return (
     <div
       testId={`legacy-new-thread-${projectKey}`}
-      onMouseDown={(event) => {
-        const position = { x: event.x ?? 0, y: event.y ?? 0 };
-        if ((event.button ?? 0) === 0) claimProjectPress(() => onCreate(position));
-      }}
+      // Its absolutely positioned wrapper keeps the press from the row (gpuix), so a plain click works.
+      onClick={(event) => onCreate({ x: event.x ?? 0, y: event.y ?? 0 })}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{

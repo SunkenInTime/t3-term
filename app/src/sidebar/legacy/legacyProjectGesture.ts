@@ -4,9 +4,9 @@
 //
 // gpuix only follows a drag on an element that captures the pointer
 // (onMouseDown + onMouseMove), and a captured press swallows the release of
-// every control inside the row. So the row's controls claim the press on mouse
-// down (claimProjectPress) and the row runs the claim on its own click, the
-// same scheme sidebarGesture.ts uses for thread rows.
+// every control inside the row. The row's only control (new thread) sits in an
+// absolutely positioned wrapper, which keeps its presses from reaching the row
+// at all, so it takes a plain click.
 
 /** PROJECT_POINTER_SENSOR_OPTIONS activationConstraint.distance. */
 export const PROJECT_DRAG_DISTANCE = 6;
@@ -30,38 +30,24 @@ export function setLegacyProjectGestureHost(next: LegacyProjectGestureHost | nul
   host = next;
 }
 
-interface Claim {
-  readonly run: () => void;
-  readonly at: number;
-}
-
 interface Press {
   readonly projectKey: string;
   readonly origin: LegacyGesturePoint;
-  readonly claim: Claim | null;
   phase: "pending" | "static" | "dragging";
   last: LegacyGesturePoint;
 }
 
-let pendingClaim: Claim | null = null;
 let press: Press | null = null;
-let lastOutcome: { readonly projectKey: string; readonly moved: boolean; readonly claim: Claim | null } | null = null;
-
-/** A control inside a project row takes the press; `run` fires on release unless it became a drag. */
-export function claimProjectPress(run: () => void): void {
-  pendingClaim = { run, at: performance.now() };
-}
+let lastOutcome: { readonly projectKey: string; readonly moved: boolean } | null = null;
 
 export function projectMouseDown(projectKey: string, event: { x?: number; y?: number; button?: number }): void {
-  const claim = pendingClaim !== null && performance.now() - pendingClaim.at < 1_000 ? pendingClaim : null;
-  pendingClaim = null;
   if ((event.button ?? 0) !== 0) {
     press = null;
     return;
   }
   lastOutcome = null;
   const origin = { x: event.x ?? 0, y: event.y ?? 0 };
-  press = { projectKey, origin, claim, phase: "pending", last: origin };
+  press = { projectKey, origin, phase: "pending", last: origin };
 }
 
 export function projectMouseMove(event: { x?: number; y?: number; pressedButton?: number | null }): void {
@@ -76,10 +62,10 @@ export function projectMouseMove(event: { x?: number; y?: number; pressedButton?
   }
   if (current.phase === "pending") {
     if (Math.hypot(point.x - current.origin.x, point.y - current.origin.y) <= PROJECT_DRAG_DISTANCE) return;
-    // A press on a control never drags: web's new-thread button is not the drag handle.
-    if (current.claim === null && host?.startDrag(current.projectKey, current.origin, point)) {
+    if (host?.startDrag(current.projectKey, current.origin, point)) {
       current.phase = "dragging";
     } else {
+      // Not draggable: the press stays a click, as web's button would.
       current.phase = "static";
       return;
     }
@@ -98,7 +84,7 @@ function finish(point: LegacyGesturePoint, commit: boolean): void {
   if (current === null) return;
   const moved = current.phase === "dragging";
   if (moved) host?.endDrag(commit ? point : null);
-  lastOutcome = { projectKey: current.projectKey, moved, claim: current.claim };
+  lastOutcome = { projectKey: current.projectKey, moved };
 }
 
 export function cancelLegacyProjectGesture(): void {
@@ -106,22 +92,16 @@ export function cancelLegacyProjectGesture(): void {
   press = null;
   if (current === null) return;
   if (current.phase === "dragging") host?.endDrag(null);
-  lastOutcome = { projectKey: current.projectKey, moved: true, claim: null };
+  lastOutcome = { projectKey: current.projectKey, moved: true };
 }
 
 /**
- * From the row's onClick: "claimed" ran a control's action, "moved" was a drag
- * (handleProjectButtonClick suppresses the click after one), "row" is a click.
+ * From the row's onClick: false after a drag (handleProjectButtonClick
+ * suppresses the click that ends one), true for a click.
  */
-export function consumeProjectClick(projectKey: string): "claimed" | "moved" | "row" {
+export function consumeProjectClick(projectKey: string): boolean {
   if (press !== null && press.projectKey === projectKey) finish(press.last, true);
   const outcome = lastOutcome;
   lastOutcome = null;
-  if (outcome === null || outcome.projectKey !== projectKey) return "row";
-  if (outcome.moved) return "moved";
-  if (outcome.claim !== null) {
-    outcome.claim.run();
-    return "claimed";
-  }
-  return "row";
+  return outcome === null || outcome.projectKey !== projectKey || !outcome.moved;
 }

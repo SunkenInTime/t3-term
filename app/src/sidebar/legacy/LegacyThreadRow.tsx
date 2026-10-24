@@ -34,7 +34,6 @@ import {
 import { terminalUiActions, useEnvironmentScope, useTerminalMetadata } from "../../state/terminal.ts";
 import { rightPanelOpenAtom, rightPanelSurfaceAtom } from "../../state/ui.ts";
 import { Icon } from "../../ui/Icon.tsx";
-import { Tooltip } from "../../ui/overlay.tsx";
 import { Text } from "../../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { formatRelativeTimeLabel } from "../../web/timestampFormat.ts";
@@ -43,7 +42,7 @@ import { claimClick, consumeClaimedClick } from "../clickGuard.ts";
 import { useNowMinute } from "../clock.ts";
 import { PULL_REQUEST_STATE_PRESENTATION } from "../pullRequestBadge.ts";
 import { archiveThread, navigateToThread, renameThread, reportResult } from "../threadActions.ts";
-import { ThreadStatusLabel, legacyTones } from "./legacyStatus.tsx";
+import { ThreadStatusLabel, legacyTones, PassiveTooltip } from "./legacyStatus.tsx";
 
 export interface LegacyThreadRowProps {
   readonly thread: EnvironmentThreadShell;
@@ -203,13 +202,13 @@ function LegacyThreadRowView(props: LegacyThreadRowProps) {
             onCancel={() => setRename(null)}
           />
         ) : (
-          <Tooltip content={thread.title} side="top" rootStyle={{ flexGrow: 1, flexShrink: 1, minWidth: 0 }}>
+          <PassiveTooltip content={thread.title} side="top" rootStyle={{ flexGrow: 1, flexShrink: 1, minWidth: 0 }}>
             <div style={{ display: "flex", flexGrow: 1, minWidth: 0 }}>
               <Text size="sm" weight={isActive ? 500 : 400} color={titleColor} truncate testId={`legacy-thread-title-${thread.id}`}>
                 {thread.title}
               </Text>
             </div>
-          </Tooltip>
+          </PassiveTooltip>
         )}
       </div>
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 }}>
@@ -255,9 +254,9 @@ function LegacyThreadRowView(props: LegacyThreadRowProps) {
           {confirmThreadArchive ? (
             <ArchiveButton threadId={thread.id} onActivate={() => setConfirmingKey(threadKey)} />
           ) : (
-            <Tooltip content="Archive" side="top">
+            <PassiveTooltip content="Archive" side="top">
               <ArchiveButton threadId={thread.id} onActivate={archiveNow} />
-            </Tooltip>
+            </PassiveTooltip>
           )}
         </div>
       ) : null}
@@ -364,7 +363,6 @@ function ArchiveButton({ threadId, onActivate }: { threadId: string; onActivate:
   return (
     <div
       testId={`legacy-thread-archive-${threadId}`}
-      onMouseDown={claimClick}
       onClick={onActivate}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -399,7 +397,6 @@ function ConfirmArchiveButton({
   return (
     <div
       testId={`legacy-thread-archive-confirm-${threadId}`}
-      onMouseDown={claimClick}
       onClick={onConfirm}
       onMouseEnter={() => {
         setHovered(true);
@@ -446,7 +443,7 @@ function ThreadPullRequestIcon({ thread, isActive }: { thread: EnvironmentThread
       : PULL_REQUEST_STATE_PRESENTATION[snapshot.state === "open" && snapshot.isDraft ? "draft" : snapshot.state];
   const label = state && snapshot ? `PR #${current.number} - ${state.label}: ${snapshot.title}` : `PR #${current.number}, status pending`;
   return (
-    <Tooltip content={label} side="top" rootStyle={{ flexShrink: 0 }}>
+    <PassiveTooltip content={label} side="top" rootStyle={{ flexShrink: 0 }}>
       <div
         onMouseDown={claimClick}
         onClick={() => {
@@ -458,7 +455,7 @@ function ThreadPullRequestIcon({ thread, isActive }: { thread: EnvironmentThread
       >
         <Icon name={state?.icon ?? "git-pull-request-arrow"} size={12} color={state?.color ?? theme.mutedForeground} />
       </div>
-    </Tooltip>
+    </PassiveTooltip>
   );
 }
 
@@ -469,11 +466,11 @@ function WorktreeIndicator({ thread }: { thread: EnvironmentThreadShell }) {
   if (!worktreePath) return null;
   const tooltip = thread.branch ? `Worktree: ${worktreePath} (${thread.branch})` : `Worktree: ${worktreePath}`;
   return (
-    <Tooltip content={tooltip} side="top" rootStyle={{ flexShrink: 0 }}>
+    <PassiveTooltip content={tooltip} side="top" rootStyle={{ flexShrink: 0 }}>
       <div style={{ display: "flex", flexShrink: 0 }}>
         <Icon name="folder-git-2" size={12} color={alpha(theme.mutedForeground, 0.4)} />
       </div>
-    </Tooltip>
+    </PassiveTooltip>
   );
 }
 
@@ -497,7 +494,7 @@ function TerminalStatusButton({ threadRef }: { threadRef: ScopedThreadRef }) {
       ? "1 terminal process running. Open terminal"
       : `${terminalIds.length} terminal processes running. Open terminal`;
   return (
-    <Tooltip content={label} side="top" rootStyle={{ flexShrink: 0 }}>
+    <PassiveTooltip content={label} side="top" rootStyle={{ flexShrink: 0 }}>
       <div
         testId={`legacy-terminal-status-${threadRef.threadId}`}
         onMouseDown={claimClick}
@@ -511,6 +508,6 @@ function TerminalStatusButton({ threadRef }: { threadRef: ScopedThreadRef }) {
       >
         <Icon name="terminal" size={14} color={theme.appearance === "dark" ? "#46ecd5e6" : "#009689"} />
       </div>
-    </Tooltip>
+    </PassiveTooltip>
   );
 }

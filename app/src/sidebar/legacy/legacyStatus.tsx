@@ -2,8 +2,12 @@
 // 10px label, or (compact) a 9px dot in a 14px box. Colours are the Tailwind v4
 // shades the pill's colorClass / dotClass name (dark: `-300` at the given
 // alpha; light: `-600` text, `-500` dot).
-import { Tooltip } from "../../ui/overlay.tsx";
-import { FONTS, type Palette, useTheme } from "../../ui/theme.ts";
+import type { FloatingSide } from "@gpuix/react/floating";
+import * as TooltipPrimitive from "@gpuix/react/tooltip";
+import type { ReactElement } from "react";
+
+import type { Style } from "../../ui/primitives.tsx";
+import { FONTS, RADIUS, type Palette, useTheme } from "../../ui/theme.ts";
 import type { ThreadStatusPill } from "../../web/components/LegacySidebar.logic.ts";
 
 /** Sidebar text tokens web reads through `text-secondary-label` and `text-icon-muted`. */
@@ -66,21 +70,66 @@ export function ThreadStatusLabel({ status, compact = false }: { status: ThreadS
   const colors = statusColors(status, theme);
   if (compact) {
     return (
-      <Tooltip content={status.label} side="top" rootStyle={{ flexShrink: 0 }}>
+      <PassiveTooltip content={status.label} side="top" rootStyle={{ flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 14, height: 14, flexShrink: 0 }}>
           <StatusDot status={status} size={9} />
         </div>
-      </Tooltip>
+      </PassiveTooltip>
     );
   }
   return (
-    <Tooltip content={status.label} side="top" rootStyle={{ flexShrink: 0 }}>
+    <PassiveTooltip content={status.label} side="top" rootStyle={{ flexShrink: 0 }}>
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 }}>
         <StatusDot status={status} size={6} />
         <text style={{ color: colors.text, fontSize: 10, lineHeight: 14, fontFamily: FONTS.sans, whiteSpace: "nowrap" }}>
           {status.label}
         </text>
       </div>
-    </Tooltip>
+    </PassiveTooltip>
+  );
+}
+
+/**
+ * ui/overlay.tsx Tooltip without hoverable content: its popup lets presses
+ * through. A row title's tooltip opens over the row above it, and a click
+ * there (the project header) must reach the header, as it does on web.
+ */
+export function PassiveTooltip({
+  content,
+  side = "top",
+  rootStyle,
+  children,
+}: {
+  content: string;
+  side?: FloatingSide;
+  rootStyle?: Style;
+  children: ReactElement;
+}) {
+  const theme = useTheme();
+  return (
+    <TooltipPrimitive.Root style={rootStyle} disableHoverableContent>
+      <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
+      <TooltipPrimitive.Content
+        side={side}
+        sideOffset={6}
+        style={{
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "center",
+          paddingTop: 4,
+          paddingBottom: 4,
+          paddingLeft: 8,
+          paddingRight: 8,
+          maxWidth: 320,
+          borderRadius: RADIUS.md,
+          borderWidth: 1,
+          borderColor: theme.border,
+          backgroundColor: theme.appearance === "dark" ? "#141414" : "#ffffff",
+          pointerEvents: "none",
+        }}
+      >
+        <text style={{ color: theme.foreground, fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans }}>{content}</text>
+      </TooltipPrimitive.Content>
+    </TooltipPrimitive.Root>
   );
 }
