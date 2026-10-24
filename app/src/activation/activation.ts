@@ -52,8 +52,15 @@ function socketPath(): string {
   return process.platform === "win32" ? `\\\\.\\pipe\\t3term-${id}` : NodePath.join(NodeOS.tmpdir(), `t3term-${id}.sock`);
 }
 
-/** Hands `request` to a running t3-term. Resolves null when none is listening. */
-export function forwardToRunningInstance(request: ActivationRequest, timeoutMs = 1500): Promise<ActivationResponse | null> {
+/**
+ * Hands `request` to a running t3-term and waits for its answer. Resolves null
+ * when none is listening; this invocation then opens its own window.
+ */
+export function forwardToRunningInstance(
+  request: ActivationRequest,
+  connectTimeoutMs = 1500,
+  answerTimeoutMs = 60_000,
+): Promise<ActivationResponse | null> {
   return new Promise((resolve) => {
     let settled = false;
     let buffer = "";
@@ -65,9 +72,14 @@ export function forwardToRunningInstance(request: ActivationRequest, timeoutMs =
       resolve(response);
     };
     const socket = NodeNet.connect(socketPath());
-    // A connection that opens but never answers is a wedged instance; start a fresh one.
-    const timer = setTimeout(() => finish(null), timeoutMs);
-    socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`));
+    let timer = setTimeout(() => finish(null), connectTimeoutMs);
+    socket.on("connect", () => {
+      clearTimeout(timer);
+      // The running window owns the request now; adding a project can take a while, and a
+      // missing answer is reported rather than handled twice here.
+      timer = setTimeout(() => finish({ ok: false, message: "The running T3 Code did not answer." }), answerTimeoutMs);
+      socket.write(`${JSON.stringify(request)}\n`);
+    });
     socket.on("data", (chunk) => {
       buffer += chunk.toString("utf8");
       const newline = buffer.indexOf("\n");
