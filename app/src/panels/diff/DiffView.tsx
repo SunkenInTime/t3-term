@@ -61,6 +61,8 @@ function wasConsumed(event: EventPayload): boolean {
   return consumed !== null && consumed.x === Number(event.x ?? 0) && consumed.y === Number(event.y ?? 0) && Date.now() - consumed.at < 500;
 }
 const HEADER_HEIGHT = 32;
+/** The find panel's close badge reaches this far past its top-right corner. */
+const FIND_CLOSE_OVERHANG = 10;
 const NO_MARKS: ReadonlyArray<SegmentMark> = [];
 const isMac = process.platform === "darwin";
 const SEPARATOR_HEIGHT = 24;
@@ -507,6 +509,39 @@ export function DiffView(props: DiffViewProps) {
         backgroundColor: palette.bg,
       }}
     >
+      {findOpen ? (
+        // [data-search-panel]: a zero-height host across the top of the diff viewport. Its
+        // widget sits under the sticky file header (getStickyHeaderOffset 32 + top 8px) with
+        // its right edge 16px inside the 16px scrollbar gutter. A deferred <anchored> layer
+        // paints it over the virtual list and the sticky header.
+        <div style={{ width: "100%", height: 0, flexShrink: 0 }}>
+          <anchored
+            side="bottom"
+            align="end"
+            // The layer pads FIND_CLOSE_OVERHANG on top and right for the corner badge.
+            gap={HEADER_HEIGHT + 8 - FIND_CLOSE_OVERHANG}
+            offset={{ x: -(32 - FIND_CLOSE_OVERHANG), y: 0 }}
+            deferred
+            priority={1}
+            occlude
+            // A raw <anchored> paints #1A1A1A behind its content; the panel paints itself.
+            style={{ backgroundColor: "transparent", pointerEvents: "auto" }}
+          >
+            <div style={{ display: "flex", paddingTop: FIND_CLOSE_OVERHANG, paddingRight: FIND_CLOSE_OVERHANG }}>
+              <DiffFindBar
+                key={findFocusId}
+                params={findParams}
+                matchCount={findMatches.length}
+                current={findCurrent}
+                onQueryChange={(text) => setFindParams((current) => ({ ...current, text }))}
+                onToggle={(option: DiffFindOption) => setFindParams((current) => ({ ...current, [option]: !current[option] }))}
+                onNavigate={navigateFind}
+                onClose={closeFind}
+              />
+            </div>
+          </anchored>
+        </div>
+      ) : null}
       {probe}
       {width > 0 && props.inline ? (
         <div style={{ display: "flex", flexDirection: "column", width: "100%" }}>
@@ -585,23 +620,6 @@ export function DiffView(props: DiffViewProps) {
             onToggleFile={props.onToggleFile}
             onOpenFile={props.onOpenFile}
             {...(props.renderHeaderExtras ? { extras: props.renderHeaderExtras(stickyFile) } : {})}
-          />
-        </div>
-      ) : null}
-      {findOpen ? (
-        // [data-search-panel]: sticky at the top right of the viewport, below the sticky file
-        // header (getStickyHeaderOffset). Painted after the list and the sticky header so it
-        // sits over both.
-        <div style={{ position: "absolute", top: HEADER_HEIGHT + 8, right: 32, display: "flex" }}>
-          <DiffFindBar
-            key={findFocusId}
-            params={findParams}
-            matchCount={findMatches.length}
-            current={findCurrent}
-            onQueryChange={(text) => setFindParams((current) => ({ ...current, text }))}
-            onToggle={(option: DiffFindOption) => setFindParams((current) => ({ ...current, [option]: !current[option] }))}
-            onNavigate={navigateFind}
-            onClose={closeFind}
           />
         </div>
       ) : null}

@@ -107,7 +107,8 @@ export function DiffFindBar({
           flexDirection: "row",
           alignItems: "center",
           gap: 6,
-          padding: 4,
+          // Web's widget measures 320×38: 5px around the 26px input inside a 1px border.
+          padding: 5,
           borderRadius: 8,
           backgroundColor: alpha(theme.foreground, 0.04),
         }}
@@ -168,7 +169,7 @@ export function DiffFindBar({
           {toggle("wholeWord", "whole-word", "Whole Word")}
           {toggle("regex", "regex", "Regexp")}
         </div>
-        <div style={{ display: "flex", flexShrink: 0, minWidth: 40 }}>
+        <div style={{ display: "flex", flexShrink: 0, minWidth: 54 }}>
           <text
             style={{
               color: noMatches && params.text.length > 0 ? theme.errorForeground : muted,
