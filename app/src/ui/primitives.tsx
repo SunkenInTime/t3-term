@@ -100,6 +100,8 @@ export function Button({
   size = "default",
   disabled,
   onClick,
+  onMouseEnter,
+  onMouseLeave,
   style,
   testId,
 }: {
@@ -112,6 +114,9 @@ export function Button({
   size?: ButtonSize;
   disabled?: boolean;
   onClick?: () => void;
+  /** For hover shared with a parent: gpuix ends the parent's hover over this filled button. */
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
   style?: Style;
   testId?: string;
 }) {
@@ -122,6 +127,8 @@ export function Button({
     <div
       testId={testId}
       onClick={disabled ? undefined : onClick}
+      {...(onMouseEnter ? { onMouseEnter } : {})}
+      {...(onMouseLeave ? { onMouseLeave } : {})}
       style={{
         display: "flex",
         flexDirection: "row",
