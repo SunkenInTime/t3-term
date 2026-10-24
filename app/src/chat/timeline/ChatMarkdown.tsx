@@ -65,6 +65,11 @@ import type { BoxAtom } from "../markdown/inline.ts";
 import { messageLinkIndex, type FileChipTarget } from "../markdown/links.ts";
 import { parseChatMarkdown } from "../markdown/parse.ts";
 import { showMarkdownContextMenu } from "../markdown/overlays.tsx";
+import { openCitationPopover } from "../markdown/citations.tsx";
+import { runShellCommandInTerminal } from "../markdown/runInTerminal.ts";
+import { ArtifactTemplateCard } from "../markdown/ArtifactTemplateCard.tsx";
+import { appendCodexArtifactTemplateUsePrompt, type CodexArtifactTemplate } from "@t3tools/shared/codexArtifactTemplates";
+import { composerTargetKey, focusComposer, updateComposerDraft } from "../../state/composer.ts";
 import { markdownStyles, type ChatMarkdownTone } from "../markdown/styles.ts";
 import { NativeChatMarkdown } from "../../dev/nativeMarkdown.tsx";
 import { TimelineRowCtx, type TimelineRowSharedState } from "./rowContext.ts";
@@ -299,7 +304,8 @@ function createBoxes(context: LinkContext): InlineBoxRenderers {
         label: assistantCitationLabel(citation),
         icon: { kind: "lucide", name: "quote" },
         tooltip: citation.comment ? `${citation.text}\n\n${citation.comment}` : citation.text,
-        onActivate: () => navigateToThread(citation.environmentId, citation.threadId),
+        // Outside the composer the chip opens a popover with the quote and "Go to source".
+        onActivate: (_modifiers, position) => openCitationPopover(citation, position),
       };
       return chipAtom(id("cite"), payload, env.styles.body, Math.min(lineWidth(env), env.styles.body.size * 0.86 * 16 + 40));
     },
@@ -328,10 +334,35 @@ function createBoxes(context: LinkContext): InlineBoxRenderers {
   };
 }
 
-function createBlocks(): BlockRenderers {
+/**
+ * ChatView insertArtifactTemplate: append the template's prompt to the thread's
+ * draft unless the draft already ends with it, then focus the composer.
+ */
+function insertArtifactTemplate(threadRef: { environmentId: EnvironmentId; threadId: ThreadId }, template: CodexArtifactTemplate) {
+  const key = composerTargetKey({ kind: "thread", environmentId: threadRef.environmentId, threadId: threadRef.threadId });
+  updateComposerDraft(key, (draft) => ({ ...draft, prompt: appendCodexArtifactTemplateUsePrompt(draft.prompt, template) }));
+  focusComposer();
+}
+
+function createBlocks(context: LinkContext): BlockRenderers {
+  const threadRef = context.row?.threadRef ?? null;
+  // web ChatView passes onRunShellCommand with an active project; ChatMarkdown
+  // offers it once the fence has closed and the message stopped streaming.
+  const runShellCommand = threadRef && context.row?.workspaceRoot ? (command: string) => void runShellCommandInTerminal(threadRef, command) : undefined;
   return {
-    codeBlock({ code, language, meta, width, env, key }) {
-      return <MarkdownCodeBlock key={key} code={code} language={language} meta={meta} width={width} styles={env.styles} isStreaming={false} />;
+    codeBlock({ code, language, meta, width, env, key, closedFence }) {
+      return (
+        <MarkdownCodeBlock
+          key={key}
+          code={code}
+          language={language}
+          meta={meta}
+          width={width}
+          styles={env.styles}
+          isStreaming={env.isStreaming}
+          onRunShellCommand={runShellCommand && !env.isStreaming && closedFence ? runShellCommand : undefined}
+        />
+      );
     },
     mathBlock({ tex, width, env, key }) {
       return <MathBlock key={key} tex={tex} width={width} styles={env.styles} />;
@@ -347,6 +378,9 @@ function createBlocks(): BlockRenderers {
     },
     image({ node, width, env, key }) {
       return <MarkdownImage key={key} node={node} width={width} env={env} />;
+    },
+    artifactTemplate({ template, key }) {
+      return <ArtifactTemplateCard key={key} template={template} onUse={threadRef ? (picked) => insertArtifactTemplate(threadRef, picked) : undefined} />;
     },
   };
 }
@@ -402,7 +436,7 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   const [linkingRef] = useState<LinkContext["linking"]>(() => ({ current: null }));
   linkingRef.current = linking;
   const context = useMemo<LinkContext>(() => ({ row, contextChip, linking: linkingRef }), [row, contextChip, linkingRef]);
-  const handlers = useMemo(() => ({ actions: createActions(context), boxes: createBoxes(context), blocks: createBlocks() }), [context]);
+  const handlers = useMemo(() => ({ actions: createActions(context), boxes: createBoxes(context), blocks: createBlocks(context) }), [context]);
   const rendered = useMemo(() => {
     if (width <= 0) return null;
     const env: RenderEnv = {
@@ -418,6 +452,7 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
       extent: { width: 0, root: width },
       media: { environmentId: row?.threadRef.environmentId ?? null, threadId: row?.threadRef.threadId ?? null, cwd, gallery: [] },
       isStreaming,
+      source: text,
     };
     const nodes = renderDocument(tree, width, env);
     return { nodes, extent: env.extent.width };

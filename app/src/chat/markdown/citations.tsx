@@ -9,7 +9,12 @@ import type { GpuixRenderer } from "@gpuix/native";
 import { ASSISTANT_CITATION_CONTEXT_LENGTH, ASSISTANT_CITATION_MAX_TEXT_LENGTH, MessageId, type AssistantCitation, type ScopedThreadRef } from "@t3tools/contracts";
 import type { Element, ElementContent, Root } from "hast";
 
+import { appAtomRegistry } from "../../runtime/runtime.ts";
 import { composerTargetKey, focusComposer, updateComposerDraft } from "../../state/composer.ts";
+import { citationRequestAtom } from "../../state/timeline.ts";
+import { routeAtom } from "../../state/ui.ts";
+import { surfaceStyle } from "../../ui/overlay.tsx";
+import { Button } from "../../ui/primitives.tsx";
 import { Icon } from "../../ui/Icon.tsx";
 import { FONTS, alpha, useTheme } from "../../ui/theme.ts";
 import { formatAssistantCitationForComposer } from "../../web/composer-logic.ts";
@@ -50,12 +55,19 @@ export function citationFromSelection(
   messageId: string,
   rendered: string,
   selected: string,
+  /** Which occurrence of a repeated quote was selected (selectionOccurrence), 0 when unknown. */
+  occurrence = 0,
 ): AssistantCitation | null {
   const normalized = normalizeWhitespace(rendered);
   const quote = normalizeWhitespace(cleanMarkdownSelection(selected)).trim();
   if (quote.length === 0) return null;
-  const start = normalized.indexOf(quote);
+  let start = normalized.indexOf(quote);
   if (start === -1) return null;
+  for (let skipped = 0; skipped < occurrence; skipped += 1) {
+    const next = normalized.indexOf(quote, start + 1);
+    if (next === -1) break;
+    start = next;
+  }
   const end = start + quote.length;
   return {
     version: 1,
@@ -149,6 +161,74 @@ function CitationToolbar({ citation, position, onClose }: { citation: AssistantC
         >
           <Icon name="quote" size={14} color={theme.mutedForeground} />
           <text style={{ fontFamily: FONTS.sans, fontSize: 12, fontWeight: 500, lineHeight: 16, color: theme.foreground, whiteSpace: "nowrap" }}>{label}</text>
+        </div>
+      </anchored>
+    </DismissableLayer>
+  );
+}
+
+// ── Citation chip popover (AssistantCitationChip outside the composer) ────
+
+/** Opens the chip's popover above the click: the quote, its comment, and "Go to source". */
+export function openCitationPopover(citation: AssistantCitation, position: { x: number; y: number }) {
+  openMarkdownOverlay({
+    kind: "custom",
+    render: (close) => <CitationPopover citation={citation} position={position} onClose={close} />,
+  });
+}
+
+/** web assistantCitationNavigation: open the cited thread and ask its timeline to reveal the quote. */
+export function goToCitationSource(citation: AssistantCitation) {
+  appAtomRegistry.set(citationRequestAtom, { key: Date.now(), citation });
+  appAtomRegistry.set(routeAtom, { kind: "thread", environmentId: citation.environmentId, threadId: citation.threadId });
+}
+
+/** ContextChipPopover side="top" width="lg" padding="compact" around AssistantCitationQuote. */
+function CitationPopover({ citation, position, onClose }: { citation: AssistantCitation; position: { x: number; y: number }; onClose: () => void }) {
+  const theme = useTheme();
+  const textStyle = { fontFamily: FONTS.sans, fontSize: 14, lineHeight: 20 } as const;
+  return (
+    <DismissableLayer onEscapeKeyDown={onClose}>
+      <anchored position={{ x: position.x, y: position.y - 8 }} anchor="bottomLeft" fit="snap" snapMargin={8} deferred priority={2} style={{ backgroundColor: "transparent" }}>
+        <div
+          testId="citation-popover"
+          onMouseDownOutside={onClose}
+          style={{
+            ...surfaceStyle(theme),
+            display: "flex",
+            flexDirection: "column",
+            width: 384,
+            paddingTop: 8,
+            paddingBottom: 8,
+            paddingLeft: 12,
+            paddingRight: 12,
+            pointerEvents: "auto",
+          }}
+        >
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 12, padding: 4 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, alignSelf: "stretch", maxHeight: 256, overflowY: "scroll", scrollbarColor: theme.scrollbar }}>
+              <div style={{ display: "flex", flexDirection: "column", borderLeftWidth: 2, borderColor: theme.border, paddingLeft: 12 }}>
+                {citation.text.split("\n").map((line, index) => (
+                  <text key={index} style={{ ...textStyle, color: theme.mutedForeground }}>
+                    {line.length > 0 ? line : " "}
+                  </text>
+                ))}
+              </div>
+              {citation.comment ? <text style={{ ...textStyle, color: theme.foreground }}>{citation.comment}</text> : null}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              icon="arrow-up-right"
+              testId="citation-go-to-source"
+              onClick={() => {
+                onClose();
+                goToCitationSource(citation);
+              }}
+            >
+              Go to source
+            </Button>
+          </div>
         </div>
       </anchored>
     </DismissableLayer>

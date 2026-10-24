@@ -17,6 +17,7 @@ import { runAtomCommand, isAtomCommandInterrupted, squashAtomCommandFailure } fr
 import { workspacePreparationRetryRunIds } from "@t3tools/client-runtime/state/turn-item-presentation";
 import { resolveVisibleWorktreeSetup, worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import {
+  type AssistantCitation,
   CommandId,
   type EnvironmentId,
   type MessageId,
@@ -40,8 +41,8 @@ import {
   threadEnvironment,
 } from "../../state/environment.ts";
 import {
+  citationRequestAtom,
   composerInsetAtom,
-  restoredPromptAtom,
   revertConfirmAtom,
   rewindingThreadKeysAtom,
   timelineLocalErrorsAtom,
@@ -71,10 +72,13 @@ import { deriveTimelineMinimapItems, type TimelineMinimapItem } from "../../web/
 import { ChatLane, useDetailsCardInline } from "../chatLane.tsx";
 import "./devOpenThread.ts";
 import { TimelineMinimap } from "./TimelineMinimap.tsx";
+import { prepareRevertedMessageAttachments } from "./rewindAttachments.ts";
+import { ensureDrawerTerminal } from "../markdown/runInTerminal.ts";
+import { composerTargetKey, focusComposer, restoreComposerContent } from "../../state/composer.ts";
 import { ThreadErrorBanner } from "./ThreadErrorBanner.tsx";
 import { findHighlightColors, ThreadFindBar, type ThreadFindState } from "./ThreadFindBar.tsx";
 import type { ThreadFindPositionReader } from "../../web/components/chat/threadFind.ts";
-import { locateFindOccurrence } from "./findOccurrence.ts";
+import { locateFindOccurrence, locateQuote } from "./findOccurrence.ts";
 import { ThreadStatusFooter } from "./ThreadStatusLine.tsx";
 import { PendingHandoffRow } from "./PendingHandoffRow.tsx";
 import { TimelineRowContent } from "./TimelineRows.tsx";
@@ -362,6 +366,16 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
     if (!message || message.role !== "user") return;
     setRewinding(true);
     setLocalError(null);
+    const draftKey = composerTargetKey({ kind: "thread", environmentId, threadId });
+    // web revertToTurn: fetch the attachments first, so a failure leaves the thread as it was.
+    let attachments: Awaited<ReturnType<typeof prepareRevertedMessageAttachments>>;
+    try {
+      attachments = await prepareRevertedMessageAttachments({ message, environmentId, draftKey });
+    } catch (error) {
+      setRewinding(false);
+      setLocalError(error instanceof Error ? error.message : "Failed to revert thread state.");
+      return;
+    }
     const checkpoint = findRevertCheckpoint(projection?.checkpoints ?? [], turnCount);
     const result = await runAtomCommand(appAtomRegistry, threadEnvironment.revertCheckpoint, {
       environmentId,
@@ -381,8 +395,12 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
       }
       return;
     }
+    // The prompt and its attachments go back into the thread's draft together.
     const prompt = recallableComposerPrompt(message.text);
-    if (prompt.length > 0) appAtomRegistry.set(restoredPromptAtom, { threadId, prompt, nonce: Date.now() });
+    if (prompt.length > 0 || attachments.length > 0) {
+      restoreComposerContent(draftKey, { prompt, attachments });
+      focusComposer();
+    }
   });
 
   const [pendingRollback, setPendingRollback] = useState<{ checkpointId: string; scopeId: string } | null>(null);
@@ -449,6 +467,11 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
       input: { threadId: worktreeSetup.threadId },
     });
   });
+  // useWorktreeSetup openSetupTerminal: the setup script's terminal opens in this thread's drawer.
+  const onOpenWorktreeSetupTerminal = useStableCallback((terminalId: string) => {
+    if (worktreeSetup?.threadId !== threadId) return;
+    ensureDrawerTerminal(threadKey, terminalId);
+  });
   const onRetryWorkspacePreparation = useStableCallback((runId: RunId) => {
     void runAtomCommand(appAtomRegistry, threadEnvironment.retryWorkspacePreparation, {
       environmentId,
@@ -488,7 +511,7 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
       onCancelWorktreeSetup,
       retryableWorkspacePreparationRunIds: retryableRunIds,
       onRetryWorkspacePreparation,
-      onOpenWorktreeSetupTerminal: null,
+      onOpenWorktreeSetupTerminal,
       workGroupViewState: remembered.workGroupViewState,
       changedFilesExpandedRunIds: changedFilesExpanded,
       onToggleChangedFilesExpanded,
@@ -577,6 +600,66 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
   });
   const activeFind = findOpen ? find : null;
 
+  // ── Citation source (useAssistantCitationTarget) ──────────────────────────
+  const citationRequest = useAtomValue(citationRequestAtom);
+  const citation =
+    citationRequest !== null && citationRequest.citation.environmentId === environmentId && citationRequest.citation.threadId === threadId
+      ? citationRequest
+      : null;
+  const [citationTarget, setCitationTarget] = useState<CitationTarget | null>(null);
+  const citationPages = useRef<{ key: number | null; pages: Set<string> }>({ key: null, pages: new Set() });
+  const finishCitation = useStableCallback((key: number) => {
+    if (appAtomRegistry.get(citationRequestAtom)?.key === key) appAtomRegistry.set(citationRequestAtom, null);
+    setCitationTarget((current) => (current?.key === key ? null : current));
+  });
+  useEffect(() => {
+    if (!citation) return;
+    if (citationPages.current.key !== citation.key) citationPages.current = { key: citation.key, pages: new Set() };
+    if (history.loading) return;
+    const fail = (title: string, description: string) => {
+      toast({ type: "warning", title, description });
+      finishCitation(citation.key);
+    };
+    const messageId = citation.citation.messageId;
+    const source = timelineEntries.find((entry) => entry.kind === "message" && entry.message.id === messageId);
+    if (!source) {
+      if (history.hasMoreHistory && !history.error) {
+        const cursor = timelineEntries[0]?.id ?? "first";
+        const pages = citationPages.current.pages;
+        if (pages.has(cursor) || pages.size >= 20) {
+          fail("Could not load the cited response", "Load earlier turns, then click the citation to try again. Your saved quote is unchanged.");
+          return;
+        }
+        pages.add(cursor);
+        void runAtomCommand(appAtomRegistry, threadEnvironment.loadEarlierHistory, {
+          environmentId,
+          input: { threadId, throughEntryId: messageId },
+        });
+        return;
+      }
+      fail("The cited response is unavailable", "It may have been removed. The selected text is still saved in your citation.");
+      return;
+    }
+    if (source.kind !== "message" || source.message.role !== "assistant") {
+      fail("The citation does not refer to an assistant response", "The selected text is still saved in your citation.");
+      return;
+    }
+    const row = rows.find((candidate) => candidate.kind === "message" && candidate.message.id === messageId);
+    if (!row) {
+      const foldRunId = timelineTurnFoldRunIdsByEntryId({
+        timelineEntries,
+        latestRun: activityRun,
+        runningRunId: runtime?.activeRunId ?? null,
+        isWorking,
+        runlessWorkActive: runlessWorkStartedAt !== null,
+      }).get(source.id);
+      if (foldRunId) setExpandedRunIds((current) => (current.has(foldRunId) ? current : new Set(current).add(foldRunId)));
+      return;
+    }
+    setCitationTarget((current) => (current?.key === citation.key ? current : { key: citation.key, rowId: row.id, citation: citation.citation }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [citation, timelineEntries, rows, history.loading, history.hasMoreHistory, history.error]);
+
   // ── History paging ────────────────────────────────────────────────────────
   const loadEarlier = useStableCallback(() => {
     if (!history.hasMoreHistory || history.loading) return;
@@ -607,6 +690,9 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
             rows={rows}
             find={activeFind}
             findViewport={findViewport}
+            citation={citationTarget}
+            citationPending={citation !== null}
+            onCitationDone={finishCitation}
             history={showHistoryControl ? history : null}
             onLoadEarlier={loadEarlier}
             parentThreadLink={parentThreadLink}
@@ -707,6 +793,21 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
 }
 
 const EMPTY_HANDOFF_RUNS: ReadonlyArray<HandoffTimelineRun> = [];
+
+/** The cited reply's row, once its thread has loaded and unfolded it. */
+interface CitationTarget {
+  readonly key: number;
+  readonly rowId: string;
+  readonly citation: AssistantCitation;
+}
+
+type HighlightSpec = {
+  readonly query?: string;
+  readonly ranges?: Array<[number, number]>;
+  readonly color?: string;
+  readonly activeColor?: string;
+  readonly activeIndex?: number;
+};
 /** web FIND_MATCH_VIEW_MARGIN: a revealed match keeps this much room from the viewport edges. */
 const FIND_MATCH_VIEW_MARGIN = 96;
 
@@ -732,6 +833,9 @@ const TimelineList = memo(function TimelineList({
   rows,
   find,
   findViewport,
+  citation,
+  citationPending,
+  onCitationDone,
   history,
   onLoadEarlier,
   parentThreadLink,
@@ -742,6 +846,11 @@ const TimelineList = memo(function TimelineList({
   find: ThreadFindState | null;
   /** Where the viewport top is, for the find bar's position reader. */
   findViewport: { current: { start: number } };
+  /** A cited passage to reveal and pulse (AssistantCitationSource). */
+  citation: CitationTarget | null;
+  /** A citation request is on its way: it owns the scroll, so no position restore. */
+  citationPending: boolean;
+  onCitationDone: (key: number) => void;
   history: { readonly hasMoreHistory: boolean; readonly loading: boolean; readonly error: string | null } | null;
   onLoadEarlier: () => void;
   parentThreadLink: { readonly threadId: ThreadId; readonly title: string } | null;
@@ -753,7 +862,7 @@ const TimelineList = memo(function TimelineList({
   const remembered = rememberedFor(scopedThreadKey(threadRef));
   // useTimelinePositionRestore: a thread reopens where the reader left it. The
   // list mounts at its end; the saved anchor is applied once it has painted.
-  const pendingRestore = useRef(remembered.position);
+  const pendingRestore = useRef(citationPending ? null : remembered.position);
   const composerInset = useAtomValue(composerInsetAtom);
   const cardInline = useDetailsCardInline();
   const [atEnd, setAtEnd] = useState(remembered.position === null);
@@ -955,27 +1064,77 @@ const TimelineList = memo(function TimelineList({
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findRowIndex, find?.navigationId, find?.match?.entryId, find?.match?.occurrence]);
+  // AssistantCitationSource: scroll the cited reply in, locate the quote in it,
+  // bring its first line into view and pulse it. web animates the wash's
+  // opacity for 3 s (two pulses, a hold, a fade); gpuix cannot animate a
+  // colour, so the wash steps on, off, on and off on timers.
+  const citationFrame = useRef<PublicInstance | null>(null);
+  const [citationWash, setCitationWash] = useState<{ readonly rowId: string; readonly range: [number, number] } | null>(null);
+  useEffect(() => {
+    const id = listRef.current?.id;
+    if (!citation || id == null) return;
+    const index = listKeysRef.current.indexOf(citation.rowId);
+    if (index < 0) return;
+    renderer.scrollToItem?.(id, index, -FIND_MATCH_VIEW_MARGIN);
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const at = (ms: number, run: () => void) => timers.push(setTimeout(run, ms));
+    at(64, () => {
+      const frameId = citationFrame.current?.id;
+      const tree = (renderer as { getAutomationTree?: () => string }).getAutomationTree?.();
+      const bounds = listBounds.current;
+      const located = frameId != null && tree ? locateQuote(tree, frameId, citation.citation) : null;
+      if (!located) {
+        onCitationDone(citation.key);
+        return;
+      }
+      const usable = bounds.height - composerInset;
+      const rowTop = located.rowTop - bounds.y;
+      const top = rowTop + located.top;
+      const delta = top < FIND_MATCH_VIEW_MARGIN ? top - FIND_MATCH_VIEW_MARGIN : top + located.height > usable - FIND_MATCH_VIEW_MARGIN ? top - FIND_MATCH_VIEW_MARGIN : 0;
+      if (Math.abs(delta) >= 1) renderer.scrollToItem?.(id, index, -rowTop + delta);
+      const wash = { rowId: citation.rowId, range: located.range };
+      setCitationWash(wash);
+      at(64 + 650, () => setCitationWash(null));
+      at(64 + 975, () => setCitationWash(wash));
+      at(64 + 3000, () => {
+        setCitationWash(null);
+        onCitationDone(citation.key);
+      });
+    });
+    return () => {
+      for (const timer of timers) clearTimeout(timer);
+      setCitationWash(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [citation?.key]);
   const highlightColors = findHighlightColors(theme);
   const findQuery = find && find.query.length > 0 ? find.query : null;
 
-  const frame = (key: string, children: ReactNode, rowIndex = -1) => (
-    <div
-      key={key}
-      {...(rowIndex >= 0 && rowIndex === findRowIndex ? { ref: activeFindFrame } : {})}
-      onLayout={(event) => onRowLayout(key, Math.round(event.height ?? 0))}
-      {...(findQuery
-        ? {
-            highlight: {
-              query: findQuery,
-              ...highlightColors,
-              ...(rowIndex >= 0 && rowIndex === findRowIndex && find?.match ? { activeIndex: find.match.occurrence } : {}),
-            },
-          }
-        : {})}
-    >
-      <ChatLane cardInline={cardInline}>{children}</ChatLane>
-    </div>
-  );
+  const frame = (key: string, children: ReactNode, rowIndex = -1) => {
+    const isFindRow = rowIndex >= 0 && rowIndex === findRowIndex;
+    const isCitationRow = citation !== null && key === citation.rowId;
+    const specs: HighlightSpec[] = [];
+    if (findQuery) specs.push({ query: findQuery, ...highlightColors, ...(isFindRow && find?.match ? { activeIndex: find.match.occurrence } : {}) });
+    // ::highlight(t3-assistant-citation): the primary colour at the pulse's 45% peak.
+    if (citationWash && citationWash.rowId === key) specs.push({ ranges: [citationWash.range], color: alpha(theme.primary, 0.45) });
+    return (
+      <div
+        key={key}
+        {...(isFindRow || isCitationRow
+          ? {
+              ref: (instance: PublicInstance | null) => {
+                if (isFindRow) activeFindFrame.current = instance;
+                if (isCitationRow) citationFrame.current = instance;
+              },
+            }
+          : {})}
+        onLayout={(event) => onRowLayout(key, Math.round(event.height ?? 0))}
+        {...(specs.length > 0 ? { highlight: specs.length === 1 ? specs[0]! : specs } : {})}
+      >
+        <ChatLane cardInline={cardInline}>{children}</ChatLane>
+      </div>
+    );
+  };
 
   return (
     <div

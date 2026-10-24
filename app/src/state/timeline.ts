@@ -3,7 +3,7 @@
 import { createAssetEnvironmentAtoms } from "@t3tools/client-runtime/state/assets";
 import { createOrchestrationEnvironmentAtoms } from "@t3tools/client-runtime/state/orchestration";
 import { createVcsEnvironmentAtoms } from "@t3tools/client-runtime/state/vcs";
-import type { EnvironmentId, MessageId, RunId, ThreadId } from "@t3tools/contracts";
+import type { AssistantCitation, EnvironmentId, MessageId, RunId, ThreadId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../runtime/runtime.ts";
@@ -99,3 +99,14 @@ export function v2ItemSupportAtom(input: {
     JSON.stringify({ environmentId: input.environmentId, threadId: input.threadId, itemId: input.itemId }),
   );
 }
+
+/**
+ * "Go to source" on a citation chip (web assistantCitationNavigation): the
+ * thread's timeline loads and reveals the cited reply, then pulses the quote.
+ * `key` makes a repeated click a new request.
+ */
+export interface CitationRequest {
+  readonly key: number;
+  readonly citation: AssistantCitation;
+}
+export const citationRequestAtom = Atom.make<CitationRequest | null>(null).pipe(Atom.keepAlive);
