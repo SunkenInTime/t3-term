@@ -19,7 +19,7 @@ import { US_SHIFTED_TO_UNSHIFTED_KEYS } from "@t3tools/shared/keybindings";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { cycleAppearanceMode } from "../state/appearance.ts";
-import { activeKeybindingsAtom, composerFocusAtom, terminalFocusAtom } from "../state/keybindings.ts";
+import { activeKeybindingsAtom, composerFocusAtom, shiftOnlyHeldAtom, terminalFocusAtom } from "../state/keybindings.ts";
 import { navigateBack, navigateForward } from "../state/navigation.ts";
 import { dispatchCommandPalette, isCommandPaletteOpen, openCommandPalette } from "../state/palette.ts";
 import {
@@ -425,6 +425,10 @@ function updateJumpHints(event: KeyEvent, down: boolean): void {
     shouldShowThreadJumpHintsForModifiers(modifiersAfter(event, down), appAtomRegistry.get(activeKeybindingsAtom), {
       context: readShortcutContext(),
     });
+  // Shift alone shows the pull request list's quick actions (web: useShortcutModifierState).
+  const after = modifiersAfter(event, down);
+  const shiftOnly = after.shiftKey && !after.ctrlKey && !after.metaKey && !after.altKey;
+  if (appAtomRegistry.get(shiftOnlyHeldAtom) !== shiftOnly) appAtomRegistry.set(shiftOnlyHeldAtom, shiftOnly);
   if (appAtomRegistry.get(sidebarJumpHintsVisibleAtom) !== visible) {
     appAtomRegistry.set(sidebarJumpHintsVisibleAtom, visible);
   }

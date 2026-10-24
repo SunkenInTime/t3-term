@@ -5,14 +5,22 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import { useAtomValue } from "@effect/atom-react";
-import { createPullRequestEnvironmentAtoms } from "@t3tools/client-runtime/state/pull-requests";
+import {
+  createPullRequestEnvironmentAtoms,
+  createPullRequestStackAtomFamily,
+} from "@t3tools/client-runtime/state/pull-requests";
 import type {
   EnvironmentId,
   ProjectId,
   PullRequestListInput,
   PullRequestListStatsInput,
+  PullRequestMergeMethod,
+  PullRequestRef,
+  PullRequestReviewCommentDraft,
   ServerConfig,
 } from "@t3tools/contracts";
+import { ThreadPullRequestLink } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { useMemo } from "react";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
@@ -37,7 +45,12 @@ import {
   connectionProjectionPhase,
 } from "@t3tools/client-runtime/connection";
 import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
-import { environmentCatalog, environmentShell, serverEnvironment } from "./environment.ts";
+import { environmentCatalog, environmentShell, environmentThreadShells, serverEnvironment } from "./environment.ts";
+import {
+  pullRequestStackView,
+  savedPullRequestStack,
+} from "../web/components/pullRequest/pullRequestStackSnapshot.ts";
+import { persistedAtom } from "./persistedAtom.ts";
 import { routeAtom } from "./ui.ts";
 
 export const pullRequestEnvironment = createPullRequestEnvironmentAtoms(connectionAtomRuntime);
@@ -168,7 +181,7 @@ export function openPullRequestsPage(patch: PullRequestsSearchPatch = {}): void 
 
 // ── Detail panel (web: rightPanelStore for PULL_REQUESTS_PANEL_REF) ──────
 
-export type PullRequestDetailTab = "summary" | "timeline" | "code";
+export type PullRequestDetailTab = "summary" | "guide" | "timeline" | "code";
 
 export interface PullRequestSurface {
   readonly id: string;
@@ -275,6 +288,17 @@ export const pullRequestProjectsKnownAtom = Atom.make((get) => {
   }
   return true;
 }).pipe(Atom.withLabel("t3term-pull-requests:projects-known"));
+
+/** web: `environment.connection.phase === "connected"` (deleting a branch needs a live connection). */
+export const pullRequestEnvironmentConnectedAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make((get) => {
+    const connection = Option.getOrElse(
+      AsyncResult.value(get(environmentCatalog.stateAtom(environmentId))),
+      () => AVAILABLE_CONNECTION_STATE,
+    );
+    return connection.phase === "connected";
+  }).pipe(Atom.withLabel(`t3term-pull-requests:connected:${environmentId}`)),
+);
 
 // ── Merged list queries (apps/web/src/state/pullRequests.ts) ─────────────
 
@@ -418,6 +442,7 @@ export interface EnvironmentQueryView<A> {
   readonly error: string | null;
   readonly failure: unknown;
   readonly isPending: boolean;
+  readonly isSuccess: boolean;
   readonly refresh: () => void;
 }
 
@@ -431,6 +456,220 @@ export function useEnvironmentQuery<A, E>(
     error: result._tag === "Failure" ? formatEnvironmentQueryError(result.cause) : null,
     failure: result._tag === "Failure" ? Option.getOrNull(Cause.findErrorOption(result.cause)) : null,
     isPending: atom !== null && result.waiting,
+    isSuccess: result._tag === "Success",
     refresh: () => appAtomRegistry.refresh(selectedAtom),
   };
+}
+
+// ── Review drafts (apps/web/src/components/pullRequest/pullRequestReviewStore.ts) ──
+
+export type PendingReviewComment = PullRequestReviewCommentDraft & { readonly id: string };
+
+/**
+ * A counter rather than anything derived from the comment: two remarks on one line can be the
+ * same length, and an id built from the draft's own contents would collide with a comment that
+ * was already removed.
+ */
+let pendingCommentSequence = 0;
+
+export function nextPendingReviewCommentId(): string {
+  pendingCommentSequence += 1;
+  return `pending-review-comment-${pendingCommentSequence}`;
+}
+
+export function pullRequestReviewKey(reference: PullRequestRef): string {
+  return JSON.stringify([
+    reference.projectId,
+    reference.host?.toLowerCase() ?? null,
+    reference.repository.toLowerCase(),
+    reference.number,
+  ]);
+}
+
+interface PullRequestReviewDrafts {
+  readonly drafts: Readonly<Record<string, ReadonlyArray<PendingReviewComment>>>;
+  readonly summaries: Readonly<Record<string, string>>;
+}
+
+export const pullRequestReviewDraftsAtom = Atom.make<PullRequestReviewDrafts>({
+  drafts: {},
+  summaries: {},
+}).pipe(Atom.keepAlive, Atom.withLabel("t3term-pull-requests:review-drafts"));
+
+const EMPTY_PENDING_COMMENTS: ReadonlyArray<PendingReviewComment> = [];
+
+function updateReviewDrafts(update: (state: PullRequestReviewDrafts) => PullRequestReviewDrafts) {
+  appAtomRegistry.set(pullRequestReviewDraftsAtom, update(appAtomRegistry.get(pullRequestReviewDraftsAtom)));
+}
+
+function withoutKey<V>(record: Readonly<Record<string, V>>, key: string): Readonly<Record<string, V>> {
+  const { [key]: _removed, ...rest } = record;
+  return rest;
+}
+
+export const pullRequestReviewStore = {
+  addComment(key: string, comment: PendingReviewComment): void {
+    updateReviewDrafts((state) => ({
+      ...state,
+      drafts: { ...state.drafts, [key]: [...(state.drafts[key] ?? EMPTY_PENDING_COMMENTS), comment] },
+    }));
+  },
+  removeComments(key: string, commentIds: ReadonlyArray<string>): void {
+    updateReviewDrafts((state) => {
+      const submitted = new Set(commentIds);
+      const remaining = (state.drafts[key] ?? EMPTY_PENDING_COMMENTS).filter((entry) => !submitted.has(entry.id));
+      return {
+        ...state,
+        drafts: remaining.length > 0 ? { ...state.drafts, [key]: remaining } : withoutKey(state.drafts, key),
+      };
+    });
+  },
+  clear(key: string): void {
+    updateReviewDrafts((state) => ({ ...state, drafts: withoutKey(state.drafts, key) }));
+  },
+  setSummary(key: string, body: string): void {
+    updateReviewDrafts((state) => ({ ...state, summaries: { ...state.summaries, [key]: body } }));
+  },
+  /** Only the exact draft the host accepted: a summary revised while it was in flight is new work. */
+  clearSummary(key: string, submittedBody: string): void {
+    updateReviewDrafts((state) =>
+      state.summaries[key] !== submittedBody ? state : { ...state, summaries: withoutKey(state.summaries, key) },
+    );
+  },
+};
+
+export function usePendingReviewComments(reference: PullRequestRef): ReadonlyArray<PendingReviewComment> {
+  const drafts = useAtomValue(pullRequestReviewDraftsAtom);
+  return drafts.drafts[pullRequestReviewKey(reference)] ?? EMPTY_PENDING_COMMENTS;
+}
+
+export function useReviewSummary(reference: PullRequestRef): string {
+  const drafts = useAtomValue(pullRequestReviewDraftsAtom);
+  return drafts.summaries[pullRequestReviewKey(reference)] ?? "";
+}
+
+// ── Last chosen merge method (web: uiStateStore.pullRequestMergeMethod, persisted) ──
+
+const MERGE_METHODS: ReadonlyArray<PullRequestMergeMethod> = ["merge", "squash", "rebase"];
+
+export const lastPullRequestMergeMethodAtom = persistedAtom<PullRequestMergeMethod | null>(
+  "pull-request-merge-method",
+  null,
+  (raw) => (MERGE_METHODS.includes(raw as PullRequestMergeMethod) ? (raw as PullRequestMergeMethod) : null),
+);
+
+// ── Review guide runs (apps/web/src/components/pullRequest/guide/guideRunStore.ts) ──
+
+export interface GuideRunWatch {
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+  readonly title: string | null;
+  readonly previousGuideAt: string | null;
+  readonly previousFailedAt: string | null;
+  readonly since: number;
+}
+
+export interface GuideProgress {
+  readonly position: number;
+  readonly seen: ReadonlySet<number>;
+}
+
+const NO_GUIDE_PROGRESS: GuideProgress = { position: 0, seen: new Set() };
+
+interface GuideRunState {
+  readonly watches: Readonly<Record<string, GuideRunWatch>>;
+  readonly shownKey: string | null;
+  readonly openRequestKey: string | null;
+  readonly progress: Readonly<Record<string, GuideProgress>>;
+}
+
+export const guideRunStateAtom = Atom.make<GuideRunState>({
+  watches: {},
+  shownKey: null,
+  openRequestKey: null,
+  progress: {},
+}).pipe(Atom.keepAlive, Atom.withLabel("t3term-pull-requests:guide-runs"));
+
+export function guideRunKey(environmentId: EnvironmentId, reference: PullRequestRef): string {
+  return `${environmentId}:${pullRequestReviewKey(reference)}`;
+}
+
+export function guideProgressKey(runKey: string, headSha: string): string {
+  return `${runKey}:${headSha}`;
+}
+
+function updateGuideRuns(update: (state: GuideRunState) => GuideRunState) {
+  const previous = appAtomRegistry.get(guideRunStateAtom);
+  const next = update(previous);
+  if (next !== previous) appAtomRegistry.set(guideRunStateAtom, next);
+}
+
+export const guideRunStore = {
+  read: () => appAtomRegistry.get(guideRunStateAtom),
+  setProgress(key: string, change: (current: GuideProgress) => GuideProgress): void {
+    updateGuideRuns((state) => ({
+      ...state,
+      progress: { ...state.progress, [key]: change(state.progress[key] ?? NO_GUIDE_PROGRESS) },
+    }));
+  },
+  watch(watch: GuideRunWatch): void {
+    updateGuideRuns((state) => {
+      const key = guideRunKey(watch.environmentId, watch.reference);
+      if (state.watches[key] !== undefined) return state;
+      return { ...state, watches: { ...state.watches, [key]: watch } };
+    });
+  },
+  settle(key: string): void {
+    updateGuideRuns((state) =>
+      state.watches[key] === undefined ? state : { ...state, watches: withoutKey(state.watches, key) },
+    );
+  },
+  setShown(shownKey: string | null): void {
+    updateGuideRuns((state) => (state.shownKey === shownKey ? state : { ...state, shownKey }));
+  },
+  requestOpen(openRequestKey: string | null): void {
+    updateGuideRuns((state) => (state.openRequestKey === openRequestKey ? state : { ...state, openRequestKey }));
+  },
+};
+
+export function useGuideProgress(key: string): GuideProgress {
+  return useAtomValue(guideRunStateAtom).progress[key] ?? NO_GUIDE_PROGRESS;
+}
+
+// ── Stacks (apps/web/src/state/usePullRequestStack.ts) ──────────────────
+
+export const pullRequestStackAtom = createPullRequestStackAtomFamily(
+  connectionAtomRuntime,
+  pullRequestEnvironment.refreshes,
+);
+
+const sameLinks = Schema.toEquivalence(Schema.Array(ThreadPullRequestLink));
+
+// A shell update re-sends a thread's links as a new array, so equal links keep the previous list
+// and a streaming thread does not re-render the stack.
+const environmentPullRequestLinksAtom = Atom.family((environmentId: EnvironmentId) => {
+  let previous: ReadonlyArray<ThreadPullRequestLink> = [];
+  return Atom.make((get) => {
+    const next = get(environmentThreadShells.environmentThreadsAtom(environmentId)).flatMap(
+      (thread) => thread.pullRequests ?? [],
+    );
+    if (sameLinks(previous, next)) return previous;
+    previous = next;
+    return next;
+  }).pipe(Atom.withLabel(`t3term-environment-pull-request-links:${environmentId}`));
+});
+
+export function usePullRequestStack(environmentId: EnvironmentId, reference: PullRequestRef | null) {
+  const links = useAtomValue(environmentPullRequestLinksAtom(environmentId));
+  const saved = reference === null ? null : savedPullRequestStack(links, reference);
+  const query = useEnvironmentQuery(
+    reference === null ? null : pullRequestStackAtom({ environmentId, input: reference }),
+  );
+  return { ...query, ...pullRequestStackView(query, saved) };
+}
+
+/** apps/web/src/state/pullRequests.ts `usePullRequestTurnRefresh`. */
+export function usePullRequestTurnRefresh(environmentId: EnvironmentId): number | null {
+  const result = useAtomValue(pullRequestEnvironment.refreshes({ environmentId, input: {} }));
+  return Option.getOrNull(AsyncResult.value(result));
 }

@@ -28,6 +28,7 @@ import { DraftView, HomeView } from "../chat/DraftView.tsx";
 import { SettingsView } from "../settings/SettingsView.tsx";
 import { UsagePage } from "../usage/UsagePage.tsx";
 import { PullRequestsPage } from "../pullRequests/PullRequestsPage.tsx";
+import { PromptLinkView } from "../promptLinks/PromptLinkView.tsx";
 
 export function MainView() {
   const theme = useTheme();
@@ -53,6 +54,8 @@ export function MainView() {
         <UsagePage />
       ) : route.kind === "pull-requests" ? (
         <PullRequestsPage />
+      ) : route.kind === "prompt-link" ? (
+        <PromptLinkView key={route.key} link={route.link} linkKey={route.key} />
       ) : (
         <HomeView />
       )}

@@ -28,3 +28,6 @@ export { terminalFocusAtom } from "./terminal.ts";
 
 /** The composer's editor has focus (web `composerFocus`, from document.activeElement). The composer sets it. */
 export const composerFocusAtom = Atom.make(false).pipe(Atom.keepAlive);
+
+/** Shift is held with no other modifier (the pull request list's quick actions show while it is). */
+export const shiftOnlyHeldAtom = Atom.make(false).pipe(Atom.keepAlive);
