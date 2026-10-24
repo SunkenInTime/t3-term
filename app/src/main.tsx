@@ -17,6 +17,7 @@ import { installPerfProbe, perfOnEvent, perfProbeEnabled } from "./dev/perfProbe
 import { handleGlobalKeyDown, handleGlobalKeyUp } from "./keybindings/useGlobalKeybindings.ts";
 import { noteUserInput } from "./notifications/platform.ts";
 import { openPromptLink } from "./promptLinks/promptLinkTarget.ts";
+import { noteWindowInput } from "./runtime/windowActivity.ts";
 
 const args = parseArgs(process.argv.slice(2));
 if (args.help) {
@@ -42,6 +43,7 @@ render(<App boot={boot} />, {
   // T3TERM_DEBUG_FRAMES=minimal|full paints GPUI draw times into the window.
   ...(process.env.T3TERM_DEBUG_FRAMES ? { debugFrameOverlay: process.env.T3TERM_DEBUG_FRAMES as "minimal" | "full" } : {}),
   onKeyDown: (event, renderer) => {
+    noteWindowInput("key");
     // Copying chat markdown joins its runs back into lines (chat/markdown/copy.ts).
     if (handleMarkdownCopy(event)) return;
     handleGlobalKeyDown(event, renderer);
@@ -49,7 +51,12 @@ render(<App boot={boot} />, {
   onEvent: (event) => {
     if (perfProbeEnabled) perfOnEvent(event);
     // Every pointer, wheel and key event marks the user present; gpuix has no window-focus state.
-    if (!/layout|scrollchange|visiblerange|motion/i.test(String(event.eventType ?? ""))) noteUserInput();
+    const eventType = String(event.eventType ?? "");
+    if (!/layout|scrollchange|visiblerange|motion/i.test(eventType)) {
+      noteUserInput();
+      // Background activity reports (web/lib/backgroundActivityReporter.ts) count this as interaction.
+      noteWindowInput(/^key/i.test(eventType) ? "key" : "pointer");
+    }
   },
   onKeyUp: (event) => handleGlobalKeyUp(event),
   titlebarTransparent: process.platform === "darwin",
