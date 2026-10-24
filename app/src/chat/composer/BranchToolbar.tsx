@@ -27,8 +27,11 @@ import {
   composerDraftAtom,
   composerMenuOpenAtom,
   composerSettingsAtom,
+  moveComposerDraftContent,
   setDraftWorkspace,
 } from "../../state/composer.ts";
+import { composerSendingAtom } from "./composerSend.ts";
+import { openScratchProject } from "../../palette/actions.ts";
 import { composerVcsEnvironment, useEnvironmentQuery } from "../../state/composerQueries.ts";
 import {
   environmentCatalog,
@@ -157,7 +160,27 @@ export function BranchToolbar({ environmentId, projectId, draftKey, onComposerFo
   };
   const onEnvironmentChange = (option: EnvironmentOption) => {
     if (option.environmentId === environmentId) return;
-    appAtomRegistry.set(routeAtom, { kind: "draft", environmentId: option.environmentId, projectId: option.projectId });
+    // The draft goes along to the other machine (web retargets it rather than opening another).
+    if (appAtomRegistry.get(composerSendingAtom(draftKey))) return;
+    const retarget = (projectId: ProjectId) => {
+      // A send that started meanwhile owns the draft.
+      if (appAtomRegistry.get(composerSendingAtom(draftKey))) return;
+      const draftId = moveComposerDraftContent(draftKey, { environmentId: option.environmentId, projectId });
+      appAtomRegistry.set(routeAtom, {
+        kind: "draft",
+        environmentId: option.environmentId,
+        projectId,
+        ...(draftId ? { draftId } : {}),
+      });
+    };
+    if (option.projectId !== null) {
+      retarget(option.projectId);
+      return;
+    }
+    // web: a machine without this project gets the draft in its scratch project.
+    void openScratchProject(option.environmentId, "Could not switch machine").then((project) => {
+      if (project) retarget(project.id);
+    });
   };
 
   const runContextOpen = menuOpen === "env-mode" || menuOpen === "environment";

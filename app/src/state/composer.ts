@@ -586,6 +586,36 @@ export function reusableProjectDraftId(environmentId: EnvironmentId, projectId: 
   return null;
 }
 
+/**
+ * web useDraftEnvironmentRouting.onEnvironmentChange retargets the draft itself to the
+ * other machine's project, so what the user wrote goes along. Drafts here are keyed by
+ * project, so the content moves: prompt, attachments (local files, uploaded at send),
+ * context records and the Build/Plan mode. Model and workspace choices stay behind; they
+ * name the old machine's providers and checkouts. Returns the draft id to open there (a
+ * fresh one when that project's draft already has content of its own).
+ */
+export function moveComposerDraftContent(
+  fromKey: string,
+  to: { readonly environmentId: EnvironmentId; readonly projectId: ProjectId },
+): string | undefined {
+  const source = readComposerDraft(fromKey);
+  const reusable = reusableProjectDraftId(to.environmentId, to.projectId);
+  const draftId = reusable === null ? globalThis.crypto.randomUUID() : reusable;
+  if (!composerDraftHasUserContent(source) && (source.threadContexts?.length ?? 0) === 0) return draftId;
+  const toKey = composerTargetKey({ kind: "draft", ...to, ...(draftId ? { draftId } : {}) });
+  updateComposerDraft(toKey, (draft) => ({
+    ...draft,
+    prompt: source.prompt,
+    attachments: source.attachments,
+    reviewComments: source.reviewComments ?? [],
+    terminalContexts: source.terminalContexts ?? [],
+    threadContexts: source.threadContexts ?? [],
+    ...(source.interactionMode ? { interactionMode: source.interactionMode } : {}),
+  }));
+  clearComposerContent(fromKey);
+  return draftId;
+}
+
 /** Drops a draft entry: a further draft is done once its thread exists. */
 export function deleteComposerDraft(key: string): void {
   const drafts = appAtomRegistry.get(composerDraftsAtom);

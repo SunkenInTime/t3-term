@@ -353,6 +353,13 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
         if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       }
     }
+    // web planComposerTurn: a worktree draft with a worktree already picked (a previous
+    // one) runs there; only a draft with no path creates one, and that needs a base branch.
+    const shouldCreateWorktree =
+      input.target.kind === "draft" && input.target.envMode === "worktree" && !input.target.worktreePath;
+    if (shouldCreateWorktree && input.target.kind === "draft" && !input.target.branch) {
+      throw new Error("Select a base branch before sending in New worktree mode.");
+    }
     const attachments = await prepareTurnAttachments(input.environmentId, input.attachments);
     const title = deriveThreadTitleSeed({ text: input.prompt, attachments: input.attachments });
     const threadId =
@@ -367,10 +374,10 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
               runtimeMode: input.runtimeMode,
               interactionMode: input.interactionMode,
               branch: input.target.branch,
-              worktreePath: input.target.envMode === "worktree" ? null : input.target.worktreePath,
+              worktreePath: input.target.worktreePath,
               createdAt,
             },
-            ...(input.target.envMode === "worktree" && input.target.branch
+            ...(shouldCreateWorktree && input.target.branch
               ? {
                   prepareWorktree: {
                     projectCwd: input.target.projectCwd,
