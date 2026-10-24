@@ -4,6 +4,9 @@
 // the review conversations under their lines, pending line comments, and a draft box a press on a
 // line number opens. A commit scope narrows it to one commit; a file tree sits beside it.
 //
+// "N unmodified lines" separators expand from each file's full contents at the pull request's
+// head (web: createPullRequestDiffFileContentsLoader, the host's diffFileContents command).
+//
 // "Hide whitespace changes" (web's pilcrow toggle, starting from the diffIgnoreWhitespace setting)
 // re-pairs each hunk ignoring whitespace (pullRequestWhitespace.ts), as web does client-side.
 //
@@ -11,7 +14,7 @@
 // release the draft box opens under the range's last line. As on web, a review comment lands on
 // that last line (only GitHub carries multi-line comments), while "Add to agent" carries the whole
 // range as context.
-import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { runAtomCommand, squashAtomCommandFailure, type AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
   PullRequestRef,
@@ -22,8 +25,17 @@ import type {
 import { useAtomValue } from "@effect/atom-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { diffReviewLines, parseDiffFiles, type DiffFileModel } from "../panels/diff/diffModel.ts";
-import { DiffView, type DiffExternalAnnotation } from "../panels/diff/DiffView.tsx";
+import {
+  EXPANSION_LINE_COUNT,
+  diffFileChangeType,
+  diffReviewLines,
+  expandDiffFile,
+  parseDiffFiles,
+  type DiffFileContents,
+  type DiffFileModel,
+  type ExpandedRegion,
+} from "../panels/diff/diffModel.ts";
+import { DiffView, type DiffExternalAnnotation, type GapDirection } from "../panels/diff/DiffView.tsx";
 import { FileEntryIcon } from "../panels/files/FileEntryIcon.tsx";
 import { diffLayoutPref, wordWrapPref } from "../state/codeView.ts";
 import { diffFilesCollapsedPref, diffFileTreeOpenPref, diffIgnoreWhitespacePref } from "../state/git.ts";
@@ -264,6 +276,72 @@ export function PullRequestCodeTab({
     () => loadedSlices.flatMap((slice) => (ignoreWhitespace ? parseSlice(slice).map(hideWhitespaceChanges) : parseSlice(slice))),
     [loadedSlices, ignoreWhitespace],
   );
+  // web loadDiffFiles: each file's full contents, fetched on its first expand, reveal the
+  // unchanged lines between hunks. Keyed so a refresh, another commit or the whitespace toggle
+  // starts over.
+  const expansionKey = `${scopeKey}:${detail.updatedAt}:${ignoreWhitespace}`;
+  const [expansion, setExpansion] = useState<{
+    readonly key: string;
+    readonly contents: ReadonlyMap<string, DiffFileContents>;
+    readonly regions: ReadonlyMap<string, ReadonlyMap<number, ExpandedRegion>>;
+  }>({ key: "", contents: new Map(), regions: new Map() });
+  const liveExpansion = expansion.key === expansionKey ? expansion : null;
+  const displayFiles = useMemo(() => {
+    if (!liveExpansion || liveExpansion.contents.size === 0) return files;
+    return files.map((file) => {
+      const contents = liveExpansion.contents.get(file.path);
+      return contents ? expandDiffFile(file, contents, liveExpansion.regions.get(file.path) ?? new Map()) : file;
+    });
+  }, [files, liveExpansion]);
+  const loadingContents = useRef(new Set<string>());
+  const expandGap = (file: DiffFileModel, expandIndex: number, direction: GapDirection) => {
+    const key = expansionKey;
+    setExpansion((current) => {
+      const base =
+        current.key === key
+          ? current
+          : { key, contents: new Map<string, DiffFileContents>(), regions: new Map<string, ReadonlyMap<number, ExpandedRegion>>() };
+      const fileRegions = new Map<number, ExpandedRegion>(base.regions.get(file.path) ?? []);
+      const region = fileRegions.get(expandIndex) ?? { fromStart: 0, fromEnd: 0 };
+      fileRegions.set(expandIndex, {
+        fromStart: region.fromStart + (direction === "down" ? 0 : EXPANSION_LINE_COUNT),
+        fromEnd: region.fromEnd + (direction === "up" ? 0 : EXPANSION_LINE_COUNT),
+      });
+      return { ...base, regions: new Map(base.regions).set(file.path, fileRegions) };
+    });
+    const loadKey = `${key}\n${file.path}`;
+    if (liveExpansion?.contents.has(file.path) || loadingContents.current.has(loadKey)) return;
+    loadingContents.current.add(loadKey);
+    void (
+      runAtomCommand(
+        appAtomRegistry,
+        pullRequestEnvironment.diffFileContents,
+        {
+          environmentId,
+          input: {
+            ...reference,
+            ...(commit === null ? {} : { commit }),
+            changeType: diffFileChangeType(file),
+            oldPath: file.previousPath ?? file.path,
+            newPath: file.path,
+          },
+        },
+        { reportFailure: false },
+      ) as Promise<AtomCommandResult<DiffFileContents, unknown>>
+    ).then((result) => {
+      loadingContents.current.delete(loadKey);
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        toast({
+          type: "error",
+          title: "Could not load the file to expand it",
+          description: error instanceof Error && error.message.trim() ? error.message : file.path,
+        });
+        return;
+      }
+      setExpansion((current) => (current.key !== key ? current : { ...current, contents: new Map(current.contents).set(file.path, result.value) }));
+    });
+  };
   const filePaths = files.map((file) => file.path);
   // A conversation is placed only when its line falls inside a hunk that was drawn. While a commit
   // is on screen every conversation is listed instead: its line numbers belong to the whole change.
@@ -520,7 +598,8 @@ export function PullRequestCodeTab({
   };
   // web finishSelection: the whole range becomes agent context.
   const finishSelection = (anchor: DraftAnchor, text: string, onFinish: (comment: ReviewCommentContext) => void) => {
-    const file = files.find((candidate) => candidate.path === anchor.path);
+    // The rows the range was picked from, revealed context included.
+    const file = displayFiles.find((candidate) => candidate.path === anchor.path);
     const comment =
       file === undefined
         ? null
@@ -791,7 +870,8 @@ export function PullRequestCodeTab({
       <div style={{ display: "flex", flexDirection: "row", flexGrow: 1, minHeight: 0, minWidth: 0 }}>
         <div testId="pr-code-diff" style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, minWidth: 0 }}>
           <DiffView
-            files={files}
+            files={displayFiles}
+            onExpandGap={expandGap}
             layout={diffLayout === "split" ? "split" : "stacked"}
             wrap={wordWrap}
             collapsed={collapsedPaths}
