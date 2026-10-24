@@ -10,6 +10,9 @@ import type { EventPayload } from "@gpuix/native";
 import { useGpuixRequired } from "@gpuix/react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import type { ContextMenuItem } from "@t3tools/contracts";
+
+import { ActionMenu } from "../../chat/header/ActionMenu.tsx";
 import { copyTextToClipboard } from "../../chat/header/osActions.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
@@ -114,6 +117,14 @@ export interface DiffViewProps {
   readonly hideFileHeaders?: boolean;
   /** The last rows came on screen: time to ask for the next page of a paged diff. */
   readonly onReachEnd?: () => void;
+  /** Right-click on a file header's name (web DiffPanel onContextMenuCapture → fileContextMenu). */
+  readonly fileMenu?: DiffFileMenu | null;
+}
+
+/** The filename context menu: its items for a path (empty: no menu), and what a pick does. */
+export interface DiffFileMenu {
+  readonly items: (path: string) => ReadonlyArray<ContextMenuItem<string>>;
+  readonly onAction: (path: string, action: string) => void;
 }
 
 /** One annotation a caller draws itself (see `renderAnnotation`). */
@@ -137,6 +148,7 @@ interface RowInteraction {
     readonly lineClick: ((filePath: string, side: "additions" | "deletions", lineNumber: number) => void) | null;
     readonly renderAnnotation: ((filePath: string, annotation: DiffExternalAnnotation) => ReactNode) | null;
     readonly renderHeaderExtras: ((file: DiffFileModel) => ReactNode) | null;
+    readonly fileMenu: DiffFileMenu | null;
   };
 }
 
@@ -185,8 +197,9 @@ export function DiffView(props: DiffViewProps) {
       }
     : null;
   const renderHeaderExtras = props.renderHeaderExtras ?? null;
-  const interactionRef = useRef<RowInteraction["current"]>({ comments, hover, unhover, lineClick, renderAnnotation, renderHeaderExtras });
-  interactionRef.current = { comments, hover, unhover, lineClick, renderAnnotation, renderHeaderExtras };
+  const fileMenu = props.fileMenu ?? null;
+  const interactionRef = useRef<RowInteraction["current"]>({ comments, hover, unhover, lineClick, renderAnnotation, renderHeaderExtras, fileMenu });
+  interactionRef.current = { comments, hover, unhover, lineClick, renderAnnotation, renderHeaderExtras, fileMenu };
   const interaction = useMemo<RowInteraction>(
     () => ({
       get current() {
@@ -381,6 +394,7 @@ export function DiffView(props: DiffViewProps) {
             file={stickyFile}
             collapsed={false}
             palette={palette}
+            interaction={interaction}
             onToggleFile={props.onToggleFile}
             onOpenFile={props.onOpenFile}
             {...(props.renderHeaderExtras ? { extras: props.renderHeaderExtras(stickyFile) } : {})}
@@ -450,6 +464,7 @@ const DiffRowView = memo(function DiffRowView(props: {
           file={row.file}
           collapsed={row.collapsed}
           palette={palette}
+          interaction={props.interaction}
           onToggleFile={props.onToggleFile}
           onOpenFile={props.onOpenFile}
           {...(extras ? { extras: extras(row.file) } : {})}
@@ -941,6 +956,7 @@ const FileHeader = memo(function FileHeader(props: {
   file: DiffFileModel;
   collapsed: boolean;
   palette: DiffPalette;
+  interaction: RowInteraction;
   onToggleFile: (path: string) => void;
   onOpenFile: (path: string) => void;
   extras?: ReactNode;
@@ -949,6 +965,9 @@ const FileHeader = memo(function FileHeader(props: {
   const { file, palette } = props;
   const tone = fileTone(file, palette);
   const [copied, setCopied] = useState(false);
+  // Web opens the menu at the pointer; it hangs under the name at the pointer's x.
+  const [menu, setMenu] = useState<{ x: number; items: ReadonlyArray<ContextMenuItem<string>> } | null>(null);
+  const titleX = useRef(0);
   useEffect(() => {
     if (!copied) return;
     const timer = setTimeout(() => setCopied(false), 1500);
@@ -979,24 +998,52 @@ const FileHeader = memo(function FileHeader(props: {
         </MicroButton>
       </div>
       <svg source={fileStatusIcon(file)} style={{ width: 16, height: 16, flexShrink: 0, color: tone, pointerEvents: "none" }} />
-      <div
-        testId={`diff-file-title-${file.path}`}
-        onClick={(event: EventPayload) => {
-          consumeClick(event);
-          props.onOpenFile(file.path);
+      <ActionMenu<string>
+        open={menu !== null}
+        onOpenChange={(open) => {
+          if (!open) setMenu(null);
         }}
-        style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, flexShrink: 1 }}
-      >
-        {file.previousPath ? (
-          <text style={{ color: alpha(palette.fg, 0.6), fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans, whiteSpace: "nowrap", textOverflow: "ellipsis-start", overflow: "hidden", minWidth: 0 }}>
-            {file.previousPath}
-          </text>
-        ) : null}
-        {file.previousPath ? <Icon name="arrow-right" size={14} color={alpha(palette.fg, 0.6)} /> : null}
-        <text style={{ color: palette.fg, fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans, whiteSpace: "nowrap", textOverflow: "ellipsis-start", overflow: "hidden", minWidth: 0 }}>
-          {file.path}
-        </text>
-      </div>
+        items={menu?.items ?? []}
+        onSelect={(action) => {
+          setMenu(null);
+          props.interaction.current.fileMenu?.onAction(file.path, action);
+        }}
+        alignOffset={menu?.x ?? 0}
+        // Below the 32px header row: a press on a menu row inside the header's bounds
+        // would also reach the header's fold toggle (gpuix hands it to both).
+        sideOffset={10}
+        minWidth={180}
+        testId={`diff-file-menu-${file.path}`}
+        rootStyle={{ minWidth: 0, flexShrink: 1 }}
+        trigger={
+          <div
+            testId={`diff-file-title-${file.path}`}
+            onLayout={(event: EventPayload) => {
+              titleX.current = Number(event.x ?? 0);
+            }}
+            onClick={(event: EventPayload) => {
+              consumeClick(event);
+              props.onOpenFile(file.path);
+            }}
+            onAuxClick={(event: EventPayload) => {
+              if (!event.isRightClick) return;
+              const items = props.interaction.current.fileMenu?.items(file.path) ?? [];
+              if (items.length > 0) setMenu({ x: Math.max(0, Number(event.x ?? 0) - titleX.current), items });
+            }}
+            style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, flexShrink: 1 }}
+          >
+            {file.previousPath ? (
+              <text style={{ color: alpha(palette.fg, 0.6), fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans, whiteSpace: "nowrap", textOverflow: "ellipsis-start", overflow: "hidden", minWidth: 0 }}>
+                {file.previousPath}
+              </text>
+            ) : null}
+            {file.previousPath ? <Icon name="arrow-right" size={14} color={alpha(palette.fg, 0.6)} /> : null}
+            <text style={{ color: palette.fg, fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans, whiteSpace: "nowrap", textOverflow: "ellipsis-start", overflow: "hidden", minWidth: 0 }}>
+              {file.path}
+            </text>
+          </div>
+        }
+      />
       <MicroButton
         label={copied ? "Copied" : "Copy path"}
         onClick={() =>

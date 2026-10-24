@@ -22,6 +22,7 @@ import {
   environmentThreadDetails,
   environmentThreadShells,
   projectIndexAtom,
+  serverEnvironment,
 } from "../../state/environment.ts";
 import {
   diffCollapsedFilesAtom,
@@ -49,7 +50,8 @@ import { useEnvironmentQuery } from "../../web/state/query.ts";
 import { useEnvironmentScope } from "../../web/state/session.ts";
 import { resolveDiffPathForWorkspace } from "../../web/diffFileActions.ts";
 import { parseDiffFiles } from "./diffModel.ts";
-import { DiffView } from "./DiffView.tsx";
+import { DiffView, type DiffFileMenu } from "./DiffView.tsx";
+import { fileContextMenuItems, runFileTreeMenuAction, type FileTreeMenuAction } from "../files/fileTreeActions.ts";
 import { DiffFileTree } from "./DiffFileTree.tsx";
 import { DiffBaseRefPicker } from "./DiffBaseRefPicker.tsx";
 
@@ -267,6 +269,22 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
     () => ({ sectionId, sectionTitle, draftKey: composerTargetKey({ kind: "thread", environmentId, threadId }) }),
     [sectionId, sectionTitle, environmentId, threadId],
   );
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  // DiffPanel: right-click on a header's filename opens fileContextMenu (Open, Reveal, Open with).
+  const workspacePathFor = (path: string) =>
+    resolveDiffPathForWorkspace({
+      filePath: path,
+      workspaceRoot: activeCwd ?? undefined,
+      repositoryRoot: thread?.worktreePath ? undefined : (project?.repositoryIdentity?.rootPath ?? undefined),
+    });
+  const fileMenu: DiffFileMenu = {
+    items: (path) => (activeCwd && workspacePathFor(path) !== null ? fileContextMenuItems(serverConfig) : []),
+    onAction: (path, action) => {
+      const relative = workspacePathFor(path);
+      if (!activeCwd || relative === null) return;
+      void runFileTreeMenuAction({ action: action as FileTreeMenuAction, environmentId, cwd: activeCwd, path: relative, draftKey: null });
+    },
+  };
   const [treeReveal, setTreeReveal] = useState<{ path: string; requestId: number } | null>(null);
   const [bodyWidth, setBodyWidth] = useState(0);
 
@@ -550,12 +568,9 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
             comments={commentsConfig}
             reveal={treeReveal}
             onToggleFile={toggleFile}
+            fileMenu={fileMenu}
             onOpenFile={(path) => {
-              const relative = resolveDiffPathForWorkspace({
-                filePath: path,
-                workspaceRoot: activeCwd ?? undefined,
-                repositoryRoot: thread?.worktreePath ? undefined : (project?.repositoryIdentity?.rootPath ?? undefined),
-              });
+              const relative = workspacePathFor(path);
               if (relative) rightPanelActions.openFile(threadKey, relative);
             }}
           />
