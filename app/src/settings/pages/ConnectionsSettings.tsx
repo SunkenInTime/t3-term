@@ -56,6 +56,7 @@ import { toast } from "../../ui/toast.tsx";
 import { alpha, RADIUS, useTheme } from "../../ui/theme.ts";
 import { searchableSetting } from "../../web/components/settings/settingsSearch.ts";
 import { formatExpiresInLabel } from "../../web/timestampFormat.ts";
+import { PairingRevealDialog, PairingSharePanel, resolveShareablePairingUrl, usePairingCopy } from "../connections/PairingShare.tsx";
 import { TextField } from "../controls.tsx";
 import { SettingsGroup, SettingsPageContainer, SettingsRow, SettingsSection, machineIcon } from "../layout.tsx";
 import { copyText } from "../openExternal.ts";
@@ -265,12 +266,15 @@ function AccessRow({ children }: { children: ReactNode }) {
 function PairingLinkRow({
   link,
   credential,
+  serverUrl,
   revoking,
   canRevoke,
   onRevoke,
 }: {
   link: AuthPairingLink;
   credential: string | undefined;
+  /** The URL this client reached the environment at; web shares its page origin. */
+  serverUrl: string | null;
   revoking: boolean;
   canRevoke: boolean;
   onRevoke: () => void;
@@ -278,42 +282,53 @@ function PairingLinkRow({
   const theme = useTheme();
   const expiresAt = isoOf(link.expiresAt)!;
   useRelativeTimeLabel(expiresAt);
+  const [sharePanelOpen, setSharePanelOpen] = useState(false);
+  const { copy, failedCopyValue, clearFailedCopy } = usePairingCopy();
   if (Date.parse(expiresAt) <= Date.now()) return null;
+  const shareableUrl = credential ? resolveShareablePairingUrl(serverUrl, credential) : null;
+  const copyCode = () => {
+    if (credential) copy(credential, "code");
+  };
   return (
-    <AccessRow>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, flexGrow: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minHeight: 20 }}>
-          <StatusDot color={theme.warning} tooltip={`Link created at ${isoOf(link.createdAt)}`} />
-          <Text weight={500}>{link.label ?? "Pairing link"}</Text>
+    <div style={{ display: "flex", flexDirection: "column", paddingLeft: 16, paddingRight: 16, paddingTop: 12, paddingBottom: 12 }}>
+      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, flexGrow: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minHeight: 20 }}>
+            <StatusDot color={theme.warning} tooltip={`Link created at ${isoOf(link.createdAt)}`} />
+            <Text weight={500}>{link.label ?? "Pairing link"}</Text>
+          </div>
+          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <Text size="xs" color={theme.mutedForeground}>{`${formatExpiresInLabel(expiresAt)} · `}</Text>
+            <ScopeSummary scopes={scopesOf(link)} />
+          </div>
+          {!credential ? (
+            <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)}>
+              Create a new link to share from this client.
+            </Text>
+          ) : shareableUrl === null ? (
+            <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)}>
+              Copy the token and pair from another client using this backend’s reachable host.
+            </Text>
+          ) : null}
         </div>
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>
-          <Text size="xs" color={theme.mutedForeground}>{`${formatExpiresInLabel(expiresAt)} · `}</Text>
-          <ScopeSummary scopes={scopesOf(link)} />
-        </div>
-        <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)}>
-          {credential
-            ? "Copy the token and pair from another client using this backend’s reachable host."
-            : "Create a new link to share from this client."}
-        </Text>
+        {shareableUrl ? (
+          <Button size="xs" variant="outline" icon="qr-code" testId={`pairing-link-share-${link.id}`} onClick={() => setSharePanelOpen(!sharePanelOpen)}>
+            Share
+          </Button>
+        ) : credential ? (
+          <Button size="xs" variant="outline" icon="copy" testId={`pairing-link-copy-${link.id}`} onClick={copyCode}>
+            Copy code
+          </Button>
+        ) : null}
+        <DestructiveOutlineButton disabled={!canRevoke || revoking} onClick={onRevoke}>
+          {revoking ? "Revoking…" : "Revoke"}
+        </DestructiveOutlineButton>
       </div>
-      {credential ? (
-        <Button
-          size="xs"
-          variant="outline"
-          icon="copy"
-          onClick={() =>
-            copyText(credential)
-              ? toast({ type: "success", title: "Pairing code copied", description: "Paste it into another client to finish pairing." })
-              : toast({ type: "error", title: "Could not copy pairing code" })
-          }
-        >
-          Copy code
-        </Button>
+      {sharePanelOpen && shareableUrl ? (
+        <PairingSharePanel url={shareableUrl} onCopyLink={() => copy(shareableUrl, "link")} onCopyCode={copyCode} />
       ) : null}
-      <DestructiveOutlineButton disabled={!canRevoke || revoking} onClick={onRevoke}>
-        {revoking ? "Revoking…" : "Revoke"}
-      </DestructiveOutlineButton>
-    </AccessRow>
+      {credential ? <PairingRevealDialog value={failedCopyValue} credential={credential} onClose={clearFailedCopy} onCopyCode={copyCode} /> : null}
+    </div>
   );
 }
 
@@ -516,7 +531,7 @@ function CreatePairingLinkDialog({
   );
 }
 
-function AuthorizedClientsSection({ environmentId }: { environmentId: EnvironmentId }) {
+function AuthorizedClientsSection({ environmentId, serverUrl }: { environmentId: EnvironmentId; serverUrl: string | null }) {
   const theme = useTheme();
   const canReadAccess = useEnvironmentScope(environmentId, AuthAccessReadScope);
   const canWriteAccess = useEnvironmentScope(environmentId, AuthAccessWriteScope);
@@ -624,6 +639,7 @@ function AuthorizedClientsSection({ environmentId }: { environmentId: Environmen
                   key={link.id}
                   link={link}
                   credential={created.get(link.id)}
+                  serverUrl={serverUrl}
                   revoking={revoking === link.id}
                   canRevoke={canWriteAccess}
                   onRevoke={() => void guarded(link.id, "Could not revoke pairing link", () => revokePairingLink(environmentId, link.id))}
@@ -1096,7 +1112,7 @@ export function ConnectionsSettings() {
               <SessionPermissions environmentId={primaryEnvironment.environmentId} connected={primaryEnvironment.connection.phase === "connected"} />
             </Disclosure>
           </SettingsSection>
-          <AuthorizedClientsSection environmentId={primaryEnvironment.environmentId} />
+          <AuthorizedClientsSection environmentId={primaryEnvironment.environmentId} serverUrl={primaryEnvironment.displayUrl} />
         </>
       ) : null}
       <SettingsSection
