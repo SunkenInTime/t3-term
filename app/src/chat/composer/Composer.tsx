@@ -1281,6 +1281,13 @@ function ComposerBody({
     }
     if (sending || noProviderAvailable || sendDisabledReason !== null || environmentUnavailable) return;
     if (uploadsEnabled && !queuedEdit.isEditing && appAtomRegistry.get(stagedUploadBlockReasonAtom(promptKey)) !== null) return;
+    // web opens a new draft only once its project's workspace defaults (a t3.json may decide)
+    // are known; here the draft opens at once, so its first send waits for them instead of
+    // starting in the wrong place.
+    if (target.kind === "draft" && readComposerDraft(draftKey).envMode === undefined) {
+      toast({ type: "info", title: "Loading this project's defaults", description: "Send again in a moment." });
+      return;
+    }
     if ((pendingImagePreparations.get(draftKey) ?? 0) > 0) {
       toast({ type: "info", title: "Still compressing a pasted image.", description: "Send again once its thumbnail appears." });
       return;

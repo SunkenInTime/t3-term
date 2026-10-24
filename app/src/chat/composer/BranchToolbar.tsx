@@ -35,6 +35,8 @@ import {
   composerSettingsAtom,
   draftPendingSendAtom,
   moveComposerDraftContent,
+  readComposerDraft,
+  setComposerRuntimeMode,
   setDraftWorkspace,
 } from "../../state/composer.ts";
 import { composerSendingAtom } from "./composerSend.ts";
@@ -149,13 +151,19 @@ export function BranchToolbar({ environmentId, projectId, draftKey, onComposerFo
         })
       : null;
   const newWorktreesStartFromOrigin = projectSettings?.settings.newWorktreesStartFromOrigin ?? false;
+  // web useHandleNewThread stamps the runtime mode default with the workspace defaults, so a
+  // later change to the project's settings does not move a draft already open.
+  const defaultRuntimeMode = projectSettings?.settings.defaultRuntimeMode ?? null;
   useEffect(() => {
     if (draft.envMode !== undefined || defaultEnvMode === null) return;
     setDraftWorkspace(draftKey, {
       envMode: defaultEnvMode,
       startFromOrigin: defaultEnvMode === "worktree" && newWorktreesStartFromOrigin,
     });
-  }, [defaultEnvMode, draft.envMode, draftKey, newWorktreesStartFromOrigin]);
+    if (defaultRuntimeMode !== null && readComposerDraft(draftKey).runtimeMode === null) {
+      setComposerRuntimeMode(draftKey, defaultRuntimeMode);
+    }
+  }, [defaultEnvMode, draft.envMode, draftKey, newWorktreesStartFromOrigin, defaultRuntimeMode]);
 
   const effectiveEnvMode: EnvMode = activeWorktreePath ? "local" : (draft.envMode ?? defaultEnvMode ?? "local");
   const startFromOrigin = draft.startFromOrigin ?? false;
