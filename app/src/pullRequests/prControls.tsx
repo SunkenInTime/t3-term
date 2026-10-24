@@ -3,7 +3,9 @@
 // pullRequest components use them (xs buttons, control badges, segmented toggles).
 import type { EventPayload } from "@gpuix/native";
 import { useGpuixRequired, type PublicInstance } from "@gpuix/react";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useContext, useEffect, useRef, type ReactNode } from "react";
+
+import { DiffFocusKeeperContext } from "../panels/diff/DiffView.tsx";
 
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Tooltip } from "../ui/overlay.tsx";
@@ -301,8 +303,8 @@ export function PrTextarea({
   maxRows?: number;
   autoFocus?: boolean;
   /**
-   * Focus a moment after mounting instead of at once: a textarea focused in the frame its
-   * virtual-list row first appears makes the list jump that row to the top.
+   * Focus a moment after mounting, by request, keeping a surrounding diff's scroll: focus inside
+   * a virtual-list row scrolls that row to the top (see DiffFocusKeeperContext).
    */
   focusAfterLayout?: boolean;
   testId?: string;
@@ -312,10 +314,15 @@ export function PrTextarea({
   const theme = useTheme();
   const renderer = useGpuixRequired();
   const textareaRef = useRef<PublicInstance | null>(null);
+  const keepScroll = useContext(DiffFocusKeeperContext);
   useEffect(() => {
     if (!focusAfterLayout) return;
     const timer = setTimeout(() => {
-      if (textareaRef.current) renderer.focusElement?.(textareaRef.current.id);
+      const focus = () => {
+        if (textareaRef.current) renderer.focusElement?.(textareaRef.current.id);
+      };
+      if (keepScroll) keepScroll(focus);
+      else focus();
     }, 32);
     return () => clearTimeout(timer);
     // oxlint-disable-next-line react/exhaustive-deps -- once, after mounting

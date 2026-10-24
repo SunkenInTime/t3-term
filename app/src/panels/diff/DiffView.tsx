@@ -8,7 +8,7 @@
 // arrives later without moving anything.
 import type { EventPayload } from "@gpuix/native";
 import { useGpuixRequired } from "@gpuix/react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { ContextMenuItem } from "@t3tools/contracts";
 
@@ -185,6 +185,13 @@ function pressConsumed(event: EventPayload): boolean {
   const consumed = consumedPress;
   return consumed !== null && consumed.x === Number(event.x ?? 0) && consumed.y === Number(event.y ?? 0) && Date.now() - consumed.at < 500;
 }
+
+/**
+ * Runs a focus change inside the diff's list and then puts the scroll back. gpuix scrolls a
+ * virtual-list row to the top when something inside it takes focus, which would hide the lines a
+ * comment draft was opened for (they sit just above its row).
+ */
+export const DiffFocusKeeperContext = createContext<((focus: () => void) => void) | null>(null);
 
 export function DiffView(props: DiffViewProps) {
   const theme = useTheme();
@@ -469,7 +476,20 @@ export function DiffView(props: DiffViewProps) {
     return first.file;
   })();
 
+  const keepScrollAcrossFocus = (focus: () => void) => {
+    const id = listRef.current?.id;
+    const top = id == null ? null : renderer.getListScrollTop?.(id);
+    focus();
+    if (id == null || !top) return;
+    // The list applies the focus scroll on its next layout; restore after it, twice in case a
+    // slow frame lands between.
+    const restore = () => renderer.scrollToItem?.(id, top[0]!, top[1]!);
+    setTimeout(restore, 16);
+    setTimeout(restore, 120);
+  };
+
   return (
+    <DiffFocusKeeperContext.Provider value={props.inline ? null : keepScrollAcrossFocus}>
     <div
       ref={rootRef as never}
       testId="diff-view"
@@ -636,6 +656,7 @@ export function DiffView(props: DiffViewProps) {
         </div>
       ) : null}
     </div>
+    </DiffFocusKeeperContext.Provider>
   );
 }
 
