@@ -5,19 +5,11 @@
 // way @pierre/diffs does on the web (stacked/split, wrap) in one windowed
 // virtual list, so nothing nests a vertical scroller.
 import { useAtomValue } from "@effect/atom-react";
-import type { EventPayload } from "@gpuix/native";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import {
-  isAtomCommandInterrupted,
-  runAtomCommand,
-  squashAtomCommandFailure,
-  type AtomCommandResult,
-} from "@t3tools/client-runtime/state/runtime";
-import {
   AuthFilesystemReadScope,
-  AuthOrchestrationOperateScope,
   type EnvironmentId,
   type ReviewDiffPreviewSource,
   type RunId,
@@ -30,14 +22,11 @@ import {
   environmentThreadDetails,
   environmentThreadShells,
   projectIndexAtom,
-  serverEnvironment,
-  shellEnvironment,
 } from "../../state/environment.ts";
 import {
   diffCollapsedFilesAtom,
   diffFileTreeOpenPref,
   diffFilesCollapsedPref,
-  diffFocusedFileAtom,
   diffIgnoreWhitespacePref,
   diffSelectionAtom,
   orchestrationEnvironment,
@@ -48,22 +37,21 @@ import {
   vcsEnvironment,
 } from "../../state/git.ts";
 import { rightPanelActions } from "../../state/rightPanel.ts";
+import { composerTargetKey } from "../../state/composer.ts";
 import { diffLayoutPref, wordWrapPref } from "../../state/codeView.ts";
 import { ActionMenu } from "../../chat/header/ActionMenu.tsx";
-import { copyTextToClipboard } from "../../chat/header/osActions.ts";
 import { Icon, type IconName } from "../../ui/Icon.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
 import { Text } from "../../ui/primitives.tsx";
-import { toast } from "../../ui/toast.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { areAllDiffFilesCollapsed, toggleAllDiffFiles } from "../../web/lib/diffCollapse.ts";
 import { buildBaseRefChoices } from "../../web/lib/baseRefChoices.ts";
 import { useEnvironmentQuery } from "../../web/state/query.ts";
-import { readEnvironmentScope, useEnvironmentScope } from "../../web/state/session.ts";
+import { useEnvironmentScope } from "../../web/state/session.ts";
 import { resolveDiffPathForWorkspace } from "../../web/diffFileActions.ts";
 import { parseDiffFiles } from "./diffModel.ts";
 import { DiffView } from "./DiffView.tsx";
-import type { PatchFile } from "./patchFiles.ts";
+import { DiffFileTree } from "./DiffFileTree.tsx";
 
 const AUTOMATIC_BASE_REF = "__automatic_base_ref__";
 const LAZY_FILE_BATCH = 20;
@@ -275,7 +263,14 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
         ? "Latest turn"
         : `Turn ${turnCount ?? "?"}`;
   const sectionId = selectedTurn ? `turn:${selectedTurn.runId}` : gitScope;
+  const sectionTitle = selectedTurn ? `Turn ${turnCount ?? "?"}` : gitScope === "unstaged" ? "Uncommitted" : "Changes";
   const scopeKey = `${threadKey}:${sectionId}`;
+  const commentsConfig = useMemo(
+    () => ({ sectionId, sectionTitle, draftKey: composerTargetKey({ kind: "thread", environmentId, threadId }) }),
+    [sectionId, sectionTitle, environmentId, threadId],
+  );
+  const [treeReveal, setTreeReveal] = useState<{ path: string; requestId: number } | null>(null);
+  const [bodyWidth, setBodyWidth] = useState(0);
 
   const turnTarget =
     selectedTurn && typeof turnCount === "number" && isGitRepo
@@ -344,15 +339,24 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
   const fileKeys = files.map((file) => file.path);
   const collapsed = storedCollapsed ?? (filesCollapsedByDefault ? new Set(fileKeys) : EMPTY_SET);
   const allCollapsed = areAllDiffFilesCollapsed(fileKeys, collapsed);
-  const focused = useAtomValue(diffFocusedFileAtom(scopeKey));
-  const focusedFile = focused ? files.find((file) => file.path === focused) : undefined;
-  const shownFiles = useMemo(() => (focusedFile ? [focusedFile] : files), [files, focusedFile]);
   // A fresh Set each render (default-collapsed case) must not rebuild every row.
   const collapsedKey = [...collapsed].join("\n");
   const collapsedSet = useMemo(() => collapsed, [collapsedKey]);
 
   const updateCollapsed = (update: (current: ReadonlySet<string>) => ReadonlySet<string>) =>
     appAtomRegistry.set(diffCollapsedFilesAtom(scopeKey), update(collapsed));
+  // DiffPanel.revealDiffFile: unfold the file and bring its header to the top.
+  const revealDiffFile = (path: string) => {
+    if (!files.some((file) => file.path === path)) return;
+    if (collapsed.has(path)) {
+      updateCollapsed((current) => {
+        const next = new Set(current);
+        next.delete(path);
+        return next;
+      });
+    }
+    setTreeReveal((current) => ({ path, requestId: (current?.requestId ?? 0) + 1 }));
+  };
   const toggleFile = (path: string) =>
     updateCollapsed((current) => {
       const next = new Set(current);
@@ -375,28 +379,6 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
     (refs.data?.refs ?? []).filter((candidate) => !candidate.isRemote && candidate.name !== gitSource?.headRef),
     (refs.data?.refs ?? []).filter((candidate) => candidate.isRemote),
   );
-
-  const openFileInEditor = async (path: string) => {
-    if (!activeCwd || !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
-    const config = appAtomRegistry.get(serverEnvironment.configValueAtom(environmentId));
-    const editor = config?.availableEditors.find((candidate) => candidate !== "file-manager");
-    if (!editor) {
-      toast({ type: "error", title: "No installed editors found" });
-      return;
-    }
-    const separator = activeCwd.includes("\\") ? "\\" : "/";
-    const absolute = `${activeCwd}${activeCwd.endsWith(separator) ? "" : separator}${path.replaceAll("/", separator)}`;
-    const result = (await runAtomCommand(
-      appAtomRegistry,
-      shellEnvironment.openInEditor,
-      { environmentId, input: { cwd: absolute, editor } } as never,
-      { reportFailure: false },
-    )) as AtomCommandResult<unknown, unknown>;
-    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-      const error = squashAtomCommandFailure(result);
-      toast({ type: "error", title: "Unable to open file", description: error instanceof Error ? error.message : "" });
-    }
-  };
 
   const scopeItems = [
     { id: "branch", label: "Changes", checked: selectedRunId === null && gitScope === "branch" },
@@ -589,7 +571,13 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
     );
   } else {
     body = (
-      <div style={{ display: "flex", flexDirection: "row", width: "100%", flexGrow: 1, minHeight: 0, overflow: "hidden" }}>
+      <div
+        onLayout={(event) => {
+          const next = Math.floor(Number(event.width ?? 0));
+          if (next > 0 && next !== bodyWidth) setBodyWidth(next);
+        }}
+        style={{ display: "flex", flexDirection: "row", width: "100%", flexGrow: 1, minHeight: 0, overflow: "hidden" }}
+      >
         <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0, minHeight: 0 }}>
           {gitSource?.truncated && !selectedTurn ? (
             <div style={{ paddingLeft: 12, paddingRight: 12, paddingTop: 6, paddingBottom: 6, borderBottomWidth: 1, borderColor: alpha(theme.border, 0.7), backgroundColor: alpha(theme.muted, 0.4), flexShrink: 0 }}>
@@ -600,26 +588,14 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
               </text>
             </div>
           ) : null}
-          {focusedFile ? (
-            <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, height: 32, paddingLeft: 12, paddingRight: 8, flexShrink: 0, borderBottomWidth: 1, borderColor: alpha(theme.border, 0.6) }}>
-              <Text size="xs" color={theme.mutedForeground} truncate style={{ flexGrow: 1 }}>
-                {`Showing ${focusedFile.path}`}
-              </Text>
-              <div
-                testId="diff-show-all"
-                onClick={() => appAtomRegistry.set(diffFocusedFileAtom(scopeKey), null)}
-                style={{ display: "flex", alignItems: "center", height: 24, paddingLeft: 7, paddingRight: 7, borderRadius: RADIUS.md, cursor: "pointer", hover: { backgroundColor: theme.accent } }}
-              >
-                <Text size="xs" weight={500}>{`Show all ${files.length} files`}</Text>
-              </div>
-            </div>
-          ) : null}
           <DiffView
-            files={shownFiles}
+            files={files}
             layout={diffLayout}
             wrap={wordWrap}
             collapsed={collapsedSet}
-            resetKey={`${scopeKey}:${focusedFile?.path ?? ""}`}
+            resetKey={scopeKey}
+            comments={commentsConfig}
+            reveal={treeReveal}
             onToggleFile={toggleFile}
             onOpenFile={(path) => {
               const relative = resolveDiffPathForWorkspace({
@@ -641,12 +617,19 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
           ) : null}
         </div>
         {fileTreeOpen ? (
-          <DiffFileList
-            files={files}
-            focused={focused}
-            onFocus={(path) => appAtomRegistry.set(diffFocusedFileAtom(scopeKey), path === focused ? null : path)}
-            onOpen={(path) => void openFileInEditor(path)}
-          />
+          // aside w-[min(16rem,40%)] min-w-40 border-l border-border/60
+          <div
+            style={{
+              display: "flex",
+              flexShrink: 0,
+              minHeight: 0,
+              width: Math.max(160, Math.min(256, Math.floor(bodyWidth * 0.4))),
+              borderLeftWidth: 1,
+              borderColor: alpha(theme.border, 0.6),
+            }}
+          >
+            <DiffFileTree files={files} selectedPath={treeReveal?.path ?? null} onSelectFile={revealDiffFile} />
+          </div>
         ) : null}
       </div>
     );
@@ -724,120 +707,5 @@ function LayoutToggle({ value, onChange }: { value: "stacked" | "split"; onChang
       {item("stacked", "rows-3", "Stacked diff view")}
       {item("split", "columns-2", "Split diff view")}
     </div>
-  );
-}
-
-/** The file list beside the diff (DiffFileTree, flattened to paths). */
-function DiffFileList({
-  files,
-  focused,
-  onFocus,
-  onOpen,
-}: {
-  files: ReadonlyArray<PatchFile>;
-  focused: string | null;
-  onFocus: (path: string) => void;
-  onOpen: (path: string) => void;
-}) {
-  const theme = useTheme();
-  return (
-    <div
-      testId="diff-file-list"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        width: 216,
-        minWidth: 160,
-        flexShrink: 0,
-        borderLeftWidth: 1,
-        borderColor: alpha(theme.border, 0.6),
-        overflowY: "scroll",
-        scrollbarColor: theme.scrollbar,
-        padding: 4,
-        pointerEvents: "auto",
-      }}
-    >
-      {files.map((file) => (
-        <DiffFileListRow key={file.path} file={file} selected={file.path === focused} onFocus={onFocus} onOpen={onOpen} />
-      ))}
-    </div>
-  );
-}
-
-function DiffFileListRow({
-  file,
-  selected,
-  onFocus,
-  onOpen,
-}: {
-  file: PatchFile;
-  selected: boolean;
-  onFocus: (path: string) => void;
-  onOpen: (path: string) => void;
-}) {
-  const theme = useTheme();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const name = file.path.split("/").at(-1) ?? file.path;
-  const dir = file.path.slice(0, Math.max(0, file.path.length - name.length - 1));
-  const icon: IconName = file.kind === "new" ? "file-plus" : file.kind === "deleted" ? "file-minus" : "file-diff";
-  return (
-    <ActionMenu<"open" | "copy-path" | "focus">
-      open={menuOpen}
-      onOpenChange={setMenuOpen}
-      items={[
-        { id: "focus", label: selected ? "Show all files" : "Show only this file", icon: "focus" },
-        { id: "open", label: "Open in editor", icon: "square-arrow-out-up-right" },
-        { id: "copy-path", label: "Copy path", icon: "copy" },
-      ]}
-      onSelect={(id) => {
-        if (id === "focus") onFocus(file.path);
-        else if (id === "open") onOpen(file.path);
-        else
-          void copyTextToClipboard(file.path).then(
-            () => toast({ type: "success", title: "Path copied", description: file.path }),
-            () => toast({ type: "error", title: "Failed to copy path" }),
-          );
-      }}
-      rootStyle={{ width: "100%" }}
-      trigger={
-        <div
-          testId={`diff-file-${file.path}`}
-          onClick={(event: EventPayload) => ((event.clickCount ?? 1) > 1 ? onOpen(file.path) : onFocus(file.path))}
-          onAuxClick={(event: EventPayload) => {
-            if (event.isRightClick) setMenuOpen(true);
-          }}
-          style={{
-            display: "flex",
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 6,
-            width: "100%",
-            height: 28,
-            paddingLeft: 8,
-            paddingRight: 6,
-            borderRadius: RADIUS.md,
-            flexShrink: 0,
-            cursor: "pointer",
-            backgroundColor: selected ? theme.accent : "#00000000",
-            hover: { backgroundColor: alpha(theme.accent, 0.6) },
-          }}
-        >
-          <Icon name={icon} size={14} color={theme.mutedForeground} />
-          <Tooltip content={file.path}>
-            <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, flexGrow: 1, minWidth: 0 }}>
-              <text style={{ color: theme.foreground, fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans, whiteSpace: "nowrap", flexShrink: 0, maxWidth: 140, textOverflow: "ellipsis", overflow: "hidden" }}>
-                {name}
-              </text>
-              {dir ? (
-                <text style={{ color: alpha(theme.mutedForeground, 0.7), fontSize: 11, lineHeight: 16, fontFamily: FONTS.sans, whiteSpace: "nowrap", textOverflow: "ellipsis-start", overflow: "hidden", minWidth: 0 }}>
-                  {dir}
-                </text>
-              ) : null}
-            </div>
-          </Tooltip>
-          <DiffStatLabel additions={file.additions} deletions={file.deletions} size={10} />
-        </div>
-      }
-    />
   );
 }
