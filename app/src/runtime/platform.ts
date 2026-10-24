@@ -3,7 +3,6 @@ import * as NodeOS from "node:os";
 import {
   ClientCapabilities,
   PlatformConnectionSource,
-  Persistence,
 } from "@t3tools/client-runtime/platform";
 import {
   ConnectionBlockedError,
@@ -17,6 +16,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import * as ConnectionStorage from "./storage.ts";
+import * as EnvironmentCache from "./environmentCache.ts";
 // Imports runtime.ts back through requestLatencyState; safe, it only reads the registry inside functions.
 import { layerRpcRequestObserver } from "../coordinators/rpcRequestObserver.ts";
 
@@ -96,32 +96,14 @@ const layerPlatformConnectionSource = Layer.succeed(
   PlatformConnectionSource.PlatformConnectionSource.of({ registrations: Stream.empty }),
 );
 
-// Offline cold start is not a goal for the terminal client, so nothing is cached.
-const layerEnvironmentCache = Layer.succeed(
-  Persistence.EnvironmentCacheStore,
-  Persistence.EnvironmentCacheStore.of({
-    loadShell: () => Effect.succeed(Option.none()),
-    saveShell: () => Effect.void,
-    loadThread: () => Effect.succeed(Option.none()),
-    saveThread: () => Effect.void,
-    removeThread: () => Effect.void,
-    loadServerConfig: () => Effect.succeed(Option.none()),
-    saveServerConfig: () => Effect.void,
-    loadVcsRefs: () => Effect.succeed(Option.none()),
-    saveVcsRefs: () => Effect.void,
-    removeVcsRefs: () => Effect.void,
-    clearVcsRefs: () => Effect.void,
-    clear: () => Effect.void,
-  }),
-);
-
 export const layer = Layer.mergeAll(
   ConnectionStorage.layer,
   layerConnectivity,
   layerWakeups,
   layerCapabilities,
   layerPlatformConnectionSource,
-  layerEnvironmentCache,
+  // Restores the last loaded shell and threads when a restart finds the server unreachable.
+  EnvironmentCache.layer,
   // Tracks unanswered RPCs for the slow-request toast (coordinators/SlowRpcRequestToastCoordinator).
   layerRpcRequestObserver,
 );
