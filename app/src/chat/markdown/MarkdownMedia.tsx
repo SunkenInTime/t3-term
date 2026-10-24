@@ -87,7 +87,7 @@ function requestImageInfo(src: string): Promise<ImageInfo> {
   return promise;
 }
 
-function useImageInfo(src: string | null): ImageInfo | null {
+export function useImageInfo(src: string | null): ImageInfo | null {
   const [, bump] = useState(0);
   useEffect(() => {
     if (!src || infoCache.has(src)) return;

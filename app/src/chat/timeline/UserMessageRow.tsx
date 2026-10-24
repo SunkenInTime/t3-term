@@ -27,6 +27,11 @@ import { rightPanelActions, threadKeyOf } from "../../state/rightPanel.ts";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
 import type { ChipPayload } from "../markdown/MarkdownChips.tsx";
 import { userMessageContextChip } from "./userMessageContextChips.ts";
+import { ContextPressProbe } from "./UserMessageContextDetails.tsx";
+
+/** Context kinds whose chip opens a details popup anchored at the press. */
+const POPUP_CONTEXT_KINDS = new Set(["terminal", "element", "review-comment", "preview-annotation"]);
+import { resolvePreviewAnnotationImage } from "../../web/components/chat/TimelineUserMessageRow.logic.ts";
 import { WorkflowOpeningBlock } from "./WorkflowOpeningBlock.tsx";
 import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
 import { MessageCopyButton, MicroIconButton, useHover } from "./parts.tsx";
@@ -260,6 +265,17 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
         recordsById: resolvedContext.recordsById,
         imageUrls,
         files: new Map(files.map((file) => [file.id, file])),
+        annotationImage: (record) => {
+          const image = resolvePreviewAnnotationImage({
+            record,
+            recordsById: resolvedContext.recordsById,
+            userImages: images as never,
+            previewImages: images.filter((entry) => entry.name.startsWith("preview-annotation-")) as never,
+            annotationRecordIds: resolvedContext.records.filter((entry) => entry.kind === "preview-annotation").map((entry) => entry.contextId),
+          });
+          const url = image ? imageUrls.get(image.id) : undefined;
+          return image && url ? { url, name: image.name } : null;
+        },
       }),
     // recordsById is rebuilt per render from the message; its identity follows the message.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -272,6 +288,7 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
       return record?.kind === "file" || record?.kind === "image" ? [record.attachmentId] : [];
     }),
   );
+  const hasContextPopups = resolvedContext.records.some((record) => POPUP_CONTEXT_KINDS.has(record.kind));
   const videos = files.filter(isVideoAttachment);
   const unchippedFiles = files.filter((file) => !isVideoAttachment(file) && !chippedAttachmentIds.has(file.id));
   const foldSummary = plainText.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? "";
@@ -303,6 +320,7 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
           ...(folded ? {} : { padding: 12 }),
         }}
       >
+        {hasContextPopups ? <ContextPressProbe /> : null}
         {folded ? (
           <FoldedMessageHeader
             icon="messages-square"
