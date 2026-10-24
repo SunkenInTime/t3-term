@@ -45,6 +45,8 @@ import {
   type EnvironmentId,
   isProviderNativeSubagentThread,
   MessageId,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ModelSelection,
   type ProjectId,
   type ProviderInstanceId,
@@ -189,6 +191,12 @@ import {
   type ComposerSendTarget,
 } from "./composerSend.ts";
 import { attachmentsFromPaths } from "./composerAttachmentPaths.ts";
+import { readClipboardAttachmentPaths, writePastedTextFile } from "./clipboardAttachments.ts";
+import {
+  nextPastedTextFileName,
+  pastedTextDisposition,
+  wouldTextPasteExceedLimit,
+} from "@t3tools/client-runtime/text-paste";
 import { ContextWindowMeter } from "./ContextWindowMeter.tsx";
 import { MODEL_PICKER_TRIGGER_MIN_WIDTH, ProviderModelPicker } from "./ProviderModelPicker.tsx";
 import { QueuedRunsControl } from "./QueuedRunsControl.tsx";
@@ -214,7 +222,13 @@ import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
 import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
 import { filterTerminalContextsWithText, type TerminalContextDraft } from "../../web/lib/terminalContext.ts";
-import { ComposerEditor, type ComposerEditorHandle, type ComposerEditorKeyContext, typedText } from "./editor/ComposerEditor.tsx";
+import {
+  ComposerEditor,
+  type ComposerEditorHandle,
+  type ComposerEditorKeyContext,
+  consumeComposerSinkPasteKeystroke,
+  typedText,
+} from "./editor/ComposerEditor.tsx";
 import type { ComposerChipEnvironment } from "./editor/ComposerInlineChip.tsx";
 import {
   reviewCommentContextId,
@@ -1482,6 +1496,41 @@ function ComposerBody({
     }
     focusEditor();
   };
+  // web foldPastedText: a paste of 32 KB or more, or one that would push the prompt past
+  // the input limit, goes in as a pasted-text.txt attachment instead of prompt text.
+  const onPasteText = (text: string): boolean => {
+    if (isLiteralPendingAnswer || activePendingProgress) return false;
+    const current = readComposerDraft(promptKey);
+    const snapshot = editorRef.current?.readSnapshot();
+    const wouldExceedInputLimit = wouldTextPasteExceedLimit({
+      valueLength: current.prompt.length,
+      selection: snapshot ? { start: snapshot.selectionStart, end: snapshot.selectionEnd } : { start: 0, end: 0 },
+      textLength: text.length,
+      maxLength: PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+    });
+    if (pastedTextDisposition({ text, canAttach: true, wouldExceedInputLimit }) !== "attachment") return false;
+    const canStage =
+      fileStagingAllowed &&
+      !queuedEdit.isEditing &&
+      serverConfig?.environment.capabilities.fileAttachments !== undefined &&
+      current.attachments.length < PROVIDER_SEND_TURN_MAX_ATTACHMENTS;
+    if (!canStage) {
+      if (!wouldExceedInputLimit) return false;
+      toast({ type: "error", title: "Pasted text is too large for this message", description: "Remove some text or an attachment, then paste again." });
+      return true;
+    }
+    const name = nextPastedTextFileName(current.attachments.map((attachment) => attachment.name));
+    const { attachments } = attachmentsFromPaths([writePastedTextFile(name, text)]);
+    addComposerAttachments(draftKey, attachments.map((attachment) => ({ ...attachment, mimeType: "text/plain" })));
+    return true;
+  };
+  // web onComposerPaste with clipboardData.files: a copied file or a picture attaches.
+  const onPasteNonText = () => {
+    if (!fileStagingAllowed || queuedEdit.isEditing) return;
+    void readClipboardAttachmentPaths().then((paths) => {
+      if (paths.length > 0) addPaths(paths);
+    });
+  };
   const onAttach = async () => {
     const paths = await renderer.promptForPaths?.({ files: true, multiple: true, prompt: "Attach" });
     if (paths && paths.length > 0) addPaths(paths);
@@ -1802,6 +1851,7 @@ function ComposerBody({
     return true;
   };
   const typeToFocus = (event: KeyEvent, eventRenderer: unknown) => {
+    if (consumeComposerSinkPasteKeystroke(event)) return true;
     const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
     const focusedId = (eventRenderer as { getFocusedElementId?: () => number | null } | undefined)?.getFocusedElementId?.();
     // A burst typed with nothing focused: the first key focused the editor, but GPUI had
@@ -1833,9 +1883,13 @@ function ComposerBody({
     }
     const isPaste = (mods.ctrl || mods.cmd) && !mods.alt && !mods.shift && event.key === "v";
     if (isPaste) {
-      void readClipboardText().then((text) => {
-        if (text.length > 0) appendToEditor(text);
-      });
+      void readClipboardText().then(
+        (text) => {
+          if (text.length === 0) onPasteNonText();
+          else if (!onPasteText(text.replace(/\r\n?/g, "\n"))) appendToEditor(text);
+        },
+        () => onPasteNonText(),
+      );
       return true;
     }
     if (mods.ctrl || mods.cmd || mods.alt || event.isHeld) return false;
@@ -2311,6 +2365,8 @@ function ComposerBody({
               isPathQueryActive={isPathQueryActive}
               onChange={onEditorChange}
               onKeyCommand={onEditorKeyCommand}
+              onPasteText={onPasteText}
+              onPasteNonText={onPasteNonText}
               onFocus={onEditorFocus}
               onBlur={onEditorBlur}
             />
