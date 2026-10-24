@@ -1,20 +1,20 @@
-// Port of apps/web/src/components/files/FilePreviewPanel.tsx (read-only).
+// Port of apps/web/src/components/files/FilePreviewPanel.tsx.
 //
-// Not ported, by design or by platform:
-// - Editing, saving and line comments (the web preview is a @pierre/diffs editor).
-// - Rendered HTML/PDF (sandboxed iframes), video and audio players: there is no
-//   browser surface here. HTML shows its source; the others show a notice.
-// - Chat attachments.
+// Workspace files open in FileEditor (editable, autosaved, line comments to the
+// composer) when the connection may write them, else in the read-only SourceView.
+// Not ported, by platform: rendered HTML/PDF (sandboxed iframes) and video and audio
+// players; there is no browser surface here. HTML shows its source; the others show a notice.
 import { useAtom, useAtomValue } from "@effect/atom-react";
-import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import { AuthFilesystemWriteScope, type EnvironmentId, type ScopedThreadRef, type ThreadId } from "@t3tools/contracts";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
+import { filePreviewDelimiter } from "@t3tools/shared/delimitedPreview";
 import {
   isWorkspaceAudioPreviewPath,
   isWorkspaceImagePreviewPath,
   isWorkspaceVideoPreviewPath,
 } from "@t3tools/shared/filePreview";
 import { isHostPath } from "@t3tools/shared/path";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { wordWrapPref } from "../../state/codeView.ts";
 import { persistedAtom } from "../../state/persistedAtom.ts";
@@ -29,7 +29,18 @@ import {
   shouldShowFileExplorer,
   workspaceAssetResource,
 } from "../../web/components/files/filePreviewMode.ts";
-import { useProjectFileQuery } from "../../web/components/files/projectFilesQueryState.ts";
+import {
+  setProjectFileQueryData,
+  useFilesystemReadAccess,
+  useProjectFileQuery,
+} from "../../web/components/files/projectFilesQueryState.ts";
+import { useEnvironmentScope } from "../../web/state/session.ts";
+import { composerTargetKey } from "../../state/composer.ts";
+import { fileSavePendingAtom, fileSavePendingKey, setFileSavePending } from "../../state/files.ts";
+import { threadKeyOf } from "../../state/rightPanel.ts";
+import { FileEditor } from "./FileEditor.tsx";
+import { DelimitedTablePreview } from "./DelimitedTablePreview.tsx";
+import { useFileSaveCoordinator } from "./useFileSaveCoordinator.ts";
 import { useAssetUrlState } from "./fileAssets.ts";
 import FileBrowserPanel from "./FileBrowserPanel.tsx";
 import { OpenInEditorButton } from "./OpenInEditorButton.tsx";
@@ -51,6 +62,8 @@ function decodeBoolean(fallback: boolean) {
 const fileExplorerOpenAtom = persistedAtom("file-explorer-open", true, decodeBoolean(true));
 /** web: localStorage `t3code.renderMarkdown`, default source. */
 const renderMarkdownAtom = persistedAtom("file-render-markdown", false, decodeBoolean(false));
+/** web: localStorage `t3code.renderTable`, default table. */
+const renderTableAtom = persistedAtom("file-render-table", true, decodeBoolean(true));
 
 function markdownTheme(theme: Palette) {
   return {
@@ -131,6 +144,45 @@ function UnsupportedPreview(props: { readonly kind: string }) {
         {`${props.kind} previews are not available in t3-term yet.`}
       </Text>
     </div>
+  );
+}
+
+/** web EditableFileSurface: the editor plus its autosave session. */
+function EditableFileSurface(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly cwd: string;
+  readonly relativePath: string;
+  readonly contents: string;
+  readonly wrap: boolean;
+  readonly revealLine: number | null;
+  readonly revealKey: string;
+}) {
+  const threadKey = threadKeyOf(props.environmentId, props.threadId);
+  const onPendingChange = useCallback(
+    (relativePath: string, pending: boolean) => setFileSavePending(threadKey, relativePath, pending),
+    [threadKey],
+  );
+  const saveCoordinator = useFileSaveCoordinator({
+    environmentId: props.environmentId,
+    cwd: props.cwd,
+    relativePath: props.relativePath,
+    onPendingChange,
+  });
+  return (
+    <FileEditor
+      testId="files-editor"
+      path={props.relativePath}
+      text={props.contents}
+      wrap={props.wrap}
+      revealLine={props.revealLine}
+      revealKey={props.revealKey}
+      draftKey={composerTargetKey({ kind: "thread", environmentId: props.environmentId, threadId: props.threadId })}
+      onEdit={(contents) => {
+        setProjectFileQueryData(props.environmentId, props.cwd, props.relativePath, contents);
+        saveCoordinator.change(contents);
+      }}
+    />
   );
 }
 
@@ -216,6 +268,11 @@ export default function FilePreviewPanel({
   const isPdf = relativePath !== null && /\.pdf$/i.test(relativePath);
   const isHostFile = relativePath !== null && isHostPath(relativePath);
   const file = useProjectFileQuery(environmentId, cwd, relativePath, relativePath !== null);
+  const fileAccess = useFilesystemReadAccess(environmentId);
+  const canWriteFiles = useEnvironmentScope(environmentId, AuthFilesystemWriteScope);
+  const savePending = useAtomValue(fileSavePendingAtom);
+  const selectedFilePending =
+    relativePath !== null && savePending.has(fileSavePendingKey(threadKeyOf(environmentId, threadId), relativePath));
   const attemptedPath = file.readError?.resolvedPath ?? file.readError?.operationPath;
   // A chat link cannot tell a folder from a file, so a folder arrives here as
   // a file surface and the read fails. Keep the breadcrumbs, drop the preview
@@ -243,6 +300,11 @@ export default function FilePreviewPanel({
   const revealHandled =
     revealLine === null || (handledReveal?.path === relativePath && handledReveal.requestId === revealRequestId);
   const renderMarkdown = isMarkdown && renderMarkdownPreferred && revealHandled;
+  const [renderTablePreferred, setRenderTablePreferred] = useAtom(renderTableAtom);
+  const tableDelimiter = previewPath ? filePreviewDelimiter({ name: previewPath }) : null;
+  const renderTable = tableDelimiter !== null && renderTablePreferred && revealHandled;
+  const renderedMode = isMarkdown ? ("markdown" as const) : tableDelimiter ? ("table" as const) : null;
+  const rendered = isMarkdown ? renderMarkdown : renderTable;
   const [panelWidth, setPanelWidth] = useState(540);
 
   const navigateToFolder = (crumbPath: string) => {
@@ -253,7 +315,8 @@ export default function FilePreviewPanel({
   const absolutePath =
     breadcrumbPath === "" ? cwd : relativePath ? resolvePathLinkTarget(relativePath, cwd) : null;
   useWorkspaceMutationRefresh({
-    enabled: relativePath !== null && (isFolder || (!isMedia && !isPdf)),
+    // An unsaved edit must not be replaced by a re-read of the old contents.
+    enabled: relativePath !== null && (isFolder || (!isMedia && !isPdf)) && !selectedFilePending,
     mutationId: workspaceMutationId,
     refresh: file.refresh,
     resourceKey: `file:${environmentId}:${cwd}:${relativePath ?? ""}`,
@@ -261,7 +324,12 @@ export default function FilePreviewPanel({
 
   // web `showsRawText`: the wrap toggle exists while source text is on screen.
   const showsRawText =
-    previewPath !== null && !isMedia && !isPdf && !(isMarkdown && renderMarkdown) && !(file.error && file.data === null);
+    previewPath !== null &&
+    !isMedia &&
+    !isPdf &&
+    !(isMarkdown && renderMarkdown) &&
+    !(tableDelimiter && renderTable) &&
+    !(file.error && file.data === null);
 
   const content = (() => {
     if (isFolder || !relativePath) return null;
@@ -292,6 +360,24 @@ export default function FilePreviewPanel({
     }
     if (file.data === null) return <FileSurfaceLoading />;
     if (isMarkdown && renderMarkdown) return <RenderedMarkdown key={relativePath} text={file.data.contents} />;
+    if (tableDelimiter && renderTable) {
+      return <DelimitedTablePreview key={relativePath} name={relativePath} text={file.data.contents} delimiter={tableDelimiter} />;
+    }
+    if (!file.data.truncated && !isHostFile && canWriteFiles) {
+      return (
+        <EditableFileSurface
+          key={`${relativePath}:${theme.appearance}`}
+          environmentId={environmentId}
+          threadId={threadId}
+          cwd={cwd}
+          relativePath={relativePath}
+          contents={file.data.contents}
+          wrap={wordWrap}
+          revealLine={revealLine}
+          revealKey={`${relativePath}:${revealRequestId}:${revealLine ?? ""}`}
+        />
+      );
+    }
     return (
       <SourceView
         key={relativePath}
@@ -345,15 +431,24 @@ export default function FilePreviewPanel({
             </div>
           </div>
           {absolutePath && !isFolder ? <OpenInEditorButton environmentId={environmentId} absolutePath={absolutePath} /> : null}
-          {previewPath !== null && isMarkdown ? (
+          {previewPath !== null && renderedMode !== null ? (
             <FileSurfaceAction
               testId="files-toggle-rendered"
-              label={renderMarkdown ? "Show markdown source" : "Show rendered markdown"}
-              icon={renderMarkdown ? "code" : "eye"}
-              pressed={renderMarkdown}
+              label={
+                renderedMode === "markdown"
+                  ? rendered
+                    ? "Show markdown source"
+                    : "Show rendered markdown"
+                  : rendered
+                    ? "Show source"
+                    : "Show table"
+              }
+              icon={rendered ? "code" : renderedMode === "table" ? "table-2" : "eye"}
+              pressed={rendered}
               onPress={() => {
-                const pressed = !renderMarkdown;
-                setRenderMarkdownPreferred(pressed);
+                const pressed = !rendered;
+                if (renderedMode === "markdown") setRenderMarkdownPreferred(pressed);
+                else setRenderTablePreferred(pressed);
                 setHandledReveal(pressed && relativePath !== null ? { path: relativePath, requestId: revealRequestId } : null);
               }}
             />
@@ -377,6 +472,9 @@ export default function FilePreviewPanel({
             />
           ) : null}
         </FileSurfaceSubheader>
+      ) : null}
+      {relativePath && !isHostFile && !canWriteFiles && !fileAccess.isPending ? (
+        <FileSurfaceNotice tone="muted">Read-only connection. Unsaved edits are kept until write access returns.</FileSurfaceNotice>
       ) : null}
       {previewPath && !isMedia && file.data?.truncated ? (
         <FileSurfaceNotice>
@@ -418,6 +516,7 @@ export default function FilePreviewPanel({
               selectedPathRevealId={revealRequestId}
               onOpenFile={onOpenFile}
               workspaceMutationId={workspaceMutationId}
+              composerDraftKey={composerTargetKey({ kind: "thread", environmentId, threadId })}
               {...(previewPath && !isMedia && !isPdf ? { onRefreshSelectedFile: file.refresh } : {})}
             />
           </div>

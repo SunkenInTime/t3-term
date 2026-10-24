@@ -37,6 +37,7 @@ import {
 import { selectThreadSessions, useEnvironmentScope, useTerminalMetadata, useThreadTerminalContext } from "../state/terminal.ts";
 import { rightPanelMaximizedAtom, rightPanelSurfaceAtom, rightPanelSurfaceRequestAtom, sidebarOpenAtom } from "../state/ui.ts";
 import { selectedPullRequestAtom } from "../state/gitPullRequests.ts";
+import { fileSavePendingAtom, fileSavePendingKey } from "../state/files.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Menu, MenuItem, MenuSeparator, Tooltip, surfaceStyle } from "../ui/overlay.tsx";
@@ -192,6 +193,7 @@ export function RightPanel({
   const storedWidth = useAtomValue(rightPanelWidthAtom(threadKey));
   const maximized = useAtomValue(rightPanelMaximizedAtom) && !sheet;
   const selectedPullRequest = useAtomValue(selectedPullRequestAtom(threadKey));
+  const fileSavePending = useAtomValue(fileSavePendingAtom);
   const requestedKind = useAtomValue(rightPanelSurfaceAtom);
   const requestCount = useAtomValue(rightPanelSurfaceRequestAtom);
   const sidebarOpen = useAtomValue(sidebarOpenAtom);
@@ -409,6 +411,7 @@ export function RightPanel({
             <RightPanelTab
               key={surface.id}
               surface={surface}
+              pending={surface.kind === "file" && fileSavePending.has(fileSavePendingKey(threadKey, surface.relativePath))}
               title={surfaceTitle(surface, terminalLabels, previewSessions)}
               tooltipDescription={deviceTabDescription(surface, deviceState)}
               renaming={renamingDevice === surface.id}
@@ -815,6 +818,8 @@ function deviceTabDescription(surface: RightPanelSurface, state: DeviceServiceSt
 
 function RightPanelTab(props: {
   surface: RightPanelSurface;
+  /** A file tab with edits the autosave has not written yet (web RightPanelTabs `pending`). */
+  pending?: boolean;
   title: string;
   tooltipDescription?: string | undefined;
   /** Device tabs: double-click edits the name in place. */
@@ -887,7 +892,13 @@ function RightPanelTab(props: {
         onClose={props.onClose}
         icon={
           props.surface.kind === "file" ? (
-            <FileEntryIcon pathValue={props.surface.relativePath} kind="file" size={12} />
+            <div style={{ position: "relative", display: "flex", width: 12, height: 12 }}>
+              <FileEntryIcon pathValue={props.surface.relativePath} kind="file" size={12} />
+              {props.pending ? (
+                // absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full bg-current
+                <div style={{ position: "absolute", right: -2, bottom: -2, width: 6, height: 6, borderRadius: 3, backgroundColor: color }} />
+              ) : null}
+            </div>
           ) : props.surface.kind === "preview" ? (
             <FaviconImage url={props.faviconUrl} size={12} color={color} />
           ) : (
