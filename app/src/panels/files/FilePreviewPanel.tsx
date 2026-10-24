@@ -22,7 +22,7 @@ import {
   isWorkspaceVideoPreviewPath,
 } from "@t3tools/shared/filePreview";
 import { isHostPath } from "@t3tools/shared/path";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { wordWrapPref } from "../../state/codeView.ts";
 import { persistedAtom } from "../../state/persistedAtom.ts";
@@ -34,10 +34,12 @@ import {
   filePreviewReadErrorMessage,
   isMarkdownPreviewFile,
   resolveFilePreviewPath,
+  setMarkdownTaskChecked,
   shouldShowFileExplorer,
   workspaceAssetResource,
 } from "../../web/components/files/filePreviewMode.ts";
 import {
+  getOptimisticProjectFileQueryData,
   setProjectFileQueryData,
   useFilesystemReadAccess,
   useProjectFileQuery,
@@ -114,14 +116,41 @@ function filePreviewRowContext(threadRef: ScopedThreadRef, cwd: string): Timelin
 }
 
 /**
- * web FileMarkdownPreview: the chat's markdown renderer (ChatMarkdown) at max-w-4xl
- * px-6 py-5, so file links open in Files, web links in the browser, and code, tables,
- * math and Mermaid render as in chat. Not ported: toggling task-list checkboxes (the
- * shared markdown renderer has no checkbox press yet) and resolving images against the
- * file's own folder (they resolve against the workspace, like its links).
+ * web FileMarkdownPreview + MarkdownFileSurface: the chat's markdown renderer
+ * (ChatMarkdown) at max-w-4xl px-6 py-5, so file links open in Files, web links in
+ * the browser, and code, tables, math and Mermaid render as in chat. Images resolve
+ * against the file's own folder, and a writable file's task checkboxes toggle and
+ * autosave, optimistically, through the same save coordinator as the editor.
  */
-function RenderedMarkdown(props: { readonly text: string; readonly threadRef: ScopedThreadRef; readonly cwd: string }) {
-  const row = useMemo(() => filePreviewRowContext(props.threadRef, props.cwd), [props.threadRef.environmentId, props.threadRef.threadId, props.cwd]);
+function RenderedMarkdown(props: {
+  readonly text: string;
+  readonly threadRef: ScopedThreadRef;
+  readonly cwd: string;
+  readonly relativePath: string;
+  readonly readOnly: boolean;
+}) {
+  const { environmentId, threadId } = props.threadRef;
+  const row = useMemo(() => filePreviewRowContext(props.threadRef, props.cwd), [environmentId, threadId, props.cwd]);
+  const lastSeparator = Math.max(props.relativePath.lastIndexOf("/"), props.relativePath.lastIndexOf("\\"));
+  const imageBaseDir = lastSeparator >= 0 ? resolvePathLinkTarget(props.relativePath.slice(0, lastSeparator), props.cwd) : props.cwd;
+  const threadKey = threadKeyOf(environmentId, threadId);
+  const onPendingChange = useCallback(
+    (relativePath: string, pending: boolean) => setFileSavePending(threadKey, relativePath, pending),
+    [threadKey],
+  );
+  const saveCoordinator = useFileSaveCoordinator({ environmentId, cwd: props.cwd, relativePath: props.relativePath, onPendingChange });
+  const latest = useRef({ text: props.text, saveCoordinator });
+  latest.current = { text: props.text, saveCoordinator };
+  const onTaskListChange = useCallback(
+    ({ markerOffset, checked }: { markerOffset: number; checked: boolean }) => {
+      const current = getOptimisticProjectFileQueryData(environmentId, props.cwd, props.relativePath)?.contents ?? latest.current.text;
+      const next = setMarkdownTaskChecked(current, markerOffset, checked);
+      if (next === current) return;
+      setProjectFileQueryData(environmentId, props.cwd, props.relativePath, next);
+      latest.current.saveCoordinator.change(next);
+    },
+    [environmentId, props.cwd, props.relativePath],
+  );
   return (
     <div
       testId="files-markdown"
@@ -129,7 +158,7 @@ function RenderedMarkdown(props: { readonly text: string; readonly threadRef: Sc
     >
       <div style={{ width: "100%", maxWidth: 896, paddingLeft: 24, paddingRight: 24, paddingTop: 20, paddingBottom: 20, flexShrink: 0 }}>
         <TimelineRowCtx.Provider value={row}>
-          <ChatMarkdown text={props.text} />
+          <ChatMarkdown text={props.text} imageBaseDir={imageBaseDir} {...(props.readOnly ? {} : { onTaskListChange })} />
         </TimelineRowCtx.Provider>
       </div>
     </div>
@@ -431,7 +460,18 @@ export default function FilePreviewPanel({
       );
     }
     if (file.data === null) return <FileSurfaceLoading />;
-    if (isMarkdown && renderMarkdown) return <RenderedMarkdown key={relativePath} text={file.data.contents} threadRef={threadRef} cwd={cwd} />;
+    if (isMarkdown && renderMarkdown) {
+      return (
+        <RenderedMarkdown
+          key={relativePath}
+          text={file.data.contents}
+          threadRef={threadRef}
+          cwd={cwd}
+          relativePath={relativePath}
+          readOnly={file.data.truncated || isHostFile || !canWriteFiles}
+        />
+      );
+    }
     if (tableDelimiter && renderTable) {
       return <DelimitedTablePreview key={relativePath} name={relativePath} text={file.data.contents} delimiter={tableDelimiter} />;
     }

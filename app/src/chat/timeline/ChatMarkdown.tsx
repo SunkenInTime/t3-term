@@ -96,6 +96,19 @@ interface LinkContext {
   readonly contextChip: ((reference: { kind: string; contextId: string; label: string }) => ChipPayload | null) | undefined;
   /** usePullRequestLinking for the thread's environment, read at menu time. */
   readonly linking: { current: ReturnType<typeof usePullRequestLinking> | null };
+  /** web onTaskListChange: a rendered Markdown file's task checkbox was toggled. */
+  readonly onTaskListChange: ((input: { markerOffset: number; checked: boolean }) => void) | undefined;
+  /** The markdown source, to find a task's `[ ]` marker from its list item's offset. */
+  readonly text: string;
+}
+
+/** web ChatMarkdown findTaskListMarkerOffset. */
+function findTaskListMarkerOffset(markdown: string, listItemStart: number): number | null {
+  const firstLineEnd = markdown.indexOf("\n", listItemStart);
+  const firstLine = markdown.slice(listItemStart, firstLineEnd === -1 ? markdown.length : firstLineEnd);
+  const match = firstLine.match(/^(?:\s*(?:[-+*]|\d+[.)])\s+)(\[[ xX]\])/);
+  if (!match?.[1]) return null;
+  return listItemStart + firstLine.indexOf(match[1]);
 }
 
 function panelPathFor(target: FileChipTarget): string | null {
@@ -421,8 +434,16 @@ function createBoxes(context: LinkContext): InlineBoxRenderers {
       };
       return chipAtom(id("skill"), payload, env.styles.body, lineWidth(env));
     },
-    checkbox(checked, env) {
-      return checkboxAtom(id("chk"), checked, env.styles.body, env.styles.listIndent);
+    checkbox(checked, env, listItemOffset) {
+      const onTaskListChange = context.onTaskListChange;
+      const toggle =
+        onTaskListChange && listItemOffset !== undefined
+          ? () => {
+              const markerOffset = findTaskListMarkerOffset(context.text, listItemOffset);
+              if (markerOffset !== null) onTaskListChange({ markerOffset, checked: !checked });
+            }
+          : undefined;
+      return checkboxAtom(id("chk"), checked, env.styles.body, env.styles.listIndent, toggle);
     },
     inlineMath(tex, display, env, style) {
       return inlineMathAtom(id("math"), tex, display, style, env.extent.root);
@@ -502,6 +523,8 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   onFitWidth,
   isStreaming = false,
   contextChip,
+  onTaskListChange,
+  imageBaseDir,
 }: {
   text: string;
   tone?: ChatMarkdownTone;
@@ -517,6 +540,10 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   isStreaming?: boolean;
   /** Chips for `t3-context:` references (user messages: UserMessageContextChips). */
   contextChip?: LinkContext["contextChip"];
+  /** web FileMarkdownPreview: task checkboxes toggle through this. */
+  onTaskListChange?: LinkContext["onTaskListChange"];
+  /** web imageBaseDir: images resolve against the Markdown file's folder; links keep the workspace. */
+  imageBaseDir?: string;
 }) {
   const palette = useTheme();
   const styles = markdownStyles(palette, tone, textSize);
@@ -534,7 +561,10 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   const linking = usePullRequestLinking(row?.threadRef.environmentId ?? null);
   const [linkingRef] = useState<LinkContext["linking"]>(() => ({ current: null }));
   linkingRef.current = linking;
-  const context = useMemo<LinkContext>(() => ({ row, contextChip, linking: linkingRef }), [row, contextChip, linkingRef]);
+  const context = useMemo<LinkContext>(
+    () => ({ row, contextChip, linking: linkingRef, onTaskListChange, text }),
+    [row, contextChip, linkingRef, onTaskListChange, text],
+  );
   const handlers = useMemo(() => ({ actions: createActions(context), boxes: createBoxes(context), blocks: createBlocks(context) }), [context]);
   const rendered = useMemo(() => {
     if (width <= 0) return null;
@@ -549,14 +579,14 @@ const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
       mathEnabled,
       skills: row?.skills ?? NO_SKILLS,
       extent: { width: 0, root: width },
-      media: { environmentId: row?.threadRef.environmentId ?? null, threadId: row?.threadRef.threadId ?? null, cwd, gallery: [] },
+      media: { environmentId: row?.threadRef.environmentId ?? null, threadId: row?.threadRef.threadId ?? null, cwd: imageBaseDir ?? cwd, gallery: [] },
       isStreaming,
       source: text,
     };
     const nodes = renderDocument(tree, width, env);
     return { nodes, extent: env.extent.width };
     // epoch: new text metrics re-lay out lines measured with estimates.
-  }, [tree, width, styles, text, cwd, row, hover, handlers, mathEnabled, epoch, asyncEpoch, isStreaming]);
+  }, [tree, width, styles, text, cwd, imageBaseDir, row, hover, handlers, mathEnabled, epoch, asyncEpoch, isStreaming]);
   const fitWidth = maxWidth !== undefined && rendered ? Math.min(maxWidth, Math.ceil(rendered.extent)) : undefined;
   useEffect(() => {
     if (fitWidth !== undefined) onFitWidth?.(fitWidth);
