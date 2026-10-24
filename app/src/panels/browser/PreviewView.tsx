@@ -26,6 +26,7 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { useRef, useState } from "react";
 
 import { openExternalUrl } from "../pr/openExternal.ts";
+import { resolveKeyEventCommand } from "../../keybindings/useGlobalKeybindings.ts";
 import { appAtomRegistry } from "../../runtime/runtime.ts";
 import {
   miniPlayerAtom,
@@ -195,29 +196,27 @@ export function PreviewView({
     clearCache: () => void adjustServerTab({ clear: "cache" }),
   };
 
-  // Web's `when: "previewFocus"` shortcuts (packages/shared/src/keybindings.ts): they apply
-  // while focus is inside the preview, so they are handled where its keys bubble.
+  // web routes/_chat.tsx: preview.* commands resolve from the user's keybindings with
+  // previewFocus set, which holds while focus is inside the preview, so they are
+  // handled where its keys bubble. Other commands go on to the window dispatcher.
   const onPreviewKeyDown = (event: KeyEvent) => {
-    const mods = event.modifiers;
-    const mod = process.platform === "darwin" ? mods?.cmd : mods?.ctrl;
-    if (!mod || mods?.alt || !canOperate) return;
-    const key = (event.key ?? "").toLowerCase();
+    const command = resolveKeyEventCommand(event, { previewFocus: true });
     const action =
-      key === "r" && !mods?.shift
+      command === "preview.refresh"
         ? handleRefresh
-        : key === "l" && !mods?.shift
+        : command === "preview.focusUrl"
           ? () => setFocusUrlNonce((value) => value + 1)
-          : key === "=" || key === "+"
+          : command === "preview.zoomIn"
             ? () => stepServerZoom(1)
-            : key === "-"
+            : command === "preview.zoomOut"
               ? () => stepServerZoom(-1)
-              : key === "0"
+              : command === "preview.resetZoom"
                 ? () => stepServerZoom(0)
                 : null;
     if (!action) return;
     event.preventDefault();
     event.stopPropagation();
-    action();
+    if (canOperate) action();
   };
 
   return (

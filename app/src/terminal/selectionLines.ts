@@ -1,7 +1,9 @@
 // Where a native text selection sits in the terminal buffer. gpuix gives the selected text
 // but not its position, while web reads xterm's selection range (terminalSelectionLineRange:
-// 1-based buffer lines). The selection is on screen when the user right-clicks it, so the
-// visible rows are searched for the selected lines, top to bottom.
+// 1-based buffer lines). TerminalView takes the rows from the press and release that made
+// the selection; this is the fallback for a selection it did not see made. The selection is
+// on screen when the user right-clicks it, so the visible rows are searched for the selected
+// lines, top to bottom.
 import type { TerminalEmulator } from "./vt/emulator.ts";
 
 export function locateSelectionLines(
