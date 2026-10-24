@@ -84,7 +84,7 @@ export function PendingReviewCommentCard({
 
 /** DiffCommentAnnotation kind="draft": the box a gutter press opens under its line. */
 export function DiffCommentDraft({
-  rangeLabel,
+  rangeLabel: _rangeLabel,
   placeholder = "Add a comment…",
   submitLabel = "Comment",
   secondaryAction,
@@ -117,8 +117,8 @@ export function DiffCommentDraft({
         }}
       />
       <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, marginTop: 6 }}>
-        <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)} style={{ flexGrow: 1 }}>
-          {`⌘/Ctrl Enter to send · ${rangeLabel}`}
+        <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)} truncate style={{ flexGrow: 1, flexShrink: 1 }}>
+          ⌘/Ctrl Enter to send
         </Text>
         <PrButton variant="ghost-muted" onClick={onCancel} testId="pr-line-comment-cancel">
           Cancel
