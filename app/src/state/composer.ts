@@ -375,13 +375,20 @@ export function referencedTerminalContexts(draft: ComposerDraft, prompt = draft.
   return contexts.filter((context) => ids.has(terminalContextReference(context).contextId));
 }
 
-/** web composerDraftStore.addThreadContexts: a thread dropped on the composer, as a chip. */
+/**
+ * web composerDraftStore.addThreadContexts: a thread dropped on the composer. Its chip goes on
+ * the end of the prompt (once), its record into the draft.
+ */
 export function addComposerThreadContext(key: string, record: ThreadContextRecord): void {
-  updateComposerDraft(key, (draft) => ({
-    ...draft,
-    threadContexts: [...(draft.threadContexts ?? []).filter((entry) => entry.contextId !== record.contextId), record],
-  }));
-  insertComposerReference(key, formatInlineContextReference(threadContextReference(record)));
+  updateComposerDraft(key, (draft) => {
+    const present = collectInlineContextIds(draft.prompt).includes(record.contextId);
+    return {
+      ...draft,
+      prompt: present ? draft.prompt : appendInlineContextReference(draft.prompt, threadContextReference(record)),
+      threadContexts: [...(draft.threadContexts ?? []).filter((entry) => entry.contextId !== record.contextId), record],
+    };
+  });
+  focusComposer();
 }
 
 export function referencedThreadContexts(draft: ComposerDraft, prompt = draft.prompt): ReadonlyArray<ThreadContextRecord> {

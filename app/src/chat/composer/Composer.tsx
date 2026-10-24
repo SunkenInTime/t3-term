@@ -208,6 +208,7 @@ import { ComposerEditor, type ComposerEditorHandle, type ComposerEditorKeyContex
 import type { ComposerChipEnvironment } from "./editor/ComposerInlineChip.tsx";
 import { reviewCommentContextId, terminalContextReference } from "../../web/lib/composerContextRecords.ts";
 import { rightPanelActions, threadKeyOf } from "../../state/rightPanel.ts";
+import { ThreadContextDragLayer } from "./threadContextDrag.tsx";
 import {
   draftFanoutSelectionsAtom,
   type MultipleModelTarget,
@@ -2051,9 +2052,11 @@ function ComposerBody({
         style={{
           ...surfaceBase,
           position: "relative",
-          ...(dragOver || mentionDragOver ? { backgroundColor: mix("#ffffff", surfaceBase.backgroundColor, 0.045), borderColor: alpha(theme.primary, 0.7) } : {}),
+          // web: bg-accent/45 and ring-1 ring-inset ring-primary/70 while a file or thread is dragged over.
+          ...(dragOver || mentionDragOver ? { backgroundColor: mix("#ffffff", surfaceBase.backgroundColor, 0.02), borderColor: alpha(theme.primary, 0.7) } : {}),
         }}
       >
+        <ThreadContextDragLayer />
         <SurfaceHighlight />
         {stash.menuOpen && !menuIsOpen && surfaceWidth !== null ? (
           <ComposerCommandMenuLayer surfaceWidth={surfaceWidth}>
