@@ -28,6 +28,14 @@ export interface DiffHunk {
   /** Unchanged lines hidden above this hunk (0 when unknown or adjacent). */
   readonly collapsedBefore: number;
   readonly lines: ReadonlyArray<DiffLine>;
+  /** First old/new line number the hunk covers (the line after an empty side's anchor). */
+  readonly oldStart: number;
+  readonly newStart: number;
+  /** Old/new lines the hunk covers, per its header. */
+  readonly oldCount: number;
+  readonly newCount: number;
+  /** The patch hunk this one starts with, which keys the expansion of the gap above it. */
+  readonly expandIndex: number;
 }
 
 export interface DiffFileModel extends PatchFile {
@@ -38,6 +46,15 @@ export interface DiffFileModel extends PatchFile {
   /** Widest line number, in digits. */
   readonly numberDigits: number;
   readonly binary: boolean;
+  /**
+   * Unchanged lines after the last hunk once the full file is known, or null when only
+   * the patch is ("More unchanged context may be available").
+   */
+  readonly collapsedAfter: number | null;
+  /** Gaps can be expanded: the full file contents are loaded (expandDiffFile). */
+  readonly contentsLoaded: boolean;
+  /** Hunks in the patch; the region key of the gap after the last one. */
+  readonly patchHunkCount: number;
 }
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
@@ -66,7 +83,18 @@ function parseFile(file: PatchFile): DiffFileModel {
       current = [];
       // A new file's first hunk starts at 0/1 with nothing hidden above it.
       const anchor = Math.max(oldStart, 1);
-      hunks.push({ collapsedBefore: Math.max(0, anchor - previousEnd), lines: current });
+      const oldCount = Number(header[2] ?? 1);
+      const newCount = Number(header[4] ?? 1);
+      hunks.push({
+        collapsedBefore: Math.max(0, anchor - previousEnd),
+        lines: current,
+        // An empty side's start is the line before the hunk (`@@ -5,0 +6,2 @@`).
+        oldStart: oldCount === 0 ? oldStart + 1 : oldStart,
+        newStart: newCount === 0 ? newStart + 1 : newStart,
+        oldCount,
+        newCount,
+        expandIndex: hunks.length,
+      });
       previousEnd = anchor + Number(header[2] ?? 1);
       oldLeft = Number(header[2] ?? 1);
       newLeft = Number(header[4] ?? 1);
@@ -119,6 +147,109 @@ function parseFile(file: PatchFile): DiffFileModel {
     newSource: newLines.join("\n"),
     numberDigits: String(maxLine).length,
     binary,
+    collapsedAfter: null,
+    contentsLoaded: false,
+    patchHunkCount: hunks.length,
+  };
+}
+
+// ── Expanding unchanged context ──────────────────────────────────────────
+
+/** Both sides of a file, as the review diffFileContents command returns them. */
+export interface DiffFileContents {
+  readonly oldContents: string;
+  readonly newContents: string;
+}
+
+/** pierre's expanded region of one gap: lines shown from its start and from its end. */
+export interface ExpandedRegion {
+  readonly fromStart: number;
+  readonly fromEnd: number;
+}
+
+/** pierre's expansionLineCount: lines one expand click reveals on a side. */
+export const EXPANSION_LINE_COUNT = 100;
+
+function sourceLines(text: string): string[] {
+  if (text.length === 0) return [];
+  const lines = text.split("\n").map((line) => line.replace(/\r$/, ""));
+  if (lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
+/** review diffFileContents changeType for a file (pierre's FileDiffMetadata.type). */
+export function diffFileChangeType(file: DiffFileModel): "change" | "rename-pure" | "rename-changed" | "new" | "deleted" {
+  if (file.kind === "new") return "new";
+  if (file.kind === "deleted") return "deleted";
+  if (file.kind === "renamed") return file.hunks.length === 0 ? "rename-pure" : "rename-changed";
+  return "change";
+}
+
+/**
+ * The file with its full contents known: every line indexes the whole old/new file (so
+ * highlighting covers revealed context), and each gap shows the lines its region reveals,
+ * pierre-style: `fromStart` lines under the hunk above, `fromEnd` lines over the hunk below.
+ * A gap revealed completely joins its two hunks. Regions are keyed by the patch hunk the
+ * gap sits above; the gap after the last hunk is keyed by the hunk count.
+ */
+export function expandDiffFile(
+  file: DiffFileModel,
+  contents: DiffFileContents,
+  regions: ReadonlyMap<number, ExpandedRegion>,
+): DiffFileModel {
+  if (file.binary || file.hunks.length === 0 || file.kind === "new" || file.kind === "deleted") return file;
+  const oldRaw = sourceLines(contents.oldContents);
+  const newRaw = sourceLines(contents.newContents);
+  const oldText = oldRaw.map(expandTabs);
+  const newText = newRaw.map(expandTabs);
+  const reindex = (line: DiffLine): DiffLine => ({
+    ...line,
+    oldIndex: line.kind !== "addition" && line.oldLine !== null ? line.oldLine - 1 : null,
+    newIndex: line.kind !== "deletion" && line.newLine !== null ? line.newLine - 1 : null,
+  });
+  const context = (oldNo: number, newNo: number): DiffLine => ({
+    kind: "context",
+    text: newText[newNo - 1] ?? oldText[oldNo - 1] ?? "",
+    raw: newRaw[newNo - 1] ?? oldRaw[oldNo - 1] ?? "",
+    oldLine: oldNo,
+    newLine: newNo,
+    oldIndex: oldNo - 1,
+    newIndex: newNo - 1,
+    noNewline: false,
+  });
+  const out: Array<{ hunk: DiffHunk; lines: DiffLine[] }> = [];
+  let nextOld = 1;
+  let nextNew = 1;
+  file.hunks.forEach((hunk, index) => {
+    const gap = Math.max(0, hunk.oldStart - nextOld);
+    const region = regions.get(index) ?? { fromStart: 0, fromEnd: 0 };
+    const previous = out.at(-1);
+    // Above the first hunk there is nothing to grow from, so every revealed line sits over it.
+    const top = previous ? Math.min(gap, region.fromStart) : 0;
+    const bottom = Math.min(gap - top, previous ? region.fromEnd : region.fromStart + region.fromEnd);
+    const remaining = gap - top - bottom;
+    for (let offset = 0; offset < top; offset += 1) previous!.lines.push(context(nextOld + offset, nextNew + offset));
+    const revealed: DiffLine[] = [];
+    for (let offset = gap - bottom; offset < gap; offset += 1) revealed.push(context(nextOld + offset, nextNew + offset));
+    const lines = [...revealed, ...hunk.lines.map(reindex)];
+    if (previous && remaining === 0) previous.lines.push(...lines);
+    else out.push({ hunk: { ...hunk, collapsedBefore: remaining }, lines });
+    nextOld = hunk.oldStart + hunk.oldCount;
+    nextNew = hunk.newStart + hunk.newCount;
+  });
+  const trailingGap = Math.max(0, oldText.length - nextOld + 1);
+  const trailingRegion = regions.get(file.hunks.length) ?? { fromStart: 0, fromEnd: 0 };
+  const trailingShown = Math.min(trailingGap, trailingRegion.fromStart + trailingRegion.fromEnd);
+  const last = out.at(-1)!;
+  for (let offset = 0; offset < trailingShown; offset += 1) last.lines.push(context(nextOld + offset, nextNew + offset));
+  return {
+    ...file,
+    hunks: out.map(({ hunk, lines }) => ({ ...hunk, lines })),
+    oldSource: oldText.join("\n"),
+    newSource: newText.join("\n"),
+    numberDigits: Math.max(file.numberDigits, String(Math.max(oldText.length, newText.length)).length),
+    collapsedAfter: trailingGap - trailingShown,
+    contentsLoaded: true,
   };
 }
 
@@ -249,6 +380,10 @@ export type DiffRow =
       readonly first: boolean;
       readonly last: boolean;
       readonly split: boolean;
+      /** The gap's region key (expandDiffFile). */
+      readonly expandIndex: number;
+      /** Hidden line count, or null when unknown (the trailing gap of a patch-only file). */
+      readonly hidden: number | null;
     }
   | { readonly type: "line"; readonly key: string; readonly file: DiffFileModel; readonly cell: LineCell }
   | { readonly type: "split"; readonly key: string; readonly file: DiffFileModel; readonly left: LineCell | null; readonly right: LineCell | null }
@@ -343,6 +478,8 @@ export function buildDiffRows(
           first: hunkIndex === 0,
           last: false,
           split: layout === "split",
+          expandIndex: hunk.expandIndex,
+          hidden: hunk.collapsedBefore,
         });
       }
       const paired = pairHunk(hunk.lines);
@@ -368,16 +505,19 @@ export function buildDiffRows(
         });
       }
     });
-    if (trailing) {
+    if (trailing && file.collapsedAfter !== 0) {
       rows.push({
         type: "separator",
         key: `s:${file.path}:end`,
         file,
-        text: "More unchanged context may be available",
+        text: file.collapsedAfter === null ? "More unchanged context may be available" : unmodifiedLabel(file.collapsedAfter),
         direction: "down",
         first: false,
         last: true,
         split: layout === "split",
+        // The gap after the last patch hunk.
+        expandIndex: file.patchHunkCount,
+        hidden: file.collapsedAfter,
       });
     }
     rows.push({ type: "end", key: `e:${file.path}`, file });

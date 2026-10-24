@@ -15,13 +15,16 @@ import {
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { runAtomCommand, squashAtomCommandFailure, type AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { appAtomRegistry } from "../../runtime/runtime.ts";
+import { toast } from "../../ui/toast.tsx";
 import {
   environmentThreadDetails,
   environmentThreadShells,
   projectIndexAtom,
+  serverEnvironment,
 } from "../../state/environment.ts";
 import {
   diffCollapsedFilesAtom,
@@ -45,15 +48,23 @@ import { Tooltip } from "../../ui/overlay.tsx";
 import { Text } from "../../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { areAllDiffFilesCollapsed, toggleAllDiffFiles } from "../../web/lib/diffCollapse.ts";
-import { buildBaseRefChoices } from "../../web/lib/baseRefChoices.ts";
 import { useEnvironmentQuery } from "../../web/state/query.ts";
 import { useEnvironmentScope } from "../../web/state/session.ts";
 import { resolveDiffPathForWorkspace } from "../../web/diffFileActions.ts";
-import { parseDiffFiles } from "./diffModel.ts";
-import { DiffView } from "./DiffView.tsx";
+import {
+  EXPANSION_LINE_COUNT,
+  diffFileChangeType,
+  expandDiffFile,
+  parseDiffFiles,
+  type DiffFileContents,
+  type DiffFileModel,
+  type ExpandedRegion,
+} from "./diffModel.ts";
+import { DiffView, type DiffFileMenu, type GapDirection } from "./DiffView.tsx";
+import { fileContextMenuItems, runFileTreeMenuAction, type FileTreeMenuAction } from "../files/fileTreeActions.ts";
 import { DiffFileTree } from "./DiffFileTree.tsx";
+import { DiffBaseRefPicker } from "./DiffBaseRefPicker.tsx";
 
-const AUTOMATIC_BASE_REF = "__automatic_base_ref__";
 const LAZY_FILE_BATCH = 20;
 const EMPTY_SET: ReadonlySet<string> = new Set();
 const FILE_PATH_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
@@ -229,7 +240,6 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
   // DiffPanel: wrap starts from the wordWrap setting and stays local to the panel.
   const [wordWrap, setWordWrap] = useState(() => appAtomRegistry.get(wordWrapPref.atom));
   const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
-  const [baseMenuOpen, setBaseMenuOpen] = useState(false);
   const [lazyLimit, setLazyLimit] = useState(LAZY_FILE_BATCH);
   const [lazyPatches, setLazyPatches] = useState<{ key: string; byPath: ReadonlyMap<string, string | null> }>({ key: "", byPath: new Map() });
 
@@ -269,6 +279,22 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
     () => ({ sectionId, sectionTitle, draftKey: composerTargetKey({ kind: "thread", environmentId, threadId }) }),
     [sectionId, sectionTitle, environmentId, threadId],
   );
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  // DiffPanel: right-click on a header's filename opens fileContextMenu (Open, Reveal, Open with).
+  const workspacePathFor = (path: string) =>
+    resolveDiffPathForWorkspace({
+      filePath: path,
+      workspaceRoot: activeCwd ?? undefined,
+      repositoryRoot: thread?.worktreePath ? undefined : (project?.repositoryIdentity?.rootPath ?? undefined),
+    });
+  const fileMenu: DiffFileMenu = {
+    items: (path) => (activeCwd && workspacePathFor(path) !== null ? fileContextMenuItems(serverConfig) : []),
+    onAction: (path, action) => {
+      const relative = workspacePathFor(path);
+      if (!activeCwd || relative === null) return;
+      void runFileTreeMenuAction({ action: action as FileTreeMenuAction, environmentId, cwd: activeCwd, path: relative, draftKey: null });
+    },
+  };
   const [treeReveal, setTreeReveal] = useState<{ path: string; requestId: number } | null>(null);
   const [bodyWidth, setBodyWidth] = useState(0);
 
@@ -335,6 +361,76 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
       : null;
   const lineStat = sourceStat ?? files.reduce((sum, file) => ({ additions: sum.additions + file.additions, deletions: sum.deletions + file.deletions }), { additions: 0, deletions: 0 });
 
+  // DiffPanel's loadDiffFiles: git selections can load each file's full contents, which
+  // turns the "N unmodified lines" separators into expanders. Turn diffs have no loader.
+  const canExpand = selectedRunId === null && gitSource !== undefined && canReadFiles && preview.data !== null;
+  const expansionKey = canExpand ? `${scopeKey}:${gitSource.diffHash}:${ignoreWhitespace}` : "";
+  const [expansion, setExpansion] = useState<{
+    key: string;
+    contents: ReadonlyMap<string, DiffFileContents>;
+    regions: ReadonlyMap<string, ReadonlyMap<number, ExpandedRegion>>;
+  }>({ key: "", contents: new Map(), regions: new Map() });
+  const liveExpansion = expansion.key === expansionKey ? expansion : null;
+  const displayFiles = useMemo(() => {
+    if (!liveExpansion || liveExpansion.contents.size === 0) return files;
+    return files.map((file) => {
+      const contents = liveExpansion.contents.get(file.path);
+      return contents ? expandDiffFile(file, contents, liveExpansion.regions.get(file.path) ?? new Map()) : file;
+    });
+  }, [files, liveExpansion]);
+  const loadingContents = useRef(new Set<string>());
+  const expandGap = (file: DiffFileModel, expandIndex: number, direction: GapDirection) => {
+    if (!canExpand || !gitSource || !preview.data) return;
+    const key = expansionKey;
+    setExpansion((current) => {
+      const base = current.key === key ? current : { key, contents: new Map<string, DiffFileContents>(), regions: new Map<string, ReadonlyMap<number, ExpandedRegion>>() };
+      const fileRegions = new Map<number, ExpandedRegion>(base.regions.get(file.path) ?? []);
+      const region = fileRegions.get(expandIndex) ?? { fromStart: 0, fromEnd: 0 };
+      fileRegions.set(expandIndex, {
+        fromStart: region.fromStart + (direction === "down" ? 0 : EXPANSION_LINE_COUNT),
+        fromEnd: region.fromEnd + (direction === "up" ? 0 : EXPANSION_LINE_COUNT),
+      });
+      return { ...base, regions: new Map(base.regions).set(file.path, fileRegions) };
+    });
+    const loadKey = `${key}\n${file.path}`;
+    if (liveExpansion?.contents.has(file.path) || loadingContents.current.has(loadKey)) return;
+    loadingContents.current.add(loadKey);
+    void (
+      runAtomCommand(
+        appAtomRegistry,
+        reviewEnvironment.diffFileContents,
+        {
+          environmentId,
+          input: {
+            cwd: preview.data.cwd,
+            sourceKind: gitSource.kind,
+            changeType: diffFileChangeType(file),
+            baseRef: gitSource.baseRef ?? null,
+            headRef: gitSource.headRef ?? null,
+            oldPath: file.previousPath ?? file.path,
+            newPath: file.path,
+          },
+        } as never,
+        { reportFailure: false },
+      ) as Promise<AtomCommandResult<DiffFileContents, unknown>>
+    ).then((result) => {
+      loadingContents.current.delete(loadKey);
+      if (result._tag === "Failure") {
+        const error = squashAtomCommandFailure(result);
+        toast({
+          type: "error",
+          title: "Could not load the file to expand it",
+          description: error instanceof Error ? error.message : file.path,
+        });
+        return;
+      }
+      setExpansion((current) => {
+        if (current.key !== key) return current;
+        return { ...current, contents: new Map(current.contents).set(file.path, result.value) };
+      });
+    });
+  };
+
   const storedCollapsed = useAtomValue(diffCollapsedFilesAtom(scopeKey));
   const fileKeys = files.map((file) => file.path);
   const collapsed = storedCollapsed ?? (filesCollapsedByDefault ? new Set(fileKeys) : EMPTY_SET);
@@ -369,16 +465,6 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
   useEffect(() => {
     if (preview.data !== null && !preview.isPending) preview.refresh();
   }, [threadKey]);
-
-  const refs = useEnvironmentQuery(
-    selectedRunId === null && gitScope === "branch" && preview.data?.cwd
-      ? vcsEnvironment.listRefs({ environmentId, input: { cwd: preview.data.cwd, includeMatchingRemoteRefs: true, limit: 100 } })
-      : null,
-  );
-  const baseChoices = buildBaseRefChoices(
-    (refs.data?.refs ?? []).filter((candidate) => !candidate.isRemote && candidate.name !== gitSource?.headRef),
-    (refs.data?.refs ?? []).filter((candidate) => candidate.isRemote),
-  );
 
   const scopeItems = [
     { id: "branch", label: "Changes", checked: selectedRunId === null && gitScope === "branch" },
@@ -461,48 +547,13 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
                 <Icon name="arrow-right" size={14} color={alpha(theme.mutedForeground, 0.7)} />
               </div>
             </Tooltip>
-            <ActionMenu
-              open={baseMenuOpen}
-              onOpenChange={setBaseMenuOpen}
-              testId="diff-base-menu"
-              minWidth={240}
-              items={[
-                { id: AUTOMATIC_BASE_REF, label: "Automatic", checked: selectedBaseRef === null },
-                ...baseChoices.slice(0, 40).map((choice) => {
-                  const value = choice.local?.name ?? choice.remote?.name ?? choice.id;
-                  return {
-                    id: value,
-                    label: choice.local ? choice.label : `${choice.label} (remote)`,
-                    checked: selectedBaseRef === value,
-                  };
-                }),
-              ]}
-              onSelect={(id: string) => selectDiffBaseRef(ref, id === AUTOMATIC_BASE_REF ? null : id)}
-              trigger={
-                <div
-                  testId="diff-base-ref"
-                  onClick={() => setBaseMenuOpen(!baseMenuOpen)}
-                  style={{
-                    display: "flex",
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 4,
-                    height: 24,
-                    paddingLeft: 7,
-                    paddingRight: 7,
-                    borderRadius: RADIUS.md,
-                    cursor: "pointer",
-                    minWidth: 36,
-                    flexShrink: 1,
-                    hover: { backgroundColor: theme.accent },
-                  }}
-                >
-                  <Text size="xs" color={theme.mutedForeground} truncate style={{ maxWidth: 160 }}>
-                    {gitSource.baseRef}
-                  </Text>
-                  <Icon name="chevron-down" size={14} color={alpha(theme.mutedForeground, 0.7)} />
-                </div>
-              }
+            <DiffBaseRefPicker
+              environmentId={environmentId}
+              cwd={preview.data?.cwd ?? activeCwd ?? ""}
+              headRef={gitSource.headRef ?? null}
+              baseRef={gitSource.baseRef}
+              selectedBaseRef={selectedBaseRef}
+              onSelect={(baseRef) => selectDiffBaseRef(ref, baseRef)}
             />
           </div>
         ) : null}
@@ -589,7 +640,8 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
             </div>
           ) : null}
           <DiffView
-            files={files}
+            files={displayFiles}
+            onExpandGap={canExpand ? expandGap : null}
             layout={diffLayout}
             wrap={wordWrap}
             collapsed={collapsedSet}
@@ -597,12 +649,9 @@ export function DiffSurface({ environmentId, threadId }: { environmentId: Enviro
             comments={commentsConfig}
             reveal={treeReveal}
             onToggleFile={toggleFile}
+            fileMenu={fileMenu}
             onOpenFile={(path) => {
-              const relative = resolveDiffPathForWorkspace({
-                filePath: path,
-                workspaceRoot: activeCwd ?? undefined,
-                repositoryRoot: thread?.worktreePath ? undefined : (project?.repositoryIdentity?.rootPath ?? undefined),
-              });
+              const relative = workspacePathFor(path);
               if (relative) rightPanelActions.openFile(threadKey, relative);
             }}
           />
