@@ -1,18 +1,18 @@
-// apps/web/src/components/chat/ThreadFindBar.tsx + a trimmed useThreadFind.ts.
-// The server counts and orders matches (orchestration searchThread), the
-// timeline opens the fold that holds the active match and scrolls to its row,
-// and gpuix's native `highlight` paints the matches.
+// apps/web/src/components/chat/ThreadFindBar.tsx. The search lifecycle is
+// useThreadFind.ts (web's hook); it lives in the bar so typing re-renders only
+// the bar, the way web's ThreadFindProvider keeps it off the chat view. The
+// timeline opens the fold that holds the active match, pages history toward
+// it, scrolls to the occurrence, and gpuix's native `highlight` paints matches.
 import { useAtomValue } from "@effect/atom-react";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect, useState } from "react";
+import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { InlineSkill } from "@t3tools/shared/inlineSkills";
+import { useEffect, useState, type RefObject } from "react";
 
-import { timelineOrchestration } from "../../state/timeline.ts";
+import { serverEnvironment } from "../../state/environment.ts";
 import { Icon, type IconName } from "../../ui/Icon.tsx";
 import { FONTS, RADIUS, useTheme } from "../../ui/theme.ts";
-import { formatThreadFindCount, stepThreadFindIndex } from "../../web/components/chat/threadFind.ts";
-
-const EMPTY_FIND_ATOM = Atom.make(AsyncResult.initial<never, never>(false));
+import { formatThreadFindCount, type ThreadFindPositionReader } from "../../web/components/chat/threadFind.ts";
+import { useThreadFind } from "./useThreadFind.ts";
 
 export interface ThreadFindState {
   readonly query: string;
@@ -21,59 +21,58 @@ export interface ThreadFindState {
   readonly navigationId: number;
 }
 
-/** The query is sent 150ms after typing stops, like web's debounced find. */
-function useDebounced<T>(value: T, ms: number): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const id = setTimeout(() => setDebounced(value), ms);
-    return () => clearTimeout(id);
-  }, [value, ms]);
-  return debounced;
+/**
+ * Splits a textarea edit into the query and a Shift+Enter. gpuix's single-line
+ * input swallows Shift+Enter (a no-op Newline binding) and its submit event
+ * carries no modifiers, so the field is a one-row textarea: Enter submits, and
+ * Shift+Enter arrives as one inserted newline. Pasted newlines become spaces,
+ * as a browser search field strips them.
+ */
+export function splitFindInput(previous: string, next: string): { query: string; previousMatch: boolean } {
+  const index = next.indexOf("\n");
+  if (index >= 0 && next.length === previous.length + 1 && next.slice(0, index) + next.slice(index + 1) === previous) {
+    return { query: previous, previousMatch: true };
+  }
+  return { query: next.replace(/\r?\n/g, " ").slice(0, 200), previousMatch: false };
 }
 
 export function ThreadFindBar({
-  environmentId,
-  threadId,
+  threadRef,
+  skills,
+  positionReader,
   onChange,
   onClose,
 }: {
-  environmentId: EnvironmentId;
-  threadId: ThreadId;
+  threadRef: ScopedThreadRef;
+  skills: readonly InlineSkill[];
+  positionReader: RefObject<ThreadFindPositionReader | null>;
   onChange: (state: ThreadFindState) => void;
   onClose: () => void;
 }) {
   const theme = useTheme();
-  const [query, setQuery] = useState("");
-  const [requestedIndex, setRequestedIndex] = useState(0);
-  const [navigationId, setNavigationId] = useState(0);
-  const trimmed = useDebounced(query.trim(), 150);
-  const result = useAtomValue(
-    trimmed.length > 0
-      ? timelineOrchestration.threadFind({ environmentId, input: { threadId, query: trimmed, index: requestedIndex } })
-      : EMPTY_FIND_ATOM,
-  );
-  const data = result._tag === "Success" ? result.value : null;
-  const total = data?.totalMatches ?? 0;
-  const activeIndex = data?.activeIndex ?? 0;
-  const status = trimmed.length === 0 ? null : result._tag === "Failure" ? "error" : data === null ? "loading" : null;
-  const match = data?.match ?? null;
+  const config = useAtomValue(serverEnvironment.configValueAtom(threadRef.environmentId));
+  const find = useThreadFind({ thread: threadRef, progressive: config?.threadFindProgressive === true, skills, positionReader });
+  const bar = find.barProps;
+  const { findQuery, activeFindMatch, findNavigationId } = find.timeline;
+  // The textarea keeps its own text; resetting `value` after a Shift+Enter puts it back.
+  const [fieldValue, setFieldValue] = useState(bar.query);
 
   useEffect(() => {
-    onChange({ query: trimmed, match: match ? { entryId: match.entryId, occurrence: match.occurrence } : null, navigationId });
+    onChange({
+      query: findQuery,
+      match: activeFindMatch ? { entryId: activeFindMatch.entryId, occurrence: activeFindMatch.occurrence } : null,
+      navigationId: findNavigationId,
+    });
     // onChange is stable in the caller.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trimmed, match?.entryId, match?.occurrence, navigationId]);
+  }, [findQuery, activeFindMatch?.entryId, activeFindMatch?.occurrence, findNavigationId]);
 
-  const step = (delta: number) => {
-    if (total === 0) return;
-    setRequestedIndex(stepThreadFindIndex(activeIndex, total, delta));
-    setNavigationId((id) => id + 1);
-  };
-
-  const hasQuery = query.trim().length > 0;
-  const noResults = hasQuery && status === null && total === 0 && trimmed.length > 0;
-  const label = status === "loading" ? "Searching…" : status === "error" ? "Search failed" : hasQuery ? formatThreadFindCount(activeIndex, total) : "";
-  const navigationDisabled = total === 0 || status === "loading";
+  const hasQuery = bar.query.trim().length > 0;
+  const noResults = hasQuery && !bar.status && bar.matchCount === 0;
+  let label = hasQuery ? (bar.counting ? "1/…" : formatThreadFindCount(bar.activeIndex, bar.matchCount)) : "";
+  if (bar.status === "loading") label = "Searching…";
+  if (bar.status === "error") label = "Search failed";
+  const navigationDisabled = bar.matchCount === 0 || bar.status === "loading" || bar.counting;
 
   const iconButton = (icon: IconName, onClick: () => void, disabled: boolean, testId: string) => (
     <div
@@ -116,31 +115,51 @@ export function ThreadFindBar({
         pointerEvents: "auto",
       }}
     >
-      <input
+      <textarea
         testId="thread-find-input"
         autoFocus
-        value={query}
+        value={fieldValue}
         placeholder="Find in thread"
+        minRows={1}
+        maxRows={1}
         onChange={(event) => {
-          setQuery((event.value ?? "").slice(0, 200));
-          setRequestedIndex(0);
+          const raw = event.value ?? "";
+          const next = splitFindInput(bar.query, raw);
+          if (next.previousMatch) {
+            // Commit the field's own text first so the next `value` differs and replaces it.
+            setFieldValue(raw);
+            setTimeout(() => setFieldValue(next.query), 0);
+            bar.onPrevious();
+            return;
+          }
+          setFieldValue(next.query === raw ? raw : next.query);
+          if (next.query !== bar.query) bar.onQueryChange(next.query);
         }}
-        onSubmit={() => step(1)}
+        onSubmit={() => bar.onNext()}
         onKeyDown={(event) => {
           if (event.key === "escape") {
             event.stopPropagation();
             onClose();
           }
         }}
-        style={{ flexGrow: 1, flexBasis: 0, minWidth: 0, height: 34, fontSize: 14, fontFamily: FONTS.sans, color: theme.foreground }}
+        style={{ flexGrow: 1, flexBasis: 0, minWidth: 0, height: 20, fontSize: 14, lineHeight: 20, fontFamily: FONTS.sans, color: theme.foreground }}
       />
       <div style={{ display: "flex", justifyContent: "center", minWidth: 40, flexShrink: 0 }}>
         <text style={{ color: noResults ? theme.errorForeground : theme.mutedForeground, fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans }}>
           {label}
         </text>
       </div>
-      {iconButton("chevron-up", () => step(-1), navigationDisabled, "thread-find-previous")}
-      {iconButton("chevron-down", () => step(1), navigationDisabled, "thread-find-next")}
+      {bar.status === "error" ? (
+        <div
+          testId="thread-find-retry"
+          onClick={bar.onRetry}
+          style={{ display: "flex", alignItems: "center", height: 24, paddingLeft: 8, paddingRight: 8, borderRadius: RADIUS.md, cursor: "pointer", flexShrink: 0, hover: { backgroundColor: theme.accent } }}
+        >
+          <text style={{ color: theme.foreground, fontSize: 12, lineHeight: 16, fontFamily: FONTS.sans, fontWeight: 500 }}>Retry</text>
+        </div>
+      ) : null}
+      {iconButton("chevron-up", bar.onPrevious, navigationDisabled, "thread-find-previous")}
+      {iconButton("chevron-down", bar.onNext, navigationDisabled, "thread-find-next")}
       {iconButton("x", onClose, false, "thread-find-close")}
     </div>
   );

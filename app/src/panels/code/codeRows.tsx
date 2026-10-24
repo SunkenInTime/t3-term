@@ -113,6 +113,15 @@ export interface Segment {
   readonly text: string;
   readonly color: string;
   readonly emphasis: boolean;
+  /** A find match's wash over this run, if any. */
+  readonly mark?: string;
+}
+
+/** A character range painted with a background (find matches). */
+export interface SegmentMark {
+  readonly start: number;
+  readonly end: number;
+  readonly color: string;
 }
 
 /**
@@ -126,12 +135,17 @@ export function segmentsFor(
   end: number,
   emphasis: ReadonlyArray<readonly [number, number]>,
   fallbackColor: string,
+  marks: ReadonlyArray<SegmentMark> = [],
 ): Segment[] {
   const runs = tokens ?? [{ text, color: fallbackColor }];
   const cuts = new Set<number>([start, end]);
   for (const [from, to] of emphasis) {
     if (from > start && from < end) cuts.add(from);
     if (to > start && to < end) cuts.add(to);
+  }
+  for (const mark of marks) {
+    if (mark.start > start && mark.start < end) cuts.add(mark.start);
+    if (mark.end > start && mark.end < end) cuts.add(mark.end);
   }
   let offset = 0;
   for (const run of runs) {
@@ -154,11 +168,12 @@ export function segmentsFor(
     if (piece.length === 0) continue;
     const emphasized = emphasis.some(([emFrom, emTo]) => from >= emFrom && to <= emTo);
     const color = run?.color || fallbackColor;
+    const mark = marks.find((candidate) => from >= candidate.start && to <= candidate.end)?.color;
     const previous = out.at(-1);
-    if (previous && previous.color === color && previous.emphasis === emphasized) {
+    if (previous && previous.color === color && previous.emphasis === emphasized && previous.mark === mark) {
       out[out.length - 1] = { ...previous, text: previous.text + piece };
     } else {
-      out.push({ text: piece, color, emphasis: emphasized });
+      out.push(mark ? { text: piece, color, emphasis: emphasized, mark } : { text: piece, color, emphasis: emphasized });
     }
   }
   return out;
@@ -184,7 +199,11 @@ export const CodeRun = memo(function CodeRun({
             lineHeight: CODE_LINE_HEIGHT,
             whiteSpace: "nowrap",
             flexShrink: 0,
-            ...(segment.emphasis && emphasisColor ? { backgroundColor: emphasisColor, borderRadius: 3 } : {}),
+            ...(segment.mark
+              ? { backgroundColor: segment.mark }
+              : segment.emphasis && emphasisColor
+                ? { backgroundColor: emphasisColor, borderRadius: 3 }
+                : {}),
           }}
         >
           {segment.text}

@@ -5,6 +5,8 @@
 // apps/web/src/terminal/ghostty/renderer.ts).
 import { Terminal, type IBufferCell } from "@xterm/headless";
 
+import type { TerminalLinkRow } from "../links.ts";
+
 /** ThreadTerminalDrawer.tsx TERMINAL_PALETTES. */
 const ANSI_DARK = [
   "#000000", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",
@@ -75,19 +77,55 @@ export interface TerminalFrame {
   readonly viewportY: number;
   readonly baseY: number;
   readonly alternate: boolean;
+  /** DEC mouse tracking the program asked for; anything but "none" takes the pointer. */
+  readonly mouseTracking: MouseTrackingMode;
+}
+
+export type MouseTrackingMode = "none" | "x10" | "vt200" | "drag" | "any";
+
+/** xterm CoreMouseButton / CoreMouseAction (common/Types.ts). */
+export const MOUSE_BUTTON = { left: 0, middle: 1, right: 2, none: 3, wheel: 4 } as const;
+export const MOUSE_ACTION = { up: 0, down: 1, move: 32 } as const;
+/** With MOUSE_BUTTON.wheel, `up`/`down` mean the wheel direction. */
+export const WHEEL_ACTION = { up: 0, down: 1 } as const;
+
+export interface TerminalMouseEvent {
+  /** 0-based viewport cell. */
+  readonly col: number;
+  readonly row: number;
+  /** Pixels from the grid origin, for SGR-pixels mode. */
+  readonly x: number;
+  readonly y: number;
+  readonly button: number;
+  readonly action: number;
+  readonly ctrl: boolean;
+  readonly alt: boolean;
+  readonly shift: boolean;
 }
 
 interface CoreInternals {
   _core?: {
     coreService?: { isCursorHidden?: boolean; decPrivateModes?: { cursorStyle?: string } };
     optionsService?: { rawOptions?: { cursorStyle?: string } };
+    // xterm encodes reports for the active protocol and encoding and emits them through onData.
+    coreMouseService?: { triggerMouseEvent(event: TerminalMouseEvent): boolean };
+    _oscLinkService?: { getLinkData(id: number): { uri: string } | undefined };
   };
+}
+
+/** The CellData behind IBufferCell carries OSC 8 link ids in its extended attributes. */
+interface CellInternals {
+  hasExtendedAttrs?: () => number;
+  extended?: { urlId?: number };
 }
 
 export class TerminalEmulator {
   readonly terminal: Terminal;
   private readonly listeners = new Set<() => void>();
   private cell: IBufferCell | undefined;
+  private probeCell: IBufferCell | undefined;
+  private revision = 0;
+  private linkRowsCache: { revision: number; rows: TerminalLinkRow[] } | null = null;
 
   constructor(cols: number, rows: number, onReply: (data: string) => void) {
     this.terminal = new Terminal({
@@ -109,6 +147,7 @@ export class TerminalEmulator {
   }
 
   private emit() {
+    this.revision += 1;
     for (const listener of this.listeners) listener();
   }
 
@@ -151,6 +190,70 @@ export class TerminalEmulator {
 
   get alternate() {
     return this.terminal.buffer.active.type === "alternate";
+  }
+
+  get mouseTracking(): MouseTrackingMode {
+    return this.terminal.modes.mouseTrackingMode;
+  }
+
+  /** Reports a pointer event to the program. False when its mode does not take this event. */
+  sendMouse(event: TerminalMouseEvent): boolean {
+    const service = (this.terminal as unknown as CoreInternals)._core?.coreMouseService;
+    return service?.triggerMouseEvent({ ...event }) ?? false;
+  }
+
+  /** The OSC 8 URI of a viewport cell, or null. */
+  hyperlinkAt(col: number, row: number): string | null {
+    const buffer = this.terminal.buffer.active;
+    const line = buffer.getLine(buffer.viewportY + row);
+    const cell = (this.probeCell ??= buffer.getNullCell());
+    if (!line?.getCell(col, cell)) return null;
+    const internals = cell as unknown as CellInternals;
+    // `extended` is left over from an earlier cell unless this one has extended attributes.
+    if (!internals.hasExtendedAttrs?.()) return null;
+    const id = internals.extended?.urlId ?? 0;
+    if (id === 0) return null;
+    return (this.terminal as unknown as CoreInternals)._core?._oscLinkService?.getLinkData(id)?.uri ?? null;
+  }
+
+  /** Viewport rows as the web link logic reads them; rebuilt only after output, scroll or resize. */
+  linkRows(): ReadonlyArray<TerminalLinkRow> {
+    if (this.linkRowsCache?.revision === this.revision) return this.linkRowsCache.rows;
+    const buffer = this.terminal.buffer.active;
+    const cell = (this.probeCell ??= buffer.getNullCell());
+    const rows: TerminalLinkRow[] = [];
+    for (let y = 0; y < this.terminal.rows; y++) {
+      const line = buffer.getLine(buffer.viewportY + y);
+      const cells: { text: string }[] = [];
+      if (line) {
+        for (let x = 0; x < this.terminal.cols; x++) {
+          cells.push({ text: line.getCell(x, cell) ? cell.getChars() : "" });
+        }
+      }
+      rows.push({
+        cells,
+        isWrapContinuation: line?.isWrapped === true,
+        wrapsToNext: buffer.getLine(buffer.viewportY + y + 1)?.isWrapped === true,
+      });
+    }
+    this.linkRowsCache = { revision: this.revision, rows };
+    return rows;
+  }
+
+  /**
+   * Buffer lines from the first to the last with text, scrollback included, like
+   * ghostty_terminal_select_all. Null when the buffer is blank.
+   */
+  contentLineRange(): { first: number; last: number } | null {
+    const buffer = this.terminal.buffer.active;
+    let first = -1;
+    let last = -1;
+    for (let y = 0; y < buffer.length; y++) {
+      if ((buffer.getLine(y)?.translateToString(true) ?? "").length === 0) continue;
+      if (first < 0) first = y;
+      last = y;
+    }
+    return first < 0 ? null : { first, last };
   }
 
   isAtBottom() {
@@ -224,7 +327,7 @@ export class TerminalEmulator {
           if (cell.isDim()) fg = `${fg.slice(0, 7)}80`;
           if (cell.isInvisible()) fg = bg ?? theme.background;
           const bold = cell.isBold() !== 0;
-          const underline = cell.isUnderline() !== 0;
+          const underline = isUnderlined(cell);
           const strike = cell.isStrikethrough() !== 0;
           if (
             run &&
@@ -270,8 +373,22 @@ export class TerminalEmulator {
       viewportY: buffer.viewportY,
       baseY: buffer.baseY,
       alternate: buffer.type === "alternate",
+      mouseTracking: terminal.modes.mouseTrackingMode,
     };
   }
+}
+
+/**
+ * xterm reports every OSC 8 cell as dashed-underlined (ExtendedAttrs.underlineStyle).
+ * libghostty, which web renders, underlines a hyperlink only on hover, so a link
+ * cell counts only an explicit SGR 4 (the FgFlags.UNDERLINE bit).
+ */
+function isUnderlined(cell: IBufferCell): boolean {
+  const internals = cell as unknown as CellInternals & { fg?: number };
+  if (internals.hasExtendedAttrs?.() && (internals.extended?.urlId ?? 0) !== 0) {
+    return ((internals.fg ?? 0) & 0x10000000) !== 0;
+  }
+  return cell.isUnderline() !== 0;
 }
 
 function colorOf(mode: number, value: number, palette: readonly string[], fallback: string): string {

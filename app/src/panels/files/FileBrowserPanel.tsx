@@ -1,8 +1,8 @@
 // Port of apps/web/src/components/files/FileBrowserPanel.tsx. The web tree is
 // @pierre/trees (compact density); here it is one <virtual-list> of rows built by
 // fileTreeRows.ts, with pierre's extension-keeping middle truncation (TreeName), the
-// right-click menu and drag-to-mention (fileTreeActions.ts). Not ported: pierre's
-// sticky folder rows.
+// right-click menu and drag-to-mention (fileTreeActions.ts). No sticky folder rows:
+// web leaves pierre's `stickyFolders` off, so a scrolled folder's row scrolls away there too.
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import type { EventPayload } from "@gpuix/native";
 import { useGpuixRequired, type KeyEvent, type PublicInstance } from "@gpuix/react";
