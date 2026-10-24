@@ -58,7 +58,6 @@ import type { PullRequestDetailView } from "./PullRequestDetailPanel.tsx";
 import { GhostBar } from "./PullRequestListStates.tsx";
 import { PrMenu, PrMenuItem } from "./PullRequestMenus.tsx";
 import { PrButton } from "./prControls.tsx";
-import { PullRequestDiffStat } from "./pullRequestPresentation.tsx";
 import {
   DiffCommentDraft,
   PendingReviewCommentCard,
