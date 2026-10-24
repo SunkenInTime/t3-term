@@ -27,6 +27,7 @@ import { rightPanelActions, threadKeyOf } from "../../state/rightPanel.ts";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
 import type { ChipPayload } from "../markdown/MarkdownChips.tsx";
 import { userMessageContextChip } from "./userMessageContextChips.ts";
+import { WorkflowOpeningBlock } from "./WorkflowOpeningBlock.tsx";
 import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
 import { MessageCopyButton, MicroIconButton, useHover } from "./parts.tsx";
 import { TimelineRowActivityCtx, TimelineRowCtx, type TimelineRow } from "./rowContext.ts";
@@ -98,6 +99,10 @@ function useAttachmentUrlMap(environmentId: EnvironmentId, _messageId: MessageId
 }
 
 export function UserMessageRow({ row }: { row: MessageRow }) {
+  const ctx = use(TimelineRowCtx);
+  if (ctx.workflowOpening?.messageId === row.message.id) {
+    return <WorkflowOpeningBlock opening={ctx.workflowOpening} environmentId={ctx.activeThreadEnvironmentId} onOpenThread={ctx.onOpenThread} />;
+  }
   return resolveUserMessagePresentation(row.message).attribution === "automation" ? (
     <AutomationMessageRow row={row} />
   ) : (

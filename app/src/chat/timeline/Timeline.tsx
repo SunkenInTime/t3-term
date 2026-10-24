@@ -79,9 +79,11 @@ import { TimelineRowContent } from "./TimelineRows.tsx";
 import { TimelineSystemDivider } from "./parts.tsx";
 import { MarkdownOverlayHost } from "../markdown/overlays.tsx";
 import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
+import { resolveWorkflowOpening, workflowOpeningParentThreadId } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { InlineSkill } from "@t3tools/shared/inlineSkills";
 
 const NO_TIMELINE_SKILLS: ReadonlyArray<InlineSkill> = [];
+const NO_PARENT_STRUCTURE = Atom.make(null);
 import { TextMeasureHost } from "../markdown/TextMeasureHost.tsx";
 import {
   TimelineRowActivityCtx,
@@ -146,6 +148,23 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
 
   const structure = useAtomValue(environmentThreadDetails.quietThreadAtom(threadRef));
   const projection = structure?.projection ?? null;
+  // web ChatView: a workflow coordinator's thread opens with its script; the plan that
+  // replaces it lives on the parent's coordinator row, so only such a thread loads its parent.
+  const workflowParentId = projection === null ? null : workflowOpeningParentThreadId({ thread: projection.thread, messages: projection.messages });
+  const workflowParent = useAtomValue(
+    workflowParentId === null ? NO_PARENT_STRUCTURE : environmentThreadDetails.quietThreadAtom(scopeThreadRef(threadRef.environmentId, workflowParentId)),
+  );
+  const workflowOpening = useMemo(
+    () =>
+      projection === null || workflowParentId === null
+        ? null
+        : resolveWorkflowOpening({
+            thread: projection.thread,
+            messages: projection.messages,
+            parentSubagents: (workflowParent as { projection?: { subagents?: Parameters<typeof resolveWorkflowOpening>[0]["parentSubagents"] } } | null)?.projection?.subagents ?? null,
+          }),
+    [projection, workflowParentId, workflowParent],
+  );
   const visibleTurnItems = useAtomValue(environmentThreadDetails.visibleTurnItemsAtom(threadRef));
   const history = useAtomValue(environmentThreadDetails.historyAtom(threadRef));
   const status = useAtomValue(environmentThreadDetails.statusAtom(threadRef));
@@ -439,6 +458,7 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
       threadRef,
       markdownCwd,
       skills,
+      workflowOpening,
       workspaceRoot,
       runs,
       activeThreadEnvironmentId: environmentId,
@@ -460,7 +480,7 @@ function ThreadTimeline({ threadRef }: { threadRef: ScopedThreadRef }) {
     }),
     // The callbacks are stable; only data the rows read invalidates the context.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [timestampFormat, threadKey, threadRef, markdownCwd, skills, workspaceRoot, runs, environmentId, retryableRunIds, changedFilesExpanded],
+    [timestampFormat, threadKey, threadRef, markdownCwd, skills, workflowOpening, workspaceRoot, runs, environmentId, retryableRunIds, changedFilesExpanded],
   );
 
   const backgroundWorktreeSetup =

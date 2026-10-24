@@ -514,7 +514,7 @@ function formatElapsedSeconds(totalSeconds: number): string {
 }
 
 /** AgentElapsed.tsx: elapsed run time, ticking once a second while the agent works. */
-function AgentElapsed({
+export function AgentElapsed({
   agent,
 }: {
   agent: { readonly status: OrchestrationV2TurnItem["status"]; readonly startedAt: string | null; readonly completedAt: string | null };
@@ -575,7 +575,7 @@ function SubagentAvatar({
   );
 }
 
-function EnvironmentSubagentAvatar({
+export function EnvironmentSubagentAvatar({
   environmentId,
   providerInstanceId,
   driver,
