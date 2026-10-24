@@ -216,6 +216,7 @@ import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments"
 import * as NodeFs from "node:fs";
 import { takeDevAttachPaths } from "./devComposerAttachments.ts";
 import { prepareImageAttachment } from "./imagePreparation.ts";
+import { environmentSupportsQuestionAttachments, questionAttachmentDraftKey } from "./questionAttachments.ts";
 import { readClipboardAttachmentPaths, writePastedTextFile } from "./clipboardAttachments.ts";
 import {
   nextPastedTextFileName,
@@ -1601,7 +1602,22 @@ function ComposerBody({
   });
 
   // ── Attachments ───────────────────────────────────────────────────────
-  const fileStagingAllowed = !activePendingProgress;
+  // web questionAttachmentTarget: while a question takes a typed answer, staged files belong to
+  // that question (where the server takes question attachments), not to the next message.
+  const activeQuestionId = activePendingProgress?.activeQuestion?.id ?? null;
+  const questionAttachmentKey =
+    threadId !== null &&
+    activeQuestionId !== null &&
+    requests.pendingUserInputs[0] &&
+    !isChoiceOnlyPendingQuestion &&
+    !requests.activePendingIsResponding &&
+    environmentSupportsQuestionAttachments(environmentId)
+      ? questionAttachmentDraftKey(environmentId, threadId, requests.pendingUserInputs[0].requestId, activeQuestionId)
+      : null;
+  const attachmentKey = questionAttachmentKey ?? promptKey;
+  const questionDraft = useAtomValue(composerDraftAtom(attachmentKey));
+  const visibleStaged = questionAttachmentKey !== null ? questionDraft.attachments : stagedAttachments;
+  const fileStagingAllowed = !activePendingProgress || questionAttachmentKey !== null;
   // web useComposerAttachmentIntake: what this server cannot take is refused when it is staged,
   // not at send time, and the attachment count is held to the per-message limit.
   const stageAttachments = (
@@ -1609,7 +1625,7 @@ function ComposerBody({
     priorError: string | null = null,
   ): ComposerAttachmentDraft[] => {
     let error: string | null = priorError;
-    let reserved = readComposerDraft(promptKey).attachments.length + (editingAttachments?.length ?? 0);
+    let reserved = readComposerDraft(attachmentKey).attachments.length + (questionAttachmentKey ? 0 : (editingAttachments?.length ?? 0));
     const accepted: ComposerAttachmentDraft[] = [];
     for (const attachment of attachments) {
       if (reserved >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
@@ -1625,11 +1641,11 @@ function ComposerBody({
       reserved += 1;
     }
     appAtomRegistry.set(composerSendErrorAtom(draftKey), error);
-    if (accepted.length > 0) addComposerAttachments(promptKey, accepted);
+    if (accepted.length > 0) addComposerAttachments(attachmentKey, accepted);
     return accepted;
   };
   const removeStagedAttachment = (attachmentId: string) => {
-    removeComposerAttachment(promptKey, attachmentId);
+    removeComposerAttachment(attachmentKey, attachmentId);
     releaseAttachmentUpload(attachmentId);
   };
   // web compressAndStoreImages: images are converted (HEIC) or shrunk to the provider's limit
@@ -1754,17 +1770,17 @@ function ComposerBody({
   useEffect(() => {
     // Not before the connection is prepared: the upload URL resolves against it.
     if (!uploadsEnabled || !connectionReady) return;
-    for (const attachment of stagedAttachments) {
+    for (const attachment of visibleStaged) {
       if (appAtomRegistry.get(attachmentUploadStateAtom(attachment.id)) !== null) continue;
       if (!NodeFs.existsSync(attachment.path)) continue;
       void startAttachmentUpload(environmentId, attachment);
     }
-  }, [stagedAttachments, environmentId, uploadsEnabled, connectionReady]);
+  }, [visibleStaged, environmentId, uploadsEnabled, connectionReady]);
   // web composerFileNeedsReattach: a staged file whose bytes are gone, with nothing uploaded.
   const missingAttachmentIds = useMemo(
     () =>
       new Set(
-        stagedAttachments
+        visibleStaged
           .filter(
             (attachment) =>
               !NodeFs.existsSync(attachment.path) &&
@@ -1772,7 +1788,7 @@ function ComposerBody({
           )
           .map((attachment) => attachment.id),
       ),
-    [stagedAttachments],
+    [visibleStaged],
   );
   // The queued message's own attachments come first, from the server; then staged ones.
   const images: ComposerMediaItem[] = [
@@ -1784,7 +1800,7 @@ function ComposerBody({
         src: editingImageUrls.get(attachment.id) ?? null,
         onRemove: () => queuedEdit.removeEditingAttachment(attachment.id),
       })),
-    ...stagedAttachments
+    ...visibleStaged
       .filter((attachment) => attachment.type === "image")
       .map((attachment) => ({
         id: attachment.id,
@@ -1814,7 +1830,7 @@ function ComposerBody({
         sizeBytes: "sizeBytes" in attachment ? Number(attachment.sizeBytes) : 0,
         onRemove: () => queuedEdit.removeEditingAttachment(attachment.id),
       })),
-    ...stagedAttachments
+    ...visibleStaged
       .filter((attachment) => attachment.type === "file")
       .map((attachment) => ({
         id: attachment.id,

@@ -4,7 +4,7 @@
 //
 // The 1-9 option shortcuts reach the card through handlePendingQuestionDigit, which the
 // composer calls for a digit that has no editor to go to (web's document keydown handler).
-// Not ported: the "Show details" popover for overflowing text.
+// A long question scrolls inside the card at web's ComposerBanner.Scroll height.
 import type { ThreadPendingUserInput } from "@t3tools/client-runtime/state/thread-requests";
 import type { RuntimeRequestId } from "@t3tools/contracts";
 import { memo, useEffect, useRef, useState } from "react";
