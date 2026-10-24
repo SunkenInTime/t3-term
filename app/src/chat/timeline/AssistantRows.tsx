@@ -66,7 +66,7 @@ function CitationSource({ messageId, text, children }: { messageId: string; text
       onMouseDown={() => closeCitationToolbar()}
       onMouseUp={(event) => {
         const position = { x: (event.x ?? 0) + 4, y: (event.y ?? 0) + 12 };
-        const pointerY = event.y ?? 0;
+        const pointer = { x: event.x ?? 0, y: event.y ?? 0 };
         // The selection settles with the release; read it after this event.
         setTimeout(() => {
           const selected = readSelectedText();
@@ -78,7 +78,7 @@ function CitationSource({ messageId, text, children }: { messageId: string; text
           // A quote that repeats in the reply resolves to the occurrence under the pointer.
           const rootId = rootRef.current?.id;
           const treeJson = rootId == null ? null : (renderer as { getAutomationTree?: () => string }).getAutomationTree?.();
-          const occurrence = treeJson && rootId != null ? (selectionOccurrence(treeJson, rootId, cleanMarkdownSelection(selected), pointerY) ?? 0) : 0;
+          const occurrence = treeJson && rootId != null ? (selectionOccurrence(treeJson, rootId, cleanMarkdownSelection(selected), pointer) ?? 0) : 0;
           const citation = citationFromSelection(ctx.threadRef, messageId, renderedPlainText(tree), selected, occurrence);
           if (citation) openCitationToolbar(citation, position);
         }, 30);

@@ -6,6 +6,8 @@
 // one visual line are joined (a match never crosses a line, like gpuix's
 // `highlight`) and matches are counted case-insensitively in reading order.
 
+import { textWidth } from "../markdown/measure.ts";
+
 interface TreeBounds {
   readonly x: number;
   readonly y: number;
@@ -27,6 +29,9 @@ interface Run {
 
 /** The U+2060 joiners the markdown renderer ends continuing runs with. */
 const WORD_JOINER = /\u2060/g;
+/** Assistant prose: 14px regular sans (markdown/styles.ts body). */
+const BODY_FACE = { family: "sans", weight: 400 } as const;
+const BODY_SIZE = 14;
 const JOINER = "\u2060";
 
 function findNode(node: TreeNode, id: number): TreeNode | null {
@@ -230,10 +235,16 @@ export function locateQuote(
 
 /**
  * Among the quote's occurrences in the row's rendered lines, the index of the
- * one under the pointer line where the selection ended (or began, for a drag
- * upwards). web reads the DOM selection range; gpuix gives only the text.
+ * one nearest the pointer where the selection ended (or began, for a drag
+ * upwards): its line by y, its place in the line by x. web reads the DOM
+ * selection range; gpuix gives only the text.
  */
-export function selectionOccurrence(treeJson: string, rowElementId: number, quote: string, pointerY: number): number | null {
+export function selectionOccurrence(
+  treeJson: string,
+  rowElementId: number,
+  quote: string,
+  pointer: { readonly x: number; readonly y: number },
+): number | null {
   let tree: TreeNode | null;
   try {
     tree = JSON.parse(treeJson) as TreeNode | null;
@@ -259,7 +270,7 @@ export function selectionOccurrence(treeJson: string, rowElementId: number, quot
   }
   lines.sort((a, b) => a.top - b.top);
   let text = "";
-  let pointerSpan: [number, number] | null = null;
+  let pointerIndex: number | null = null;
   for (const line of lines) {
     const lineText = line.runs
       .sort((a, b) => a.bounds.x - b.bounds.x)
@@ -270,15 +281,26 @@ export function selectionOccurrence(treeJson: string, rowElementId: number, quot
     if (text.length > 0) text += " ";
     const start = text.length;
     text += lineText;
-    if (pointerY >= line.top && pointerY <= line.bottom) pointerSpan = [start, text.length];
+    if (pointer.y >= line.top && pointer.y <= line.bottom && lineText.length > 0) {
+      // Character under the pointer. A run's box can be wider than its text, so
+      // the text is measured with the body font's advances from the line's left.
+      const left = Math.min(...line.runs.map((run) => run.bounds.x));
+      const target = pointer.x - left;
+      let index = 0;
+      while (index < lineText.length && textWidth(BODY_FACE, BODY_SIZE, lineText.slice(0, index + 1)) <= target) index += 1;
+      pointerIndex = start + index;
+    }
   }
   const needle = quote.replace(/\s+/g, " ").trim();
-  if (!pointerSpan || needle.length === 0) return null;
-  let occurrence = 0;
-  for (let from = 0; ; occurrence += 1) {
+  if (pointerIndex === null || needle.length === 0) return null;
+  let best: { occurrence: number; distance: number } | null = null;
+  for (let from = 0, occurrence = 0; ; occurrence += 1) {
     const index = text.indexOf(needle, from);
-    if (index < 0) return null;
-    if (index < pointerSpan[1] && index + needle.length > pointerSpan[0]) return occurrence;
+    if (index < 0) break;
+    const end = index + needle.length;
+    const distance = pointerIndex < index ? index - pointerIndex : pointerIndex > end ? pointerIndex - end : 0;
+    if (!best || distance < best.distance) best = { occurrence, distance };
     from = index + 1;
   }
+  return best?.occurrence ?? null;
 }
