@@ -6,6 +6,8 @@
 //   T3TERM_DEV_UPLOAD_DELAY_MS=40              waits this long before an upload's first byte
 //                                              and between its 256 KB chunks
 //   T3TERM_DEV_UPLOAD_FAIL=1                   fails every upload before its bytes go out
+//   T3TERM_DEV_SEND_HOLD=1                     holds every send just before its startTurn, for
+//                                              good: the pending state stays and no run starts
 export const DEV_ATTACH_PATHS: ReadonlyArray<string> = (process.env.T3TERM_DEV_ATTACH_PATHS ?? "")
   .split("|")
   .map((path) => path.trim())
@@ -13,6 +15,7 @@ export const DEV_ATTACH_PATHS: ReadonlyArray<string> = (process.env.T3TERM_DEV_A
 
 export const DEV_UPLOAD_DELAY_MS = Number(process.env.T3TERM_DEV_UPLOAD_DELAY_MS ?? 0) || 0;
 export const DEV_UPLOAD_FAIL = process.env.T3TERM_DEV_UPLOAD_FAIL === "1";
+export const DEV_SEND_HOLD = process.env.T3TERM_DEV_SEND_HOLD === "1";
 
 const DEV_ATTACH_PROJECT = process.env.T3TERM_DEV_ATTACH_PROJECT ?? "t3term-sandbox";
 const DEV_ATTACH_TARGET = process.env.T3TERM_DEV_ATTACH_TARGET ?? "";

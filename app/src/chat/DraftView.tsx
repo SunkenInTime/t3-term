@@ -17,7 +17,8 @@ import { ProjectGlyph } from "../sidebar/ProjectGlyph.tsx";
 import { Text } from "../ui/primitives.tsx";
 import { LAYOUT, useTheme } from "../ui/theme.ts";
 import { useSmallViewport } from "../ui/viewport.tsx";
-import { composerTargetKey } from "../state/composer.ts";
+import { composerTargetKey, draftPendingSendAtom } from "../state/composer.ts";
+import { DraftPendingSendTimeline } from "./DraftPendingSend.tsx";
 import { ChatLane, useDetailsCardInline } from "./chatLane.tsx";
 import { Composer } from "./composer/Composer.tsx";
 import { ChatBannerLane } from "./ChatBannerLane.tsx";
@@ -63,6 +64,8 @@ function DraftCanvas({
   const cardInline = useDetailsCardInline();
   const small = useSmallViewport();
   const projects = useAtomValue(environmentProjects.projectsAtom);
+  // The first send is on its way: web shows the thread it is becoming (title, message, working).
+  const pending = useAtomValue(draftPendingSendAtom(composerTargetKey(target)));
   const project =
     environmentId !== null && projectId !== null
       ? (projects.find((candidate) => candidate.environmentId === environmentId && candidate.id === projectId) ?? null)
@@ -87,7 +90,7 @@ function DraftCanvas({
               </>
             ) : null}
             <Text weight={500} truncate>
-              New thread
+              {pending?.title || "New thread"}
             </Text>
           </>
         }
@@ -99,6 +102,12 @@ function DraftCanvas({
             the canvas (`absolute inset-0 flex items-center`) and the headline hangs above it
             (`absolute inset-x-0 bottom-full pb-4`). Two equal flex spacers center the stack;
             the top one ends with the headline and lets it overflow upward. */}
+        {pending && environmentId !== null ? (
+          <>
+            <DraftPendingSendTimeline environmentId={environmentId} pending={pending} />
+            <Composer target={target} layout="overlay" />
+          </>
+        ) : (
         <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
           <div style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end", flexGrow: 1, flexShrink: 1, flexBasis: 0, minHeight: 0 }}>
             <ChatLane cardInline={cardInline}>
@@ -115,6 +124,7 @@ function DraftCanvas({
           </div>
           <div style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, minHeight: 0 }} />
         </div>
+        )}
         {environmentId !== null && projectId !== null ? (
           <ChatBannerLane composerTargetKey={composerTargetKey(target)} overlay />
         ) : null}

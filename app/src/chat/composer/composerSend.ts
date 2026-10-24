@@ -40,6 +40,7 @@ import {
   type ComposerAttachmentDraft,
   type DraftThreadEnvMode,
   addOptimisticMessage,
+  draftPendingSendAtom,
   clearComposerContent,
   deleteComposerDraft,
   readComposerDraft,
@@ -48,6 +49,7 @@ import {
   restoreComposerContent,
 } from "../../state/composer.ts";
 import { buildComposerMessageContext } from "../../web/lib/composerContextRecords.ts";
+import type { ChatMessage } from "../../web/types.ts";
 import { approvalRedirectNotice } from "../../web/components/chat/composerSend.logic.ts";
 import type { TerminalContextDraft } from "../../web/lib/terminalContext.ts";
 import type { ReviewCommentContext } from "../../web/reviewCommentContext.ts";
@@ -55,6 +57,7 @@ import { environmentSession, threadEnvironment } from "../../state/environment.t
 import { routeAtom } from "../../state/ui.ts";
 import { startNewThread } from "../../palette/actions.ts";
 import { toast } from "../../ui/toast.tsx";
+import { DEV_SEND_HOLD } from "./devComposerAttachments.ts";
 import {
   attachmentUploadStateAtom,
   environmentSupportsUploads,
@@ -239,10 +242,14 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
   const messageId = MessageId.make(newId());
   // web useComposerSend: the message shows in the thread at once, before uploads and the
   // server round trip; images preview from their local files until the server's copy lands.
+  // A new thread's id is chosen here, so its first message can show before the server has it:
+  // the draft docks into a thread-like view (web promotes the draft at once) and the thread's
+  // timeline keeps the message until the server's copy arrives.
+  const threadId = input.target.kind === "thread" ? input.target.threadId : ThreadId.make(newId());
+  const showsPendingDraft = input.target.kind === "draft" && !input.background;
   const optimisticThreadKey =
-    input.target.kind === "thread" ? scopedThreadKey(scopeThreadRef(input.environmentId, input.target.threadId)) : null;
-  if (optimisticThreadKey !== null) {
-    addOptimisticMessage(optimisticThreadKey, {
+    input.target.kind === "thread" || showsPendingDraft ? scopedThreadKey(scopeThreadRef(input.environmentId, threadId)) : null;
+  const optimisticMessage: ChatMessage = {
       id: messageId,
       role: "user",
       text: input.outgoingText,
@@ -268,6 +275,13 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
         : input.running && input.dispatchMode === "steer"
           ? { inputIntent: "steer" as const }
           : {}),
+  };
+  if (optimisticThreadKey !== null) addOptimisticMessage(optimisticThreadKey, optimisticMessage);
+  if (showsPendingDraft) {
+    appAtomRegistry.set(draftPendingSendAtom(input.draftKey), {
+      threadId,
+      message: optimisticMessage,
+      title: deriveThreadTitleSeed({ text: input.prompt, attachments: input.attachments }),
     });
   }
   let failure: string | null = null;
@@ -298,8 +312,6 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
     }
     const attachments = await prepareTurnAttachments(input.environmentId, input.attachments);
     const title = deriveThreadTitleSeed({ text: input.prompt, attachments: input.attachments });
-    const threadId =
-      input.target.kind === "thread" ? input.target.threadId : ThreadId.make(newId());
     const bootstrap =
       input.target.kind === "draft"
         ? {
@@ -325,6 +337,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
               : {}),
           }
         : undefined;
+    if (DEV_SEND_HOLD) await new Promise<never>(() => {});
     const result = await runAtomCommand(
       appAtomRegistry,
       threadEnvironment.startTurn,
@@ -380,6 +393,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
     return false;
   } finally {
     appAtomRegistry.set(sendingAtom, false);
+    if (showsPendingDraft) appAtomRegistry.set(draftPendingSendAtom(input.draftKey), null);
     if (failure !== null) {
       if (optimisticThreadKey !== null) removeOptimisticMessages(optimisticThreadKey, (message) => message.id === messageId);
       restoreComposerContent(input.draftKey, snapshot);

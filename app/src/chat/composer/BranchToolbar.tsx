@@ -33,6 +33,7 @@ import {
   composerDraftAtom,
   composerMenuOpenAtom,
   composerSettingsAtom,
+  draftPendingSendAtom,
   moveComposerDraftContent,
   setDraftWorkspace,
 } from "../../state/composer.ts";
@@ -100,6 +101,7 @@ export function BranchToolbar({ environmentId, projectId, draftKey, onComposerFo
   const projectThreads = useAtomValue(environmentThreadShells.threadShellsForProjectRefsAtom([projectRef]));
   const [menuOpen, setMenuOpen] = useAtom(composerMenuOpenAtom);
   const environments = useLogicalProjectEnvironments(project);
+  const pendingSend = useAtomValue(draftPendingSendAtom(draftKey));
   const environmentChangeRef = useRef<{ readonly environmentId: EnvironmentId; readonly scope: string } | null>(null);
   const mountedScopeRef = useRef(new Set<string>());
 
@@ -262,6 +264,8 @@ export function BranchToolbar({ environmentId, projectId, draftKey, onComposerFo
 
   if (!project || projectCwd === null) return null;
   if (!showGitControls && !showEnvironmentIndicator) return null;
+  // The first send is becoming a thread: web's thread composer has no context strip.
+  if (pendingSend !== null) return null;
 
   const runContextOpen = menuOpen === "env-mode" || menuOpen === "environment";
   const setRunContextOpen = (open: boolean) => {

@@ -654,6 +654,20 @@ export function removeOptimisticMessages(threadKey: string, remove: (message: Ch
   if (next.length !== current.length) appAtomRegistry.set(atom, next.length === 0 ? NO_OPTIMISTIC_MESSAGES : next);
 }
 
+/**
+ * A new-thread draft's first send while it is on its way (web promotes the draft at once):
+ * the draft shows the message and the thread-to-be's title until the thread opens.
+ */
+export interface DraftPendingSend {
+  readonly threadId: ThreadId;
+  readonly message: ChatMessage;
+  readonly title: string;
+}
+
+export const draftPendingSendAtom = Atom.family((_draftKey: string) =>
+  Atom.make<DraftPendingSend | null>(null).pipe(Atom.keepAlive),
+);
+
 // ── Settings the composer reads ─────────────────────────────────────────
 
 /**

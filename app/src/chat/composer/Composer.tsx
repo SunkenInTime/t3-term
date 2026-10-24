@@ -208,6 +208,7 @@ import {
   environmentSupportsUploads,
   releaseAttachmentUpload,
   retryAttachmentUpload,
+  stagedUploadBlockReasonAtom,
   startAttachmentUpload,
 } from "./attachmentUploads.ts";
 import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
@@ -1217,6 +1218,7 @@ function ComposerBody({
       return;
     }
     if (sending || noProviderAvailable || sendDisabledReason !== null || environmentUnavailable) return;
+    if (uploadsEnabled && !queuedEdit.isEditing && appAtomRegistry.get(stagedUploadBlockReasonAtom(promptKey)) !== null) return;
     if ((pendingImagePreparations.get(draftKey) ?? 0) > 0) {
       toast({ type: "info", title: "Still compressing a pasted image.", description: "Send again once its thumbnail appears." });
       return;
@@ -2417,7 +2419,8 @@ function ComposerBody({
   const footerGap = isComposerFooterCompact ? 6 : windowWidth >= SM_BREAKPOINT ? 0 : 8;
 
   const primaryActions = (
-    <ComposerPrimaryActions
+    <UploadGatedPrimaryActions
+      uploadKey={uploadsEnabled && !queuedEdit.isEditing ? promptKey : null}
       compact={isResting || isComposerPrimaryActionsCompact}
       canOperateThread={true}
       pendingAction={pendingAction}
@@ -2864,6 +2867,19 @@ function OptimisticMessageWatcher({
   }, [items, threadKey]);
   return null;
 }
+
+/**
+ * web attachmentUploadBlockReason on the send button: subscribed here rather than in the
+ * composer body, so upload progress re-renders only the primary actions.
+ */
+function UploadGatedPrimaryActions({
+  uploadKey,
+  ...props
+}: Parameters<typeof ComposerPrimaryActions>[0] & { uploadKey: string | null }) {
+  const blockReason = useAtomValue(uploadKey === null ? NO_UPLOAD_BLOCK_ATOM : stagedUploadBlockReasonAtom(uploadKey));
+  return <ComposerPrimaryActions {...props} sendDisabledReason={props.sendDisabledReason ?? blockReason} />;
+}
+const NO_UPLOAD_BLOCK_ATOM = Atom.make<string | null>(null);
 
 /**
  * web ComposerSurface.ContextStrip: a strip under the composer, inset 22px a side, whose top

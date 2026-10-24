@@ -26,7 +26,7 @@ import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
-import { type ComposerAttachmentDraft, composerAttachmentEnvironment } from "../../state/composer.ts";
+import { type ComposerAttachmentDraft, composerAttachmentEnvironment, composerDraftAtom } from "../../state/composer.ts";
 import { environmentServerConfigsAtom, environmentSession } from "../../state/environment.ts";
 import { DEV_UPLOAD_DELAY_MS, DEV_UPLOAD_FAIL } from "./devComposerAttachments.ts";
 
@@ -38,6 +38,24 @@ export type AttachmentUploadState =
 /** Upload state by staged attachment id (the draft's local id). */
 export const attachmentUploadStateAtom = Atom.family((_attachmentId: string) =>
   Atom.make<AttachmentUploadState | null>(null).pipe(Atom.keepAlive),
+);
+
+/**
+ * web attachmentUploadBlockReason: the send waits for staged uploads. A failed one does not
+ * block (the send retries it). The same text for every keystroke, so subscribers only
+ * re-render when an upload starts or settles.
+ */
+export const stagedUploadBlockReasonAtom = Atom.family((draftKey: string) =>
+  Atom.make((get): string | null => {
+    let pending = 0;
+    for (const attachment of get(composerDraftAtom(draftKey)).attachments) {
+      const upload = get(attachmentUploadStateAtom(attachment.id));
+      if (upload?.status === "failed") continue;
+      if (upload?.status !== "ready") pending += 1;
+    }
+    if (pending === 0) return null;
+    return pending === 1 ? "Attachment still uploading" : "Attachments still uploading";
+  }),
 );
 
 interface InFlight {
