@@ -22,7 +22,8 @@ import { shouldCollapseUserMessage } from "../../web/components/chat/MessagesTim
 import { asKnownContextRecord, resolveUserMessageContext } from "../../web/lib/userMessageContext.ts";
 import { selectMessageImageResources } from "../../web/session-logic.ts";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../web/timestampFormat.ts";
-import { isFileAttachment, isImageAttachment, isVideoAttachment, type ChatAttachment, type ChatFileAttachment } from "../../web/types.ts";
+import { isFileAttachment, isImageAttachment, isVideoAttachment, videoMimeType, type ChatAttachment, type ChatFileAttachment } from "../../web/types.ts";
+import { VideoFrame } from "../media/VideoFallback.tsx";
 import { rightPanelActions, threadKeyOf } from "../../state/rightPanel.ts";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
 import type { ChipPayload } from "../markdown/MarkdownChips.tsx";
@@ -81,6 +82,23 @@ function useAttachmentUrls(environmentId: EnvironmentId, resources: ReadonlyArra
     const result = results[index];
     if (!result || result._tag !== "Success" || httpBaseUrl === null) return null;
     return resolveAssetUrl(httpBaseUrl, result.value.relativeUrl);
+  });
+}
+
+/**
+ * Signed URLs for video attachments, in order (null when not downloadable or not ready). The
+ * resource is web's buildAttachmentVideoAsset: the video MIME type makes the server serve it
+ * inline, so the URL plays in a browser.
+ */
+function useVideoAttachmentUrls(environmentId: EnvironmentId, videos: ReadonlyArray<ChatFileAttachment>): ReadonlyArray<string | null> {
+  const playable = videos.filter((video) => video.downloadable !== false);
+  const urls = useAttachmentUrls(
+    environmentId,
+    playable.map((video) => ({ _tag: "attachment" as const, attachmentId: video.id, fileName: video.name, mimeType: videoMimeType(video) ?? video.mimeType })),
+  );
+  return videos.map((video) => {
+    const index = playable.indexOf(video);
+    return index < 0 ? (video.previewUrl ?? null) : (urls[index] ?? video.previewUrl ?? null);
   });
 }
 
@@ -257,6 +275,9 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
   const plainText = replaceComposerContextReferences(resolvedContext.text, (reference) => reference.label);
   // UserMessageContextChips: each `t3-context:` reference renders as its chip.
   const imageUrls = useAttachmentUrlMap(ctx.activeThreadEnvironmentId, row.message.id, images);
+  const videos = files.filter(isVideoAttachment);
+  const videoUrlList = useVideoAttachmentUrls(ctx.activeThreadEnvironmentId, videos);
+  const videoUrlsKey = videoUrlList.join("\u0000");
   const contextChip = useMemo(
     () => (reference: { kind: string; contextId: string; label: string }) =>
       userMessageContextChip(reference, {
@@ -277,10 +298,11 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
           const url = image ? imageUrls.get(image.id) : undefined;
           return image && url ? { url, name: image.name } : null;
         },
+        videoUrl: (attachmentId) => videoUrlList[videos.findIndex((video) => video.id === attachmentId)] ?? null,
       }),
     // recordsById is rebuilt per render from the message; its identity follows the message.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [row.message, ctx.threadRef, ctx.workspaceRoot, imageUrls],
+    [row.message, ctx.threadRef, ctx.workspaceRoot, imageUrls, videoUrlsKey],
   );
   // Files a chip already shows are not listed again (web's chippedAttachmentIds).
   const chippedAttachmentIds = new Set(
@@ -290,7 +312,6 @@ const UserTimelineRow = memo(function UserTimelineRow({ row }: { row: MessageRow
     }),
   );
   const hasContextPopups = resolvedContext.records.some((record) => POPUP_CONTEXT_KINDS.has(record.kind));
-  const videos = files.filter(isVideoAttachment);
   const unchippedFiles = files.filter((file) => !isVideoAttachment(file) && !chippedAttachmentIds.has(file.id));
   const foldSummary = plainText.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? "";
   const promptLink = promptLinkFor(plainText);
@@ -372,6 +393,7 @@ function UserImageGrid({ images, videos }: { images: ReadonlyArray<ChatAttachmen
   const resources = selectMessageImageResources(images as never);
   const urls = useAttachmentUrls(ctx.activeThreadEnvironmentId, resources);
   const urlById = new Map(resources.map((resource, index) => [resource._tag === "attachment" ? resource.attachmentId : "", urls[index] ?? null]));
+  const videoUrls = useVideoAttachmentUrls(ctx.activeThreadEnvironmentId, videos);
   const cellWidth = 101;
   return (
     <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 8, maxWidth: 210, marginBottom: 8 }}>
@@ -420,24 +442,19 @@ function UserImageGrid({ images, videos }: { images: ReadonlyArray<ChatAttachmen
           </div>
         );
       })}
-      {videos.map((video) => (
-        // MediaVideoPlayer's resting state: a black 4:3 tile with a play glyph.
-        <div
+      {videos.map((video, index) => (
+        // UserVideoAttachment: the first frame in a 4:3 tile with a play button. gpuix cannot play
+        // video, so the button plays it in the system browser (VideoFallback.tsx).
+        <VideoFrame
           key={video.id}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: cellWidth,
-            height: Math.round((cellWidth * 3) / 4),
-            borderRadius: RADIUS.lg,
-            borderWidth: 1,
-            borderColor: alpha(theme.border, 0.8),
-            backgroundColor: "#000000",
-          }}
-        >
-          <Icon name="play" size={16} color="#ffffff" />
-        </div>
+          testId={`user-video-${video.name}`}
+          url={videoUrls[index] ?? null}
+          posterKey={video.id}
+          label={video.name}
+          showName={video.downloadable === false && video.previewUrl === undefined}
+          width={cellWidth}
+          height={Math.round((cellWidth * 3) / 4)}
+        />
       ))}
     </div>
   );

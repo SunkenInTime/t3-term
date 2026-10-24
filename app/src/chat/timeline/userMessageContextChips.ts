@@ -15,6 +15,7 @@ import type { ChipPayload } from "../markdown/MarkdownChips.tsx";
 import { openExpandedImage } from "../markdown/MarkdownMedia.tsx";
 import { asKnownContextRecord } from "../../web/lib/userMessageContext.ts";
 import { contextDetails, type AnnotationImage } from "./UserMessageContextDetails.tsx";
+import { openExternalUrl } from "./system.ts";
 
 type PreviewAnnotationRecord = Extract<NonNullable<ReturnType<typeof asKnownContextRecord>>, { kind: "preview-annotation" }>;
 
@@ -42,6 +43,8 @@ export interface ContextChipEnvironment {
   readonly files: ReadonlyMap<string, Parameters<typeof rightPanelActions.openAttachment>[1]>;
   /** The screenshot sent with a preview annotation (web resolvePreviewAnnotationImage). */
   readonly annotationImage?: ((record: PreviewAnnotationRecord) => AnnotationImage | null) | undefined;
+  /** A video attachment's playable URL; its chip plays it in the system browser (gpuix has no video element). */
+  readonly videoUrl?: ((attachmentId: string) => string | null) | undefined;
 }
 
 function unavailable(label: string): ChipPayload {
@@ -105,6 +108,8 @@ export function userMessageContextChip(
     case "file": {
       const video = record.mimeType.startsWith("video/");
       const file = context.files.get(record.attachmentId);
+      // Web expands a video chip into its player; here it plays in the system browser.
+      const videoUrl = video ? (context.videoUrl?.(record.attachmentId) ?? null) : null;
       return {
         type: "chip",
         kind: video ? "video" : "file",
@@ -114,7 +119,9 @@ export function userMessageContextChip(
         tooltip: `${record.name}\n${formatAttachmentSize(record.sizeBytes)}`,
         ...(file && !video
           ? { onActivate: () => rightPanelActions.openAttachment(threadKeyOf(context.environmentId, context.threadId), file) }
-          : {}),
+          : videoUrl
+            ? { onActivate: () => openExternalUrl(videoUrl), tooltip: `${record.name}\n${formatAttachmentSize(record.sizeBytes)}\nPlays in your browser` }
+            : {}),
       };
     }
     case "terminal":

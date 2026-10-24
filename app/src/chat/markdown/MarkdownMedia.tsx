@@ -10,6 +10,7 @@
 // web's aspect-video placeholder frame.
 import { useAtomValue } from "@effect/atom-react";
 import { classifyMarkdownImageSource } from "@t3tools/client-runtime/markdown-images";
+import { mediaKindFromPath } from "@t3tools/shared/filePreview";
 import {
   EMPTY_ASSET_URL_ATOM,
   MISSING_FILE_ACCESS_MESSAGE,
@@ -36,6 +37,7 @@ import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { toast } from "../../ui/toast.tsx";
 import { viewportHeightAtom, viewportWidthAtom } from "../../ui/viewport.tsx";
 import { copyTextToClipboard, openExternalUrl } from "../timeline/system.ts";
+import { VideoFrame } from "../media/VideoFallback.tsx";
 import { withAlpha } from "./colors.ts";
 import { bumpAsyncLayout } from "./diagrams.ts";
 import type { BoxAtom, RunStyle } from "./inline.ts";
@@ -256,17 +258,70 @@ export function collectImages(env: RenderEnv): ExpandedImageItem[] {
   return env.media.gallery;
 }
 
-export const MarkdownImage = memo(function MarkdownImage({
-  node,
-  width,
-  env,
-  marginTop,
-}: {
+interface MarkdownMediaProps {
   node: Element;
   width: number;
   env: RenderEnv;
   marginTop?: number;
-}) {
+}
+
+/** A standalone markdown image, or a video when the source has a video extension (web mediaKindFromPath). */
+export const MarkdownImage = memo(function MarkdownImage(props: MarkdownMediaProps) {
+  return isVideoSource(String(props.node.properties.src ?? "")) ? <MarkdownVideo {...props} /> : <MarkdownPicture {...props} />;
+});
+MARGIN_AWARE.add(MarkdownImage);
+
+function isVideoSource(src: string): boolean {
+  return mediaKindFromPath(src.replaceAll("\\", "/")) === "video";
+}
+
+/**
+ * web ChatMarkdownVideo: a MediaVideoPlayer at w-full, max-w min(100%, 30rem),
+ * aspect-video, rounded-lg border-border/40. gpuix cannot play video, so it is
+ * the first frame with a play button that plays it in the system browser
+ * (chat/media/VideoFallback.tsx).
+ */
+function MarkdownVideo({ node, width, env, marginTop }: MarkdownMediaProps) {
+  const palette = useTheme();
+  const src = String(node.properties.src ?? "");
+  const alt = String(node.properties.alt ?? "");
+  const { url, workspace, failed } = useImageUrl(src, env);
+  const frameWidth = Math.max(1, Math.min(width, MEDIA_MAX));
+  const frameHeight = (frameWidth * 9) / 16;
+  if (failed || (!url && !workspace)) {
+    // MediaVideoPlayer's failed state: an aspect-video box saying the video is unavailable.
+    return (
+      <div style={{ display: "flex", flexDirection: "row", marginTop }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
+            width: frameWidth,
+            height: Math.max(112, frameHeight),
+            borderRadius: RADIUS.lg,
+            borderWidth: 1,
+            borderColor: withAlpha(palette.border, 0.4),
+            backgroundColor: withAlpha(palette.muted, 0.4),
+          }}
+        >
+          <Icon name="triangle-alert" size={14} color={palette.mutedForeground} />
+          <text style={{ fontFamily: FONTS.sans, fontSize: 14, lineHeight: 20, color: palette.mutedForeground }}>
+            {`Video unavailable${alt ? ` · ${alt}` : ""}`}
+          </text>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "row", marginTop }}>
+      <VideoFrame url={url} posterKey={src} label={alt} width={frameWidth} height={frameHeight} borderColor={withAlpha(palette.border, 0.4)} />
+    </div>
+  );
+}
+
+const MarkdownPicture = memo(function MarkdownPicture({ node, width, env, marginTop }: MarkdownMediaProps) {
   const palette = useTheme();
   const src = String(node.properties.src ?? "");
   const alt = String(node.properties.alt ?? "");
@@ -304,7 +359,8 @@ export const MarkdownImage = memo(function MarkdownImage({
     <div style={{ display: "flex", flexDirection: "row", marginTop }}>
       <div
         onClick={() => {
-          const gallery = env.media.gallery;
+          // The message's media list also holds its videos; the image viewer steps through pictures.
+          const gallery = env.media.gallery.filter((item) => !isVideoSource(item.src));
           const index = Math.max(0, gallery.findIndex((item) => item.src === url));
           openExpandedImage({ images: gallery.length > 0 ? gallery : [{ src: url, name: alt.trim() || "image", width: info.width, height: info.height }], index });
         }}
@@ -318,7 +374,6 @@ export const MarkdownImage = memo(function MarkdownImage({
     </div>
   );
 });
-MARGIN_AWARE.add(MarkdownImage);
 
 // ── Asset images (ChatMarkdownAssetImage) ───────────────────────────────
 
