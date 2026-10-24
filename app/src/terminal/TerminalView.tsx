@@ -647,7 +647,7 @@ function TerminalSessionView({
     // handleBeforeKey and chat shortcuts: terminal.* acts on this terminal, and
     // any other command that applies with terminal focus goes to the window
     // dispatcher instead of the shell. Removing or remapping a binding changes both.
-    const command = resolveKeyEventCommand(event, { terminalFocus: true });
+    const command = resolveKeyEventCommand(event, { terminalFocus: true, composerFocus: false });
     const terminalCommand = command === null ? undefined : TERMINAL_SHORTCUT_COMMANDS[command];
     if (terminalCommand !== undefined) {
       consume();
