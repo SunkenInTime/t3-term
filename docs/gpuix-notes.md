@@ -90,3 +90,12 @@ Bundled highlight languages: Rust, TS, TSX, JS, JSX, Python, Go, JSON, Bash, TOM
 - `<textarea>` defaults to `maxRows` 10 and then scrolls inside; give it `height` (or a large `maxRows`) when it must show all its lines.
 - A textarea that takes focus (`autoFocus`, or `renderer.focusElement`) in the frame its `<virtual-list>` row first appears scrolls that row to the top. Mount it unfocused and remount it with `autoFocus` a frame later (`panels/diff/DiffCommentAnnotation.tsx`).
 - A transparent-text textarea (`color: "#00000000"`) still draws its caret and selection: that is how `panels/files/FileEditor.tsx` edits over highlighted rows.
+
+## Findings from chat markdown (gpuix 0.11.0, Windows)
+
+- **No inline formatting context.** Each `<text>` is one box with one style; a run that wraps takes the full width, so mixed-style prose cannot flow as one paragraph of host elements. `chat/markdown/` lays inline content out in JavaScript (`inline.ts`) and paints each line as a row of nowrap runs.
+- **Text elements are the expensive ones**: ~25-35 µs per `<text>` per frame here, ~5 µs per `<div>`. A bare string child of a div is one element (a `<text>` is two: host + string) and inherits the div's font, color, line height and `whiteSpace`; prefer bare strings for runs in the parent's style.
+- **Widths for JS layout come from GPUI**: a hidden nowrap `<text>` of one character repeated 20× reports its width through `onLayout` (integer px). Summed per-character advances matched GPUI's shaped width of 500 px lines within ~1 px (no kerning visible with Segoe UI / Consolas). `chat/markdown/measure.ts` caches advances in `$T3TERM_HOME/text-metrics.json`.
+- **Copy joins runs with newlines**: `getSelectedText()` puts `\n` between runs unless they are adjacent bare strings of one parent. The markdown renderer ends continuing runs with U+2060 (zero width, not painted) and `chat/markdown/copy.ts` handles Ctrl/Cmd+C to drop the marker and its newline.
+- **`<img>` renders SVG text** from data URLs (usvg with system fonts), so full-colour SVG (Mermaid via pele, MathJax output) works through `<img src="data:image/svg+xml;base64,...">`. usvg has no CSS custom properties: inline `var(--x)` before handing the SVG over. `<img>` has no load/error events: fetch and validate bytes first if a fallback is needed.
+- **Auto-width chains multiply layout**: a content-sized bubble around markdown laid the subtree out once per auto-width ancestor (8× in the user bubble). Give the wrappers the content's width once it is known.
