@@ -663,7 +663,7 @@ function ToastDescription({ entry }: { entry: ToastEntry }) {
 // ── Dev-only sample toasts ──────────────────────────────────────────────
 // Inert unless T3TERM_DEV_TOASTS is set, for screenshots against web:
 //   stack            four toasts that stay until dismissed (the oldest is held back by the limit)
-//   timed            one 3 s toast (shows the timer pausing while unfocused or hovered)
+//   timed            one 5 s toast (shows the timer pausing while unfocused or hovered)
 //   scoped:<thread>  one toast scoped to that thread id that expires after 3 s seen
 // Several can be combined with commas.
 const devToasts = process.env.T3TERM_DEV_TOASTS?.trim();
@@ -676,7 +676,7 @@ if (devToasts) {
         toast({ type: "error", title: "Action failed", description: "git push was rejected: the remote has new commits.", duration: 0 });
         toast({ type: "info", title: "Pull request opened", description: "#42 Fix toast stacking", duration: 0, actionLayout: "inline", action: { label: "View", onClick: () => {} } });
       } else if (part === "timed") {
-        toast({ type: "info", title: "Three second toast", description: "Pauses while t3-term is unfocused or the stack is hovered.", duration: 3000 });
+        toast({ type: "info", title: "Five second toast", description: "Pauses while t3-term is unfocused or the stack is hovered.", duration: 5000 });
       } else if (part.startsWith("scoped:")) {
         toast({
           type: "success",

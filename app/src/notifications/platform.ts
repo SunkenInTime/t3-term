@@ -7,7 +7,10 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { isTerminal } from "@gpuix/react";
+import type { Subprocess } from "bun";
 
+import { isAppFocused, noteInput } from "./focus.ts";
+import { showWindowsToast } from "./windowsToast.ts";
 import completionSound from "./assets/notification-completion.mp3" with { type: "file" };
 import inputSound from "./assets/notification-input.mp3" with { type: "file" };
 
@@ -40,19 +43,41 @@ function terminalKind(): "kitty" | "ghostty" | "other" {
 
 let nextKittyId = 1;
 
-function terminalNotification(title: string, body: string): boolean {
+/** A raised notification t3-term can take back (web Notification.close()). */
+export interface DesktopNotificationHandle {
+  close(): void;
+}
+
+export interface DesktopNotificationOptions {
+  /** web Notification `tag`: one notification per thread. */
+  readonly tag: string;
+  /** The user clicked it (web notification "click"). */
+  readonly onActivate: () => void;
+  /** It is gone for good: clicked, closed by the user, expired, or the notifier failed. */
+  readonly onGone: () => void;
+}
+
+const UNTRACKED: DesktopNotificationHandle = { close() {} };
+
+function terminalNotification(title: string, body: string): DesktopNotificationHandle | null {
   switch (terminalKind()) {
     case "kitty": {
       // https://sw.kovidgoyal.net/kitty/desktop-notifications/: title then body, d=0 until the last part.
       // BEL-terminated: kitty 0.32 drops a two-part notification whose parts end in ESC \.
+      // Clicking it focuses the kitty window (kitty's default a=focus). Telling t3-term which
+      // thread to open would need `a=report`, but kitty answers on stdin with an OSC 99 reply
+      // and gpuix 0.11.0 consumes every OSC reply without handing it to JS
+      // (packages/gpui-terminal/src/tty.rs:604-619), so the click cannot navigate.
       const id = nextKittyId++;
-      return writeTty(`\x1b]99;i=${id}:d=0:p=title;${sanitize(title)}\x07\x1b]99;i=${id}:d=1:p=body;${sanitize(body)}\x07`);
+      if (!writeTty(`\x1b]99;i=${id}:d=0:p=title;${sanitize(title)}\x07\x1b]99;i=${id}:d=1:p=body;${sanitize(body)}\x07`)) return null;
+      // kitty 0.36+ closes it on request; older kitty ignores the unknown payload type.
+      return { close: () => void writeTty(`\x1b]99;i=${id}:p=close;\x07`) };
     }
     case "ghostty":
-      return writeTty(`\x1b]777;notify;${sanitize(title)};${sanitize(body)}\x07`);
+      return writeTty(`\x1b]777;notify;${sanitize(title)};${sanitize(body)}\x07`) ? UNTRACKED : null;
     default:
       // OSC 9 is the widest-supported fallback (iTerm2, WezTerm, Windows Terminal, Ghostty).
-      return writeTty(`\x1b]9;${sanitize(`${title}: ${body}`)}\x07`);
+      return writeTty(`\x1b]9;${sanitize(`${title}: ${body}`)}\x07`) ? UNTRACKED : null;
   }
 }
 
@@ -69,42 +94,92 @@ function powershellString(text: string): string {
   return `'${text.replaceAll("'", "''")}'`;
 }
 
-function nativeNotification(title: string, body: string): void {
+let notifySendWaits: boolean | null = null;
+
+/** libnotify 0.7.9 added --wait and --action; an older notify-send rejects them and shows nothing. */
+function notifySendSupportsActions(): boolean {
+  if (notifySendWaits !== null) return notifySendWaits;
+  notifySendWaits = false;
+  try {
+    const help = Bun.spawnSync(["notify-send", "--help"], { stdout: "pipe", stderr: "pipe" });
+    const text = `${help.stdout?.toString() ?? ""}${help.stderr?.toString() ?? ""}`;
+    notifySendWaits = text.includes("--action") && text.includes("--wait");
+  } catch {
+    // No notify-send at all.
+  }
+  return notifySendWaits;
+}
+
+/**
+ * notify-send --wait stays alive until the notification closes and prints the
+ * key of the action the user picked; "default" is a click on the body.
+ * SIGINT makes it close the notification before it exits.
+ */
+function linuxNotification(title: string, body: string, options: DesktopNotificationOptions): DesktopNotificationHandle | null {
+  if (Bun.which("notify-send") === null) return null;
+  if (!notifySendSupportsActions()) {
+    spawnQuiet(["notify-send", "--app-name=T3 Code", title, body]);
+    return UNTRACKED;
+  }
+  let child: Subprocess<"ignore", "pipe", "ignore">;
+  try {
+    child = Bun.spawn(["notify-send", "--app-name=T3 Code", "--wait", "--action=default=Open", title, body], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+  } catch {
+    return null;
+  }
+  let closed = false;
+  void (async () => {
+    const output = await new Response(child.stdout).text().catch(() => "");
+    await child.exited.catch(() => undefined);
+    if (!closed && output.split(/\r?\n/).some((line) => line.trim() === "default")) options.onActivate();
+    closed = true;
+    options.onGone();
+  })();
+  return {
+    close() {
+      if (closed) return;
+      closed = true;
+      try {
+        child.kill("SIGINT");
+      } catch {
+        // Already gone.
+      }
+    },
+  };
+}
+
+function nativeNotification(title: string, body: string, options: DesktopNotificationOptions): DesktopNotificationHandle | null {
   switch (process.platform) {
     case "darwin":
+      // osascript's `display notification` has no click callback and no handle to close it.
       spawnQuiet([
         "osascript",
         "-e",
         `display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)}`,
       ]);
-      return;
+      return UNTRACKED;
     case "win32":
-      // A toast through the WinRT API, attributed to PowerShell's registered AppID.
-      spawnQuiet([
-        "powershell.exe",
-        "-NoProfile",
-        "-WindowStyle",
-        "Hidden",
-        "-Command",
-        [
-          "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null",
-          "$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)",
-          `$xml.GetElementsByTagName('text').Item(0).AppendChild($xml.CreateTextNode(${powershellString(title)})) | Out-Null`,
-          `$xml.GetElementsByTagName('text').Item(1).AppendChild($xml.CreateTextNode(${powershellString(body)})) | Out-Null`,
-          "$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'",
-          "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($xml))",
-        ].join("; "),
-      ]);
-      return;
+      return showWindowsToast({ title, body, tag: options.tag, onActivate: options.onActivate, onGone: options.onGone });
     default:
-      spawnQuiet(["notify-send", "--app-name=T3 Code", title, body]);
+      return linuxNotification(title, body, options);
   }
 }
 
-/** Raises a desktop notification. Returns false when nothing could show it. */
-export function showDesktopNotification(title: string, body: string): void {
-  if (isTerminal() && terminalNotification(title, body)) return;
-  nativeNotification(title, body);
+/**
+ * Raises a desktop notification for a thread. The handle closes it again where
+ * the platform allows (Windows, kitty, Linux with a current notify-send);
+ * elsewhere close() does nothing. Null when nothing could show it.
+ */
+export function showDesktopNotification(title: string, body: string, options: DesktopNotificationOptions): DesktopNotificationHandle | null {
+  if (isTerminal()) {
+    const handle = terminalNotification(title, body);
+    if (handle) return handle;
+  }
+  return nativeNotification(title, body, options);
 }
 
 /** Bun embeds the sounds in a compiled binary; players need a real file path. */
@@ -155,16 +230,12 @@ export function playNotificationSound(kind: "completion" | "input"): void {
   }
 }
 
-let lastInputAt = Date.now();
-
-/** Any key or pointer movement in t3-term. gpuix exposes no window-focus state, so recent input stands in for it. */
+/** Any key or pointer event in t3-term (the input fallback of notifications/focus.ts). */
 export function noteUserInput(): void {
-  lastInputAt = Date.now();
+  noteInput();
 }
 
-const PRESENCE_WINDOW_MS = 10_000;
-
-/** Whether the user is likely looking at t3-term right now. */
+/** Whether the user is looking at t3-term right now (web: visible and focused). */
 export function userIsPresent(): boolean {
-  return Date.now() - lastInputAt < PRESENCE_WINDOW_MS;
+  return isAppFocused();
 }
