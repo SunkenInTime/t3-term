@@ -114,7 +114,12 @@ interface RememberedDisclosures {
    * web rememberTimelinePosition: the row under the viewport top and how far
    * into it the reader had scrolled, or null while they follow the end.
    */
-  position: { readonly rowKey: string; readonly offset: number } | null;
+  position: {
+    readonly rowKey: string;
+    readonly offset: number;
+    /** The list's own scroll offset, for when the row is gone (web's scrollOffset fallback). */
+    readonly scroll: readonly [number, number] | null;
+  } | null;
 }
 const rememberedDisclosures = new Map<string, RememberedDisclosures>();
 
@@ -929,7 +934,11 @@ const TimelineList = memo(function TimelineList({
     const keys = [...listKeysRef.current, "timeline-footer"];
     if (pendingRestore.current === null) {
       const rowKey = keys[anchor];
-      remembered.position = nextAtEnd || rowKey === undefined || rowKey === "timeline-footer" ? null : { rowKey, offset };
+      const scroll = renderer.getScrollOffset?.(id) ?? null;
+      remembered.position =
+        nextAtEnd || rowKey === undefined || rowKey === "timeline-footer"
+          ? null
+          : { rowKey, offset, scroll: scroll ? [scroll[0] ?? 0, scroll[1] ?? 0] : null };
     }
     const heightAt = (index: number) =>
       keys[index] === "timeline-footer" ? footerHeight + topFill : (rowHeights.current.get(keys[index]!) ?? 90);
@@ -960,20 +969,55 @@ const TimelineList = memo(function TimelineList({
 
   // gpuix reports no visible range for the first paint, so the saved anchor is
   // applied once rows report their layout: the list exists by then.
+  // web reconciles the saved row for two settled layout frames; here the
+  // jump is re-applied until gpui reports the saved anchor twice in a row.
+  // A wheel or press on the list hands the position back to the reader.
+  const restoring = useRef<{ index: number; offset: number; stable: number; tries: number } | null>(null);
   const applyPendingRestore = () => {
     const restore = pendingRestore.current;
     const id = listRef.current?.id;
     if (restore === null || id == null) return;
     pendingRestore.current = null;
     const index = listKeysRef.current.indexOf(restore.rowKey);
-    // A row that is gone (rewound, paged out) leaves the thread at its end, like web.
     if (index < 0) {
-      remembered.position = null;
-      setAtEnd(true);
+      // A row that is gone (rewound, paged out) falls back to the saved scroll offset, like web.
+      if (restore.scroll === null) {
+        remembered.position = null;
+        setAtEnd(true);
+        return;
+      }
+      renderer.scrollTo?.(id, restore.scroll[0], restore.scroll[1]);
+      setAtEnd(false);
+      setTimeout(checkAtEnd, 50);
       return;
     }
+    restoring.current = { index, offset: restore.offset, stable: 0, tries: 0 };
     renderer.scrollToItem?.(id, index, restore.offset);
     setTimeout(checkAtEnd, 50);
+    for (const ms of [60, 160, 320, 640]) setTimeout(reconcileRestore, ms);
+  };
+  const reconcileRestore = () => {
+    const target = restoring.current;
+    const id = listRef.current?.id;
+    if (!target || id == null) return;
+    const top = renderer.getListScrollTop?.(id);
+    if (!top) return;
+    const [anchor = -1, offset = 0] = top;
+    if (anchor === target.index && Math.abs(offset - target.offset) <= 1) {
+      target.stable += 1;
+      if (target.stable >= 2) restoring.current = null;
+      return;
+    }
+    target.stable = 0;
+    target.tries += 1;
+    if (target.tries > 8) {
+      restoring.current = null;
+      return;
+    }
+    renderer.scrollToItem?.(id, target.index, target.offset);
+  };
+  const cancelRestore = () => {
+    restoring.current = null;
   };
 
   const measureScheduled = useRef(false);
@@ -985,6 +1029,7 @@ const TimelineList = memo(function TimelineList({
     queueMicrotask(() => {
       measureScheduled.current = false;
       applyPendingRestore();
+      reconcileRestore();
       refreshTopFill();
       checkAtEnd();
     });
@@ -1193,7 +1238,11 @@ const TimelineList = memo(function TimelineList({
       testId="timeline-list"
       style={{ display: "flex", flexDirection: "column", width: "100%", flexGrow: 1, minHeight: 0, position: "relative" }}
       // The list itself takes no onScroll; wheel deltas reach this wrapper.
-      onScroll={() => queueMicrotask(checkAtEnd)}
+      onScroll={() => {
+        cancelRestore();
+        queueMicrotask(checkAtEnd);
+      }}
+      onMouseDown={cancelRestore}
       onLayout={(event) => {
         const next = { width: Math.round(event.width ?? 0), height: Math.round(event.height ?? 0) };
         listBounds.current = { y: event.y ?? 0, height: event.height ?? 0 };
