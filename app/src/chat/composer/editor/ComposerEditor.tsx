@@ -19,7 +19,7 @@ import type { ServerProviderSkill } from "@t3tools/contracts";
 import { isProviderSkillUserInvocable } from "@t3tools/client-runtime/providerSkills";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
 import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
-import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from "react";
+import { forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 
 import { copyToClipboard } from "../../../lib/clipboard.ts";
 import { useTextMetricsEpoch } from "../../markdown/measure.ts";
@@ -524,7 +524,6 @@ export const ComposerEditor = memo(
       if (!p.readOnly && key === "enter" && !primary && !(IS_MAC ? mods.ctrl : mods.cmd)) {
         if (inCode) {
           handled();
-          if (event.isHeld && false) return;
           const result =
             exitCodeBlockOnClosingFence(doc, selection) ?? exitCodeBlockOnTrailingBlankLines(doc, selection) ?? newlineInCodeBlock(doc, selection);
           apply(result, "other");
@@ -1199,10 +1198,7 @@ function reconcileSkills(doc: Doc, skillMeta: (name: string) => SkillMeta | null
     let out = "";
     let oldAtom = 0;
     let newAtom = 0;
-    let oldOffset = 0;
     let newOffset = 0;
-    const oldSource = (offset: number) => paragraphSource(block, 0, offset).length;
-    void oldSource;
     for (newOffset = 0; newOffset < text.length; newOffset += 1) {
       const char = text[newOffset]!;
       if (char !== ATOM_CHAR) {
@@ -1221,7 +1217,6 @@ function reconcileSkills(doc: Doc, skillMeta: (name: string) => SkillMeta | null
       oldAtom += 1;
       out += ATOM_CHAR;
     }
-    void oldOffset;
     changed = true;
     return { kind: "paragraph" as const, text: out, atoms: kept };
   });
