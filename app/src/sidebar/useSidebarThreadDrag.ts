@@ -511,6 +511,8 @@ export function useSidebarThreadDrag(input: Input): {
       },
       moveDrag(point) {
         if (contextSource && outsideList(point)) {
+          // web: while the row drags as context the list stays as it is.
+          setDragView(null);
           moveThreadContextDrag(point, contextSource);
           return;
         }

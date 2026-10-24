@@ -7,7 +7,8 @@
 // border; header pt-1.5 pr-1.5 pl-3 (30px); picker button h-6 px-[7px] gap-1 rounded-lg,
 // 12px/500 muted label, 14px language icon and chevron at 60%; code 13px at leading-snug,
 // pre px-3 pt-1 pb-2. The composer's card has no copy button.
-import { createContext, memo, use, useMemo, useState } from "react";
+import { useGpuixRequired } from "@gpuix/react";
+import { createContext, memo, use, useEffect, useMemo, useRef, useState } from "react";
 
 import { FileEntryIcon } from "../../../panels/files/FileEntryIcon.tsx";
 import { segmentsFor } from "../../../panels/code/codeRows.tsx";
@@ -225,6 +226,12 @@ function LanguageList({ current, onSelect, onClose }: { current: string; onSelec
   const filtered = needle ? items.filter((entry) => entry.label.toLowerCase().includes(needle) || entry.id.includes(needle)) : items;
   const [highlight, setHighlight] = useState<string | null>(current);
   const active = filtered.find((entry) => entry.id === highlight) ?? filtered[0] ?? null;
+  // The list opens scrolled to the current language, as web's combobox does.
+  const gpuix = useGpuixRequired();
+  const currentRef = useRef<{ id: number } | null>(null);
+  useEffect(() => {
+    if (currentRef.current) gpuix.scrollIntoView?.(currentRef.current.id);
+  }, [gpuix]);
   const move = (direction: 1 | -1) => {
     if (filtered.length === 0) return;
     const index = active ? filtered.indexOf(active) : -1;
@@ -243,7 +250,8 @@ function LanguageList({ current, onSelect, onClose }: { current: string; onSelec
           marginTop: 8,
           paddingBottom: 6,
           borderBottomWidth: 1,
-          borderColor: alpha(theme.border, 0.7),
+          // The search field has focus while the list is open: web's ring colour.
+          borderColor: theme.primary,
         }}
       >
         <Icon name="search" size={16} color={alpha(theme.mutedForeground, 0.55)} />
@@ -285,6 +293,7 @@ function LanguageList({ current, onSelect, onClose }: { current: string; onSelec
           filtered.map((entry) => (
             <div
               key={entry.id || "plain"}
+              ref={entry.id === current ? (currentRef as never) : undefined}
               testId={`composer-code-language-${entry.id || "plain"}`}
               onMouseEnter={() => setHighlight(entry.id)}
               onClick={() => onSelect(entry.id)}

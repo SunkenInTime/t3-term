@@ -80,6 +80,7 @@ import {
   referencedThreadContexts,
   registerComposerInsertionHandler,
   citationCommentRequestAtom,
+  addComposerThreadContext,
   removeComposerAttachment,
   setComposerInteractionMode,
   setComposerModelOptions,
@@ -206,7 +207,13 @@ import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
 import { filterTerminalContextsWithText, type TerminalContextDraft } from "../../web/lib/terminalContext.ts";
 import { ComposerEditor, type ComposerEditorHandle, type ComposerEditorKeyContext } from "./editor/ComposerEditor.tsx";
 import type { ComposerChipEnvironment } from "./editor/ComposerInlineChip.tsx";
-import { reviewCommentContextId, terminalContextReference } from "../../web/lib/composerContextRecords.ts";
+import {
+  reviewCommentContextId,
+  terminalContextReference,
+  threadContextRecord,
+  threadContextReference,
+} from "../../web/lib/composerContextRecords.ts";
+import { formatInlineContextReference } from "../../web/lib/composerContextReferences.ts";
 import { rightPanelActions, threadKeyOf } from "../../state/rightPanel.ts";
 import { ThreadContextDragGhost } from "./threadContextDrag.tsx";
 import {
@@ -785,6 +792,17 @@ function ComposerBody({
       const replacement = `/${item.command.name} `;
       const end = extendReplacementRangeForTrailingSpace(current, active.rangeEnd, replacement);
       applyPromptReplacement(active.rangeStart, end, replacement);
+      return;
+    }
+    if (item.type === "thread") {
+      // web: an @ match for a thread becomes its chip, with its record kept for the send.
+      if (active.kind !== "path") return;
+      const shell = appAtomRegistry.get(environmentThreadShells.threadShellAtom(item.thread)) as { title?: string } | null;
+      const record = threadContextRecord(item.thread, shell?.title?.trim() || item.label);
+      const replacement = `${formatInlineContextReference(threadContextReference(record))} `;
+      const end = extendReplacementRangeForTrailingSpace(current, active.rangeEnd, replacement);
+      applyPromptReplacement(active.rangeStart, end, replacement);
+      addComposerThreadContext(promptKey, record, { appendReference: false });
       return;
     }
     if (item.type === "skill") {

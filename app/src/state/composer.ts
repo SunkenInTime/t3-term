@@ -379,9 +379,13 @@ export function referencedTerminalContexts(draft: ComposerDraft, prompt = draft.
  * web composerDraftStore.addThreadContexts: a thread dropped on the composer. Its chip goes on
  * the end of the prompt (once), its record into the draft.
  */
-export function addComposerThreadContext(key: string, record: ThreadContextRecord): void {
+export function addComposerThreadContext(
+  key: string,
+  record: ThreadContextRecord,
+  options?: { readonly appendReference?: boolean },
+): void {
   updateComposerDraft(key, (draft) => {
-    const present = collectInlineContextIds(draft.prompt).includes(record.contextId);
+    const present = options?.appendReference === false || collectInlineContextIds(draft.prompt).includes(record.contextId);
     return {
       ...draft,
       prompt: present ? draft.prompt : appendInlineContextReference(draft.prompt, threadContextReference(record)),
