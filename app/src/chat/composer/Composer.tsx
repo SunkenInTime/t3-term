@@ -42,6 +42,7 @@ import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thr
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
+  type ChatAttachment,
   type EnvironmentId,
   isProviderNativeSubagentThread,
   MessageId,
@@ -175,7 +176,10 @@ import {
   ComposerAttachButton,
   ComposerAttachmentFileList,
   ComposerAttachmentMediaRow,
+  type ComposerFileItem,
+  type ComposerMediaItem,
 } from "./ComposerAttachmentStrip.tsx";
+import { useAttachmentImageUrls } from "./useAttachmentUrls.ts";
 import { ComposerTopBanners } from "./ComposerBanner.tsx";
 import { ComposerCommandMenu, ComposerCommandMenuLayer } from "./ComposerCommandMenu.tsx";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu.tsx";
@@ -273,6 +277,7 @@ const RESTING_PICKER_LABEL_MAX_SURFACE_PX = 640;
 const SM_BREAKPOINT = 640;
 
 const NO_TERMINAL_CONTEXTS: ReadonlyArray<TerminalContextDraft> = [];
+const NO_CHAT_ATTACHMENTS: ReadonlyArray<ChatAttachment> = [];
 const NO_THREAD_SHELL_ATOM = Atom.make<EnvironmentThreadShell | null>(null);
 const NO_THREAD_STATUS_ATOM = Atom.make<EnvironmentThreadStatus>("live");
 const NO_THREAD_STATE_ATOM = Atom.make(
@@ -519,6 +524,12 @@ function ComposerBody({
   const queuedEdit = useQueuedRunEdit({ environmentId, threadId });
   const promptKey = queuedEdit.isEditing ? queuedEdit.draftKey ?? draftKey : draftKey;
   const promptDraft = useAtomValue(composerDraftAtom(promptKey));
+  // Staged attachments live with the prompt: a queued edit's new attachments in its edit draft.
+  const stagedAttachments = promptDraft.attachments;
+  const editingAttachments = queuedEdit.editingAttachments;
+  const editingImageUrls = useAttachmentImageUrls(environmentId, editingAttachments ?? NO_CHAT_ATTACHMENTS);
+  const composerAttachments: ReadonlyArray<{ readonly id: string }> =
+    editingAttachments && editingAttachments.length > 0 ? [...editingAttachments, ...stagedAttachments] : stagedAttachments;
   const sticky = useAtomValue(stickyModelAtom);
   const settings = useAtomValue(composerSettingsAtom(environmentId));
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
@@ -663,7 +674,7 @@ function ComposerBody({
       interactionMode,
       latestTurnSettled: !isRunning && phase !== "connecting",
       hasActionableProposedPlan: hasActionableProposedPlan(latestProposedPlan),
-      hasComposerAttachments: draft.attachments.length > 0,
+      hasComposerAttachments: composerAttachments.length > 0,
     });
   const resumableRunId = (() => {
     if (!projection) return null;
@@ -771,7 +782,7 @@ function ComposerBody({
     trigger?.kind === "slash-command" &&
     prompt.slice(0, trigger.rangeStart).trim() === "" &&
     prompt.slice(trigger.rangeEnd).trim() === "" &&
-    draft.attachments.length === 0 &&
+    composerAttachments.length === 0 &&
     threadId !== null &&
     threadShellHasStarted(shell);
   const menu = useComposerMenuItems({
@@ -917,7 +928,7 @@ function ComposerBody({
     if (item.type === "provider-slash-command") {
       // web ChatComposer onSelectComposerItem: choosing /usage-limits opens the panel
       // right away (only when nothing but the prompt is staged, like web's gate).
-      if (item.command.name === USAGE_LIMITS_COMMAND.name && banners.usageLimitsOffered && draft.attachments.length === 0) {
+      if (item.command.name === USAGE_LIMITS_COMMAND.name && banners.usageLimitsOffered && composerAttachments.length === 0) {
         applyPromptReplacement(active.rangeStart, active.rangeEnd, "");
         setTriggerState(null);
         setHighlightedItemId(null);
@@ -1015,7 +1026,7 @@ function ComposerBody({
     isWorking: isRunning || sending,
     activePendingRequestId:
       requests.activePendingApproval?.requestId ?? requests.activePendingUserInput?.requestId ?? null,
-    composerHasDraftContent: prompt.trim().length > 0 || draft.attachments.length > 0,
+    composerHasDraftContent: prompt.trim().length > 0 || composerAttachments.length > 0,
     providerInstanceId: noProviderAvailable ? null : selectedInstanceId,
     providerDriver: selectedProviderStatus?.driver ?? null,
     providers: providerStatuses,
@@ -1043,7 +1054,7 @@ function ComposerBody({
   );
   const composerSendState = deriveComposerSendState({
     prompt,
-    imageCount: draft.attachments.length,
+    imageCount: composerAttachments.length,
     terminalContexts: referencedComposerTerminalContexts,
     elementContextCount: referencedReviewComments(draft, prompt).length,
   });
@@ -1093,7 +1104,7 @@ function ComposerBody({
     // web useComposerSend: /usage-limits is answered locally from the Limits snapshot.
     if (
       banners.usageLimitsOffered &&
-      draft.attachments.length === 0 &&
+      composerAttachments.length === 0 &&
       !queuedEdit.isEditing &&
       isUsageLimitsCommand(readComposerDraft(promptKey).prompt)
     ) {
@@ -1114,7 +1125,7 @@ function ComposerBody({
       void queuedEdit.saveEdit(promptAtSend);
       return;
     }
-    const attachments = readComposerDraft(draftKey).attachments;
+    const attachments = readComposerDraft(promptKey).attachments;
     const trimmed = promptAtSend.trim();
     // Plan follow-up: blank implements the plan, text refines it (web submitPlanFollowUp).
     if (showPlanFollowUpPrompt && latestProposedPlan && attachments.length === 0 && threadId) {
@@ -1487,7 +1498,7 @@ function ComposerBody({
   const fileStagingAllowed = !activePendingProgress;
   const addPaths = (paths: ReadonlyArray<string>) => {
     const { attachments, folders } = attachmentsFromPaths(paths);
-    if (attachments.length > 0) addComposerAttachments(draftKey, attachments);
+    if (attachments.length > 0) addComposerAttachments(promptKey, attachments);
     if (folders.length > 0) {
       const mentions = folders.map((folder) => serializeComposerFileLink(folder)).join(" ");
       const current = valueRef.current;
@@ -1521,7 +1532,7 @@ function ComposerBody({
     }
     const name = nextPastedTextFileName(current.attachments.map((attachment) => attachment.name));
     const { attachments } = attachmentsFromPaths([writePastedTextFile(name, text)]);
-    addComposerAttachments(draftKey, attachments.map((attachment) => ({ ...attachment, mimeType: "text/plain" })));
+    addComposerAttachments(promptKey, attachments.map((attachment) => ({ ...attachment, mimeType: "text/plain" })));
     return true;
   };
   // web onComposerPaste with clipboardData.files: a copied file or a picture attaches.
@@ -1535,8 +1546,43 @@ function ComposerBody({
     const paths = await renderer.promptForPaths?.({ files: true, multiple: true, prompt: "Attach" });
     if (paths && paths.length > 0) addPaths(paths);
   };
-  const images = draft.attachments.filter((attachment) => attachment.type === "image");
-  const files = draft.attachments.filter((attachment) => attachment.type === "file");
+  // The queued message's own attachments come first, from the server; then staged ones.
+  const images: ComposerMediaItem[] = [
+    ...(editingAttachments ?? [])
+      .filter((attachment) => attachment.type === "image")
+      .map((attachment) => ({
+        id: attachment.id,
+        name: attachment.name,
+        src: editingImageUrls.get(attachment.id) ?? null,
+        onRemove: () => queuedEdit.removeEditingAttachment(attachment.id),
+      })),
+    ...stagedAttachments
+      .filter((attachment) => attachment.type === "image")
+      .map((attachment) => ({
+        id: attachment.id,
+        name: attachment.name,
+        src: attachment.path,
+        onRemove: () => removeComposerAttachment(promptKey, attachment.id),
+      })),
+  ];
+  const files: ComposerFileItem[] = [
+    ...(editingAttachments ?? [])
+      .filter((attachment) => attachment.type !== "image")
+      .map((attachment) => ({
+        id: attachment.id,
+        name: "name" in attachment ? String(attachment.name) : "attachment",
+        sizeBytes: "sizeBytes" in attachment ? Number(attachment.sizeBytes) : 0,
+        onRemove: () => queuedEdit.removeEditingAttachment(attachment.id),
+      })),
+    ...stagedAttachments
+      .filter((attachment) => attachment.type === "file")
+      .map((attachment) => ({
+        id: attachment.id,
+        name: attachment.name,
+        sizeBytes: attachment.sizeBytes,
+        onRemove: () => removeComposerAttachment(promptKey, attachment.id),
+      })),
+  ];
 
   // ── Context window ────────────────────────────────────────────────────
   const activeProviderThread = projection?.providerThreads.find(
@@ -2115,8 +2161,8 @@ function ComposerBody({
       isConnecting={phase === "connecting" && !isRunning && sending}
       isEnvironmentUnavailable={environmentUnavailable || noProviderAvailable}
       isPreparingWorktree={sending && target.kind === "draft" && draft.envMode === "worktree"}
-      hasSendableContent={composerSendState.hasSendableContent || draft.attachments.length > 0}
-      canResume={canResume && prompt.trim().length === 0 && draft.attachments.length === 0}
+      hasSendableContent={composerSendState.hasSendableContent || composerAttachments.length > 0}
+      canResume={canResume && prompt.trim().length === 0 && composerAttachments.length === 0}
       alternateModifier={false}
       isEditingQueuedMessage={queuedEdit.isEditing}
       alternateShortcutLabel={
@@ -2136,7 +2182,7 @@ function ComposerBody({
   );
 
   const surfaceBase = surfaceStyle(theme);
-  const collapsedResume = canResume && prompt.trim().length === 0 && draft.attachments.length === 0;
+  const collapsedResume = canResume && prompt.trim().length === 0 && composerAttachments.length === 0;
   // web ChatView showProviderSubagentBar: a provider-native subagent can't take messages,
   // so the composer gives way to a bar with its model, live status and "Open parent".
   if (shell && isProviderNativeSubagentThread(shell.source)) {
@@ -2311,7 +2357,7 @@ function ComposerBody({
               sending ||
               environmentUnavailable ||
               noProviderAvailable ||
-              (!collapsedResume && !(composerSendState.hasSendableContent || draft.attachments.length > 0))
+              (!collapsedResume && !(composerSendState.hasSendableContent || composerAttachments.length > 0))
             }
             onExpand={expandMobileComposer}
             onPrimary={() => {
@@ -2344,8 +2390,8 @@ function ComposerBody({
             gap: isResting ? 4 : 0,
           }}
         >
-          {!isResting ? <ComposerAttachmentMediaRow images={images} onRemove={(id) => removeComposerAttachment(draftKey, id)} /> : null}
-          {!isResting ? <ComposerAttachmentFileList files={files} onRemove={(id) => removeComposerAttachment(draftKey, id)} /> : null}
+          {!isResting ? <ComposerAttachmentMediaRow images={images} /> : null}
+          {!isResting ? <ComposerAttachmentFileList files={files} /> : null}
           <div style={{ position: "relative", flexGrow: 1, minWidth: 0 }}>
             <ComposerEditor
               ref={editorRef}

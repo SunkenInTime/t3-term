@@ -1,11 +1,19 @@
 // Port of apps/web/src/components/chat/useQueuedRunEdit.ts (+ queuedMessageEdit.ts
-// recoverQueuedMessageEdit), text only. While editing, the composer edits `draftKey`
-// (a per-run draft) so the thread's own draft survives untouched; submit calls
-// `saveEdit(prompt)`. Attachments of the queued message are kept as they are:
-// adding or removing attachments during an edit is not ported.
+// recoverQueuedMessageEdit). While editing, the composer edits `draftKey` (a per-run
+// draft) so the thread's own draft survives untouched; submit calls `saveEdit(prompt)`.
+// The queued message's attachments show in the composer and can be removed; attachments
+// and context added during the edit upload on save, and the message is replaced whole
+// (web submitQueuedRunEdit).
 import { useAtomValue } from "@effect/atom-react";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, RunId, ThreadId } from "@t3tools/contracts";
+import type {
+  ChatAttachment,
+  EnvironmentId,
+  MessageId,
+  OrchestrationMessageContext,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContextReferences";
 import * as Option from "effect/Option";
 import { Atom, AsyncResult } from "effect/reactivity";
@@ -17,8 +25,14 @@ import {
   composerDraftHasUserContent,
   composerTargetKey,
   readComposerDraft,
+  referencedReviewComments,
+  referencedTerminalContexts,
+  referencedThreadContexts,
   setComposerPrompt,
 } from "../../state/composer.ts";
+import { buildComposerMessageContext } from "../../web/lib/composerContextRecords.ts";
+import { filterTerminalContextsWithText } from "../../web/lib/terminalContext.ts";
+import { prepareTurnAttachments } from "./composerSend.ts";
 import { environmentThreads, threadEnvironment } from "../../state/environment.ts";
 import { toast } from "../../ui/toast.tsx";
 import type { EditQueuedRunRequest } from "./QueuedRunsControl.tsx";
@@ -26,8 +40,12 @@ import type { EditQueuedRunRequest } from "./QueuedRunsControl.tsx";
 interface EditingQueuedRun {
   readonly threadId: ThreadId;
   readonly runId: RunId;
+  readonly messageId: MessageId;
   readonly originalText: string;
-  readonly hasAttachments: boolean;
+  /** The queued message's attachments the edit keeps; removal is client state until save. */
+  readonly existingAttachments: ReadonlyArray<ChatAttachment>;
+  readonly removedAttachment: boolean;
+  readonly context: OrchestrationMessageContext | undefined;
 }
 
 const NO_THREAD_STATE_ATOM = Atom.make(AsyncResult.initial()) as unknown as ReturnType<
@@ -101,9 +119,24 @@ export function useQueuedRunEdit(input: {
     setEditing({
       threadId,
       runId: request.runId,
+      messageId: request.messageId,
       originalText: request.text,
-      hasAttachments: request.attachments.length > 0,
+      existingAttachments: request.attachments,
+      removedAttachment: false,
+      context: projection?.messages.find((message) => message.id === request.messageId)?.context,
     });
+  };
+
+  const removeEditingAttachment = (attachmentId: string) => {
+    setEditing((current) =>
+      current === null
+        ? current
+        : {
+            ...current,
+            existingAttachments: current.existingAttachments.filter((attachment) => attachment.id !== attachmentId),
+            removedAttachment: true,
+          },
+    );
   };
 
   const cancelEdit = () => {
@@ -116,26 +149,62 @@ export function useQueuedRunEdit(input: {
   const saveEdit = async (prompt: string): Promise<boolean> => {
     if (editing === null || saveInFlightRef.current) return false;
     const text = prompt.trim();
-    if (text.length === 0 && !editing.hasAttachments) return false;
+    const editKey = queuedEditDraftKey(environmentId, editing.threadId, editing.runId);
+    const editDraft = readComposerDraft(editKey);
+    const newAttachments = editDraft.attachments;
+    const newContext = buildComposerMessageContext({
+      terminalContexts: filterTerminalContextsWithText(referencedTerminalContexts(editDraft, prompt)),
+      reviewComments: referencedReviewComments(editDraft, prompt),
+      threadContexts: referencedThreadContexts(editDraft, prompt),
+    });
+    if (text.length === 0 && editing.existingAttachments.length === 0 && newAttachments.length === 0) return false;
     saveInFlightRef.current = true;
     setIsSaving(true);
-    const result = await runAtomCommand(
-      appAtomRegistry,
-      threadEnvironment.editQueuedRun,
-      {
-        environmentId,
-        input: {
-          threadId: editing.threadId,
-          runId: editing.runId,
-          text: text.length === 0 ? ATTACHMENT_ONLY_BOOTSTRAP_PROMPT : text,
+    let failure: string | null = null;
+    try {
+      // A text-only change leaves the stored attachments alone; anything else replaces the
+      // message's attachments and context whole.
+      const replaceWhole = editing.removedAttachment || newAttachments.length > 0 || newContext !== undefined;
+      let edit: { messageId: MessageId; attachments: ReadonlyArray<unknown>; context?: OrchestrationMessageContext } | undefined;
+      if (replaceWhole) {
+        const uploads = await prepareTurnAttachments(environmentId, newAttachments);
+        // Kept records for removed attachments would point at nothing.
+        const keptRecords = (editing.context?.records ?? []).filter(
+          (record) =>
+            !("attachmentId" in record) ||
+            editing.existingAttachments.some((attachment) => attachment.id === record.attachmentId),
+        );
+        const records = [
+          ...new Map([...keptRecords, ...(newContext?.records ?? [])].map((record) => [record.contextId, record] as const)).values(),
+        ];
+        edit = {
+          messageId: editing.messageId,
+          attachments: [...editing.existingAttachments, ...uploads],
+          ...(records.length > 0 ? { context: { version: 1, records } as OrchestrationMessageContext } : {}),
+        };
+      }
+      const result = await runAtomCommand(
+        appAtomRegistry,
+        threadEnvironment.editQueuedRun,
+        {
+          environmentId,
+          input: {
+            threadId: editing.threadId,
+            runId: editing.runId,
+            text: text.length === 0 ? ATTACHMENT_ONLY_BOOTSTRAP_PROMPT : text,
+            ...(edit ? { edit: edit as never } : {}),
+          },
         },
-      },
-      { reportFailure: false },
-    );
+        { reportFailure: false },
+      );
+      if (result._tag === "Failure") failure = "Could not save the edited queued message.";
+    } catch (error) {
+      failure = error instanceof Error ? error.message : "Could not save the edited queued message.";
+    }
     saveInFlightRef.current = false;
     setIsSaving(false);
-    if (result._tag === "Failure") {
-      toast({ type: "error", title: "Could not save the edited queued message." });
+    if (failure !== null) {
+      toast({ type: "error", title: failure });
       return false;
     }
     clearComposerContent(queuedEditDraftKey(environmentId, editing.threadId, editing.runId));
@@ -146,6 +215,9 @@ export function useQueuedRunEdit(input: {
   return {
     editingRunId: editing?.runId ?? null,
     isEditing: editing !== null,
+    /** The queued message's own attachments still kept by the edit (shown in the composer). */
+    editingAttachments: editing?.existingAttachments ?? null,
+    removeEditingAttachment,
     isSaving,
     /** Composer draft key to edit: the per-run edit draft while editing, else the thread draft. */
     draftKey,

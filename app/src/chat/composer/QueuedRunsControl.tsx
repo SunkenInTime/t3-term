@@ -3,9 +3,8 @@
 // reordered (drag the grip, or arrow keys on it), edited, sent as a steer (or sent
 // now when nothing runs), or removed.
 //
-// Differences from web: no image thumbnails (attachment URLs need the asset loader;
-// image rows show a placeholder square), no optimistic "saving" rows, and editing is
-// opt-in through `onEditQueuedRun` because the composer owns the editor retarget.
+// Differences from web: no optimistic "saving" rows, and editing is opt-in through
+// `onEditQueuedRun` because the composer owns the editor retarget.
 import { useAtomValue } from "@effect/atom-react";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
@@ -17,6 +16,7 @@ import { AsyncResult } from "effect/reactivity";
 import { useRef, useState } from "react";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
+import { useAttachmentImageUrls } from "./useAttachmentUrls.ts";
 import { environmentThreads, threadEnvironment } from "../../state/environment.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
@@ -251,23 +251,7 @@ export function QueuedRunsControl(props: {
                         ) : null}
                       </BannerIcon>
                       <BannerContent>
-                        {imageCount > 0 ? (
-                          <div style={{ display: "flex", flexDirection: "row", gap: 2, flexShrink: 0 }}>
-                            {Array.from({ length: imageCount }, (_, imageIndex) => (
-                              <div
-                                key={imageIndex}
-                                style={{
-                                  width: 16,
-                                  height: 16,
-                                  borderRadius: 4,
-                                  borderWidth: 1,
-                                  borderColor: alpha(theme.border, 0.7),
-                                  backgroundColor: theme.appearance === "dark" ? "#ffffff0f" : theme.muted,
-                                }}
-                              />
-                            ))}
-                          </div>
-                        ) : null}
+                        {imageCount > 0 ? <QueuedRunThumbnails environmentId={props.environmentId} attachments={attachments} /> : null}
                         <BannerText truncate grow color={alpha(theme.foreground, 0.8)}>
                           {previewText}
                         </BannerText>
@@ -372,6 +356,46 @@ function QueueTextButton({
       <BannerText weight={500} color={theme.mutedForeground}>
         {label}
       </BannerText>
+    </div>
+  );
+}
+
+/**
+ * web QueuedRunsControl item.thumbnails: each image of a queued message as a 16px picture
+ * (`size-4 rounded border border-border/70 bg-background`, `object-cover`), a muted square
+ * until its URL resolves.
+ */
+function QueuedRunThumbnails({
+  environmentId,
+  attachments,
+}: {
+  environmentId: EnvironmentId;
+  attachments: ReadonlyArray<ChatAttachment>;
+}) {
+  const theme = useTheme();
+  const urls = useAttachmentImageUrls(environmentId, attachments);
+  const images = attachments.filter((attachment) => attachment.type === "image");
+  return (
+    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 2, flexShrink: 0 }}>
+      {images.map((image) => {
+        const url = urls.get(image.id) ?? null;
+        return (
+          <div
+            key={image.id}
+            style={{
+              width: 16,
+              height: 16,
+              borderRadius: 4,
+              borderWidth: 1,
+              borderColor: alpha(theme.border, 0.7),
+              backgroundColor: url ? theme.background : alpha(theme.muted, 0.6),
+              overflow: "hidden",
+            }}
+          >
+            {url ? <img src={url} objectFit="cover" style={{ width: 14, height: 14 }} /> : null}
+          </div>
+        );
+      })}
     </div>
   );
 }

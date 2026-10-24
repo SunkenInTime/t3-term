@@ -6,7 +6,22 @@ import { useSmallViewport } from "../../ui/viewport.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
 import { IconButton, Text } from "../../ui/primitives.tsx";
 import { RADIUS, alpha, useTheme } from "../../ui/theme.ts";
-import type { ComposerAttachmentDraft } from "../../state/composer.ts";
+
+/** A thumbnail in the media row: a staged local file, or a queued message's stored image. */
+export interface ComposerMediaItem {
+  readonly id: string;
+  readonly name: string;
+  /** Local path or URL; null while a stored image's URL resolves. */
+  readonly src: string | null;
+  readonly onRemove: () => void;
+}
+
+export interface ComposerFileItem {
+  readonly id: string;
+  readonly name: string;
+  readonly sizeBytes: number;
+  readonly onRemove: () => void;
+}
 
 export function formatAttachmentSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -14,13 +29,7 @@ export function formatAttachmentSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")} MB`;
 }
 
-export function ComposerAttachmentMediaRow({
-  images,
-  onRemove,
-}: {
-  images: ReadonlyArray<ComposerAttachmentDraft>;
-  onRemove: (id: string) => void;
-}) {
+export function ComposerAttachmentMediaRow({ images }: { images: ReadonlyArray<ComposerMediaItem> }) {
   const theme = useTheme();
   if (images.length === 0) return null;
   return (
@@ -41,9 +50,9 @@ export function ComposerAttachmentMediaRow({
             overflow: "hidden",
           }}
         >
-          <img src={image.path} objectFit="cover" style={{ width: 62, height: 62, borderRadius: RADIUS.lg - 1 }} />
+          {image.src ? <img src={image.src} objectFit="cover" style={{ width: 62, height: 62, borderRadius: RADIUS.lg - 1 }} /> : null}
           <div style={{ position: "absolute", top: 4, right: 4 }}>
-            <MediaCloseButton label={`Remove ${image.name}`} onClick={() => onRemove(image.id)} testId={`composer-remove-attachment-${index}`} />
+            <MediaCloseButton label={`Remove ${image.name}`} onClick={image.onRemove} testId={`composer-remove-attachment-${index}`} />
           </div>
         </div>
       ))}
@@ -76,13 +85,7 @@ function MediaCloseButton({ label, onClick, testId }: { label: string; onClick: 
   );
 }
 
-export function ComposerAttachmentFileList({
-  files,
-  onRemove,
-}: {
-  files: ReadonlyArray<ComposerAttachmentDraft>;
-  onRemove: (id: string) => void;
-}) {
+export function ComposerAttachmentFileList({ files }: { files: ReadonlyArray<ComposerFileItem> }) {
   const theme = useTheme();
   if (files.length === 0) return null;
   return (
@@ -104,7 +107,7 @@ export function ComposerAttachmentFileList({
             icon="x"
             size={24}
             iconSize={14}
-            onClick={() => onRemove(file.id)}
+            onClick={file.onRemove}
             testId={`composer-remove-file-${index}`}
           />
         </div>
