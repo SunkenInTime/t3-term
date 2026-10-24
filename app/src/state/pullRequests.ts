@@ -273,6 +273,23 @@ export const pullRequestPanel = {
 };
 
 /**
+ * web PullRequestDetailPanel `startAsk(..., { keepGuide: true })` opens the pull request (on its
+ * Guide) in the right panel of the draft the question went to. t3-term drafts have no right panel,
+ * so the draft view shows this one pull request beside its composer until it is closed.
+ */
+export interface DraftPullRequestPane {
+  readonly draftKey: string;
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+  readonly tab: PullRequestDetailTab;
+}
+
+export const draftPullRequestPaneAtom = Atom.make<DraftPullRequestPane | null>(null).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("t3term-pull-requests:draft-pane"),
+);
+
+/**
  * The detail panel's width on the Pull requests page (web RightPanelTabs `widthStorageKey`
  * "t3code:pull-request-panel-width"); null until the reader drags it, which means half the window.
  */

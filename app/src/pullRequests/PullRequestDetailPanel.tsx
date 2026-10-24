@@ -827,9 +827,14 @@ export function PullRequestDetailView({
   const canFixFindings = attachTarget !== null || canPrepareWorktree;
   const actingProjectRef = (projectId: PullRequestRef["projectId"]) =>
     scopeProjectRef(actingEnvironmentId, acting?.projectId ?? projectId);
-  const startAsk = (task: PullRequestThreadTask) => {
+  const startAsk = (task: PullRequestThreadTask, options?: { readonly keepGuide?: boolean }) => {
     if (!detail || handoff !== null) return;
-    startPullRequestAsk(actingProjectRef(detail.projectId), task, attachTarget);
+    startPullRequestAsk(
+      actingProjectRef(detail.projectId),
+      task,
+      attachTarget,
+      options?.keepGuide === true ? { keepGuide: { environmentId, reference } } : undefined,
+    );
   };
   const startHandoff = async (
     kind: string,
@@ -889,11 +894,15 @@ export function PullRequestDetailView({
         },
         question,
       }),
+      { keepGuide: true },
     );
   };
-  const addSelectionToAgent = (selection: { readonly comment: ReviewCommentContext; readonly request: string }) => {
+  const addSelectionToAgent = (
+    selection: { readonly comment: ReviewCommentContext; readonly request: string },
+    options?: { readonly keepGuide?: boolean },
+  ) => {
     if (!handoffBase) return;
-    startAsk(buildAddSelectionToAgentHandoff({ ...handoffBase, comment: selection.comment, request: selection.request }));
+    startAsk(buildAddSelectionToAgentHandoff({ ...handoffBase, comment: selection.comment, request: selection.request }), options);
   };
   const startFixFinding = (finding: PullRequestFinding) => {
     if (!detail) return;
@@ -1480,7 +1489,7 @@ export function PullRequestDetailView({
               title={detail.title}
               workspaceRoot={detail.workspaceRoot}
               canComment={detail.capabilities.review.inlineComment && detail.viewerPermissions.comment}
-              onAskAboutLines={(comment, request) => addSelectionToAgent({ comment, request })}
+              onAskAboutLines={(comment, request) => addSelectionToAgent({ comment, request }, { keepGuide: true })}
               onAskAboutStop={askAboutGuideStop}
               onFinishReview={
                 detail.capabilities.review.verdicts.some((verdict) =>

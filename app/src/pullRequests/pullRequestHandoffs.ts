@@ -12,7 +12,7 @@ import {
   runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { ThreadId, type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
+import { ThreadId, type EnvironmentId, type PullRequestRef, type ScopedProjectRef } from "@t3tools/contracts";
 
 import { startNewThread } from "../palette/actions.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
@@ -25,6 +25,7 @@ import {
   updateComposerDraft,
 } from "../state/composer.ts";
 import { gitEnvironment } from "../state/git.ts";
+import { draftPullRequestPaneAtom, guideRunKey, guideRunStore } from "../state/pullRequests.ts";
 import { toast, updateToast } from "../ui/toast.tsx";
 import {
   checkoutFailureDescription,
@@ -77,6 +78,7 @@ export function startPullRequestAsk(
   projectRef: ScopedProjectRef,
   task: PullRequestThreadTask,
   attachTo: string | null,
+  options?: { readonly keepGuide?: { readonly environmentId: EnvironmentId; readonly reference: PullRequestRef } },
 ): void {
   if (attachTo !== null) {
     writeTaskToComposer(attachTo, task);
@@ -91,6 +93,18 @@ export function startPullRequestAsk(
     return;
   }
   openThreadWithTask(projectRef, task);
+  const keepGuide = options?.keepGuide;
+  if (keepGuide) {
+    // web: the pull request reopens on its Guide beside the new draft, so the reader can keep
+    // walking the guide while the question waits to be sent.
+    appAtomRegistry.set(draftPullRequestPaneAtom, {
+      draftKey: composerTargetKey({ kind: "draft", environmentId: projectRef.environmentId, projectId: projectRef.projectId }),
+      environmentId: keepGuide.environmentId,
+      reference: keepGuide.reference,
+      tab: "guide",
+    });
+    guideRunStore.requestOpen(guideRunKey(keepGuide.environmentId, keepGuide.reference));
+  }
   toast({
     type: "success",
     title: "Asked in a thread",

@@ -24,8 +24,20 @@ import { ChatBannerLane } from "./ChatBannerLane.tsx";
 import { DraftDetailsCard } from "./details/ThreadDetailsCard.tsx";
 import { DraftHeroHeadline } from "./draft/DraftHeroHeadline.tsx";
 import { NoActiveThreadState, NoProjectsHero } from "./draft/EmptyStates.tsx";
+import { DraftPullRequestPanel } from "../pullRequests/DraftPullRequestPanel.tsx";
 
 export function DraftView({ environmentId, projectId }: { environmentId: EnvironmentId | null; projectId: ProjectId | null }) {
+  const draftKey = environmentId !== null && projectId !== null ? composerTargetKey({ kind: "draft", environmentId, projectId }) : null;
+  return (
+    <div style={{ display: "flex", flexDirection: "row", flexGrow: 1, minHeight: 0, minWidth: 0 }}>
+      <DraftCanvas environmentId={environmentId} projectId={projectId} />
+      {/* A pull request kept open beside the draft by an Ask from its review guide. */}
+      {draftKey !== null ? <DraftPullRequestPanel draftKey={draftKey} /> : null}
+    </div>
+  );
+}
+
+function DraftCanvas({ environmentId, projectId }: { environmentId: EnvironmentId | null; projectId: ProjectId | null }) {
   const theme = useTheme();
   const cardInline = useDetailsCardInline();
   const small = useSmallViewport();
