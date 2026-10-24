@@ -8,7 +8,7 @@
 //   t3-term                                                   the T3 server on this machine, plus saved environments
 //   t3-term --no-local                                        saved environments only
 //   t3-term --open 'https://app.t3.codes/new?prompt=...'     open a T3 Code prompt link (also t3code://..., /new?...)
-import { render } from "@gpuix/react";
+import { isTerminal, render } from "@gpuix/react";
 
 import { App } from "./app/App.tsx";
 import { handleMarkdownCopy } from "./chat/markdown/copy.ts";
@@ -18,6 +18,7 @@ import { handleGlobalKeyDown, handleGlobalKeyUp } from "./keybindings/useGlobalK
 import { noteUserInput } from "./notifications/platform.ts";
 import { openPromptLink } from "./promptLinks/promptLinkTarget.ts";
 import { noteWindowInput } from "./runtime/windowActivity.ts";
+import { startClientTracing } from "./runtime/clientTracingTarget.ts";
 
 const args = parseArgs(process.argv.slice(2));
 if (args.help) {
@@ -68,3 +69,5 @@ render(<App boot={boot} />, {
   trafficLightY: 18,
 });
 installPerfProbe();
+// Client traces go to the command line's environment, as web sends them to its primary one.
+startClientTracing({ preferredEnvironmentId: boot.environmentId, mode: isTerminal() ? "terminal" : "window" });

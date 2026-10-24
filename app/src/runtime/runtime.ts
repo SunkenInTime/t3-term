@@ -16,6 +16,7 @@ import * as Socket from "effect/socket/Socket";
 
 import * as Platform from "./platform.ts";
 import * as BackgroundActivityReporter from "../web/lib/backgroundActivityReporter.ts";
+import * as ClientTracer from "../web/observability/clientTracer.ts";
 
 export const appAtomRegistry = AtomRegistry.make();
 
@@ -57,6 +58,8 @@ const layerRuntime = Layer.mergeAll(
   layerHttpClient,
   layerCrypto,
   Socket.layerWebSocketConstructorGlobal,
+  // Spans flow to the exporter runtime/clientTracingTarget.ts configures once an environment connects.
+  ClientTracer.layer,
   ManagedRelay.layer({ relayUrl: "http://relay.invalid", clientId: RelayWebClientId }).pipe(
     Layer.provide(Layer.mergeAll(layerHttpClient, layerCrypto, layerRelaySigner)),
   ),
