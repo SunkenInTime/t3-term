@@ -615,6 +615,7 @@ function ManagedCodexSetup({
           <div style={{ display: "flex", flexGrow: 1, minWidth: 0 }}>
             <TextField
               width="100%"
+              secret
               value={callbackUrl}
               placeholder="Paste the URL from the sign-in tab"
               onChange={(value) => setCallbackDraft({ flowId: auth.flowId ?? "", value })}

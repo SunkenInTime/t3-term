@@ -1223,6 +1223,7 @@ function ScheduledTaskEditorDialog({ initialEnvironmentId, task, onClose }: { re
                     <Field label="Secret">
                       <TextField
                         width="100%"
+                        secret
                         value={draft.signatureSecret}
                         placeholder={liveTask?.schedule.type === "webhook" && liveTask.webhook?.hasSecret ? "Unchanged" : "Shared secret"}
                         onChange={(signatureSecret) => set({ signatureSecret })}

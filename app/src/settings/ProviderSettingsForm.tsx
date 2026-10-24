@@ -176,6 +176,7 @@ export function SecretField({
       testId={testId}
       size="sm"
       width={width}
+      secret
       value=""
       placeholder={configured ? "Stored secret, enter a new value to replace" : (placeholder ?? "Not set")}
       onCommit={(next) => {
