@@ -144,6 +144,7 @@ export function usePendingThreadRequests(input: {
   const state = Option.getOrNull(AsyncResult.value(result));
   const projection = state ? Option.getOrNull(state.data) : null;
   const projectedThreadId = projection?.thread.id ?? null;
+  const threadSynced = (state as { status?: string } | null)?.status === "live";
 
   // The projection changes on every streamed event. Re-derive only when the request
   // inputs change, and hand out shared empties so nothing re-renders while idle.
@@ -201,7 +202,9 @@ export function usePendingThreadRequests(input: {
     updateQuestionIndex((existing) =>
       pruneResolvedUserInputDrafts(existing, environmentId, threadId, pendingRequestIds),
     );
-    pruneQuestionAttachmentDrafts(
+    // Files are the user's work: only drop them once the thread is in sync (a cached
+    // projection can be missing a request that is still pending).
+    if (threadSynced) pruneQuestionAttachmentDrafts(
       environmentId,
       threadId,
       new Set(
@@ -210,7 +213,7 @@ export function usePendingThreadRequests(input: {
         ),
       ),
     );
-  }, [environmentId, threadId, projectedThreadId, pendingUserInputs]);
+  }, [environmentId, threadId, projectedThreadId, pendingUserInputs, threadSynced]);
 
   // web: a question's attachments count as an answer, and an upload still going holds it.
   const questionAttachmentStatus = useAtomValue(

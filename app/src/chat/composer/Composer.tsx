@@ -2788,7 +2788,8 @@ function ComposerBody({
               codeBlocks={settings.composerRichTextEnabled}
               literal={isLiteralPendingAnswer}
               readOnly={isChoiceOnlyPendingQuestion || requests.activePendingIsResponding}
-              placeholder={placeholder}
+              // web hides the placeholder while the draft holds attachments (they count as context).
+              placeholder={images.length > 0 || files.length > 0 ? "" : placeholder}
               resting={isResting}
               minRows={isResting ? 1 : 3}
               maxRows={isResting ? 1 : 9}
