@@ -1,5 +1,6 @@
 // web ChatView addTerminalContextToDraft: a terminal selection's "Add to chat" lands in the
-// thread's composer as a terminal context, and the composer takes focus.
+// thread's composer as an inline terminal chip at the caret (its excerpt kept as a record
+// for the send), and the composer takes focus.
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
 import { addComposerTerminalContext, composerTargetKey, focusComposer } from "../../state/composer.ts";

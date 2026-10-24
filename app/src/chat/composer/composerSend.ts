@@ -34,6 +34,7 @@ import {
   type ProjectId,
   type ProviderInteractionMode,
   type RuntimeMode,
+  type ThreadContextRecord,
   ThreadId,
   type UploadChatAttachment,
 } from "@t3tools/contracts";
@@ -250,6 +251,8 @@ export interface ComposerSendInput {
   readonly reviewComments?: ReadonlyArray<ReviewCommentContext>;
   /** Terminal selections the prompt references; they go out as message context records too. */
   readonly terminalContexts?: ReadonlyArray<TerminalContextDraft>;
+  /** Threads the prompt references (dropped on the composer); context records as well. */
+  readonly threadContexts?: ReadonlyArray<ThreadContextRecord>;
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
@@ -281,6 +284,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
   const messageContext = buildComposerMessageContext({
     terminalContexts: input.terminalContexts ?? [],
     reviewComments: input.reviewComments ?? [],
+    threadContexts: input.threadContexts ?? [],
   });
   // Clear first, like web: the prompt leaves the composer the moment the user sends.
   clearComposerContent(input.draftKey);

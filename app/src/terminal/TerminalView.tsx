@@ -138,7 +138,8 @@ function TerminalSessionView({
   const [cellWidth, setCellWidth] = useState<number | null>(measuredCellWidth);
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
   const origin = useRef({ x: 0, y: 0 });
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; hasSelection: boolean } | null>(null);
+  // The selection as the menu opened: pressing a menu item clears the native selection first.
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; hasSelection: boolean; selection: string | null } | null>(null);
   const [focused, setFocused] = useState(false);
   const focusedRef = useRef(false);
   const [frame, setFrame] = useState<TerminalFrame | null>(null);
@@ -330,7 +331,7 @@ function TerminalSessionView({
   };
 
   const addSelectionToChat = () => {
-    const text = renderer.getSelectedText?.();
+    const text = renderer.getSelectedText?.() || contextMenu?.selection;
     if (!text) return;
     const { lineStart, lineEnd } = locateSelectionLines(emulator, text);
     addTerminalContextToThreadComposer(environmentId, threadId, {
@@ -497,10 +498,12 @@ function TerminalSessionView({
       }}
       onAuxClick={(event) => {
         if (!event.isRightClick) return;
+        const selection = renderer.getSelectedText?.() ?? null;
         setContextMenu({
           x: (event.x ?? 0) - origin.current.x,
           y: (event.y ?? 0) - origin.current.y,
-          hasSelection: Boolean(renderer.getSelectedText?.()),
+          hasSelection: Boolean(selection),
+          selection,
         });
       }}
       onLayout={(event) => {

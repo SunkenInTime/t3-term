@@ -6,7 +6,10 @@ import {
   type ComposerContextId,
   type OrchestrationMessageContext,
   type ReviewCommentContextRecord,
+  type ScopedThreadRef,
   type TerminalContextRecord,
+  type ThreadContextRecord,
+  type ThreadId,
 } from "@t3tools/contracts";
 import {
   sanitizeComposerContextLabel,
@@ -133,14 +136,37 @@ export function terminalContextRecord(context: TerminalContextDraft): TerminalCo
   } as TerminalContextRecord;
 }
 
-/** web buildMessageContext for the records this composer sends: terminal excerpts, then review comments. */
+function threadContextId(threadId: ThreadId): ComposerContextId {
+  return toKindScopedComposerContextId("thread", threadId);
+}
+
+export function threadContextReference(record: ThreadContextRecord): ComposerContextReference {
+  return { kind: "thread", contextId: record.contextId, label: record.label };
+}
+
+export function threadContextRecord(ref: ScopedThreadRef, title: string): ThreadContextRecord {
+  const label = sanitizeComposerContextLabel(title, "thread");
+  return {
+    version: 1,
+    kind: "thread",
+    contextId: threadContextId(ref.threadId),
+    label,
+    environmentId: ref.environmentId,
+    threadId: ref.threadId,
+    title: label,
+  } as ThreadContextRecord;
+}
+
+/** web buildMessageContext for the records this composer sends: terminal excerpts, review comments, threads. */
 export function buildComposerMessageContext(input: {
   readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
   readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
+  readonly threadContexts?: ReadonlyArray<ThreadContextRecord>;
 }): OrchestrationMessageContext | undefined {
   const records = [
     ...input.terminalContexts.map(terminalContextRecord),
     ...input.reviewComments.map(reviewCommentContextRecord),
+    ...(input.threadContexts ?? []),
   ];
   return records.length === 0 ? undefined : ({ version: 1, records } as OrchestrationMessageContext);
 }
