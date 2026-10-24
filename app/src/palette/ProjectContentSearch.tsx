@@ -1,7 +1,6 @@
 // Port of apps/web/src/components/search/ProjectContentSearchDialog.tsx: a 420px
 // tall palette, Aa / ab / .* toggles, results grouped by file with line numbers.
-// Web syntax-highlights each line (HighlightedSearchLine); here the match range
-// is marked on plain monospace text.
+// Each line is syntax-highlighted with its matches marked (HighlightedSearchLine).
 import type { KeyEvent } from "@gpuix/react";
 import type { ProjectContentMatch } from "@t3tools/contracts";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -9,6 +8,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "../ui/Icon.tsx";
 import { Text } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../ui/theme.ts";
+import { HighlightedSearchLine } from "../panels/code/HighlightedSearchLine.tsx";
 import { PaletteFooter, PaletteFrame, PaletteInput, PalettePanel } from "./command.tsx";
 import { useProjectContentSearch } from "./hooks.ts";
 import { requestOpenFile } from "./ProjectFilePicker.tsx";
@@ -100,42 +100,6 @@ function SearchOptionButton({
       }}
     >
       {children}
-    </div>
-  );
-}
-
-function MatchLine({ match }: { match: ProjectContentMatch }) {
-  const theme = useTheme();
-  const line = match.lineContent.replace(/	/g, "  ");
-  const firstStart = match.matchRanges[0]?.start ?? 0;
-  // Keep the first match near the start of a long line, like web's truncated row.
-  const lead = Math.max(0, firstStart - 24);
-  const segments: Array<{ text: string; hit: boolean }> = [];
-  let cursor = lead;
-  for (const range of match.matchRanges) {
-    if (range.end <= cursor) continue;
-    const start = Math.max(range.start, cursor);
-    if (start > cursor) segments.push({ text: line.slice(cursor, start), hit: false });
-    segments.push({ text: line.slice(start, range.end), hit: true });
-    cursor = range.end;
-  }
-  if (cursor < line.length) segments.push({ text: line.slice(cursor), hit: false });
-  if (lead > 0 && segments[0]) segments[0] = { ...segments[0], text: `…${segments[0].text}` };
-  if (segments[0] && !segments[0].hit) segments[0] = { ...segments[0], text: segments[0].text.trimStart() };
-  const textStyle = { fontFamily: FONTS.mono, fontSize: 12, lineHeight: 16, whiteSpace: "nowrap" as const };
-  return (
-    <div style={{ display: "flex", flexDirection: "row", minWidth: 0, overflow: "hidden", flexGrow: 1 }}>
-      {segments.map((segment, index) =>
-        segment.hit ? (
-          <div key={index} style={{ backgroundColor: "#8c6c1f", borderRadius: 2, flexShrink: 0 }}>
-            <text style={{ ...textStyle, color: "#f5f5f5" }}>{segment.text}</text>
-          </div>
-        ) : (
-          <text key={index} style={{ ...textStyle, color: theme.foreground, flexShrink: index === segments.length - 1 ? 1 : 0 }}>
-            {segment.text}
-          </text>
-        ),
-      )}
     </div>
   );
 }
@@ -338,7 +302,7 @@ function OpenContentSearch({
                       {String(match.lineNumber)}
                     </Text>
                   </div>
-                  <MatchLine match={match} />
+                  <HighlightedSearchLine match={match} path={match.path} />
                 </div>
               )),
             ];
