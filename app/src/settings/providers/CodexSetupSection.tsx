@@ -39,7 +39,13 @@ import { Button, Text, type ButtonSize, type ButtonVariant } from "../../ui/prim
 import { RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { BrandIcon } from "../brandIcons.tsx";
 import { TextField } from "../controls.tsx";
-import { cancelProviderAuthCallback, canReceiveProviderAuthCallback, receiveProviderAuthCallback } from "./providerAuthReceiver.ts";
+import {
+  cancelProviderAuthCallback,
+  canReceiveProviderAuthCallback,
+  isRemoteAuthSession,
+  presentSignInPage,
+  receiveProviderAuthCallback,
+} from "./providerAuthReceiver.ts";
 import { openExternal } from "../openExternal.ts";
 import { useEnvironmentQuery } from "../query.ts";
 import { RedactedText } from "../RedactedText.tsx";
@@ -389,7 +395,10 @@ function ManagedCodexSetup({
   const primaryHttpBaseUrl = useEnvironmentHttpBaseUrl(primaryEnvironmentId);
   const primaryAuthEnvironmentId =
     !local && primaryEnvironmentId && primaryEnvironment?.connection.phase === "connected" && isLoopbackUrl(primaryHttpBaseUrl) ? primaryEnvironmentId : null;
-  const needsManualCallback = remoteWeb;
+  // Over SSH the browser's redirect cannot reach this machine whichever side listens,
+  // so the paste field shows up front, as it does for web's remote client.
+  const remoteSession = isRemoteAuthSession();
+  const needsManualCallback = remoteWeb || remoteSession;
   const [callbackHelpOpen, setCallbackHelpOpen] = useState(false);
   const [callbackDraft, setCallbackDraft] = useState({ flowId: "", value: "" });
   const callbackUrl = callbackDraft.flowId === auth?.flowId ? callbackDraft.value : "";
@@ -556,7 +565,7 @@ function ManagedCodexSetup({
         receivingCallback.current = null;
         await run(() => completeAuth({ environmentId, input: { instanceId, flowId, callbackUrl: receivedUrl } }));
       } else {
-        openExternal(authorizationUrl);
+        await presentSignInPage(authorizationUrl);
       }
     } catch {
       receivingCallback.current = null;
@@ -574,8 +583,9 @@ function ManagedCodexSetup({
     if (!openRequested.current || auth?.phase !== "waiting" || !auth.flowId || !url || openedFlow.current === auth.flowId) return;
     openedFlow.current = auth.flowId;
     openRequested.current = false;
-    if (!remoteWeb) void openPage(url);
-  }, [auth?.phase, auth?.flowId, url, remoteWeb]);
+    // Over SSH the link is copied on request, not on its own: it would overwrite the clipboard unasked.
+    if (!remoteWeb && !remoteSession) void openPage(url);
+  }, [auth?.phase, auth?.flowId, url, remoteWeb, remoteSession]);
 
   const runtimeDescription =
     installation?.phase === "downloading"
@@ -616,7 +626,7 @@ function ManagedCodexSetup({
   const waitingControl = (
     <Button
       size="sm"
-      variant={remoteWeb ? "default" : "outline"}
+      variant={remoteWeb || remoteSession ? "default" : "outline"}
       testId="chatgpt-open-sign-in"
       disabled={handoffQuery.data?.phase === "finished" ? pending || !transferFailed : !url || auth?.phase !== "waiting"}
       onClick={() => {
@@ -631,9 +641,11 @@ function ManagedCodexSetup({
             ? "Retry connection"
             : "Finishing sign-in..."
           : auth?.phase === "waiting"
-            ? remoteWeb
-              ? "Open ChatGPT sign-in"
-              : "Open sign-in page"
+            ? remoteSession
+              ? "Copy ChatGPT sign-in link"
+              : remoteWeb
+                ? "Open ChatGPT sign-in"
+                : "Open sign-in page"
             : "Signing in..."}
     </Button>
   );
@@ -669,7 +681,7 @@ function ManagedCodexSetup({
             Connect
           </Button>
         </div>
-        {!remoteWeb ? (
+        {!remoteWeb && !remoteSession ? (
           <div style={{ display: "flex", flexDirection: "row" }}>
             <Button size="xs" variant="ghost-muted" trailingIcon="external-link" onClick={() => openExternal(url)}>
               Try sign-in in your browser

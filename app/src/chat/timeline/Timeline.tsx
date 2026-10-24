@@ -102,6 +102,8 @@ import {
 } from "./rowContext.ts";
 
 const EMPTY_RUN_IDS: ReadonlySet<RunId> = new Set();
+/** The virtual list's guess for a row it has not measured; the top fill uses it too. */
+const TIMELINE_ESTIMATED_ROW_HEIGHT = 90;
 
 /** Disclosure state per thread, so returning to a thread reopens what the reader opened. */
 interface RememberedDisclosures {
@@ -904,16 +906,18 @@ const TimelineList = memo(function TimelineList({
   listKeysRef.current = listKeys;
 
   // A bottom-aligned list rests a short thread against the composer, while
-  // web's list starts at the top. Once every row has been measured and they
-  // fit, the footer takes up the slack so the first row sits under the header.
+  // web's list starts at the top. When the rows fit, the footer takes up the
+  // slack so the first row sits under the header. A row not measured yet counts
+  // at the list's estimated height: the list never lays out rows above its
+  // viewport, so waiting for one that a stale fill pushed off the top (a working
+  // row that appears above a growing worktree setup card) left the thread's
+  // first rows hidden until the row count changed again.
   const [topFill, setTopFill] = useState(0);
   const refreshTopFill = () => {
     if (viewport.height <= 0) return;
     let total = 0;
     for (const key of listKeysRef.current) {
-      const height = rowHeights.current.get(key);
-      if (height === undefined) return;
-      total += height;
+      total += rowHeights.current.get(key) ?? TIMELINE_ESTIMATED_ROW_HEIGHT;
     }
     const next = Math.max(0, Math.floor(viewport.height - total - footerHeight));
     setTopFill((current) => (Math.abs(current - next) < 1 ? current : next));
@@ -941,7 +945,7 @@ const TimelineList = memo(function TimelineList({
           : { rowKey, offset, scroll: scroll ? [scroll[0] ?? 0, scroll[1] ?? 0] : null };
     }
     const heightAt = (index: number) =>
-      keys[index] === "timeline-footer" ? footerHeight + topFill : (rowHeights.current.get(keys[index]!) ?? 90);
+      keys[index] === "timeline-footer" ? footerHeight + topFill : (rowHeights.current.get(keys[index]!) ?? TIMELINE_ESTIMATED_ROW_HEIGHT);
     let start = -1;
     let end = -1;
     if (anchor >= keys.length) {
@@ -1253,7 +1257,7 @@ const TimelineList = memo(function TimelineList({
         ref={listRef}
         alignment="bottom"
         followTail
-        estimatedItemHeight={90}
+        estimatedItemHeight={TIMELINE_ESTIMATED_ROW_HEIGHT}
         overdraw={800}
         onVisibleRange={(event) => {
           if (history?.hasMoreHistory && !history.loading && Math.floor(event.startIndex ?? 1) === 0) onLoadEarlier();
