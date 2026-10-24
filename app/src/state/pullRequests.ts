@@ -241,6 +241,27 @@ export const pullRequestPanel = {
       return { isOpen: state.isOpen && activeSurfaceId !== null, surfaces, activeSurfaceId };
     });
   },
+  // web rightPanelStore closeOtherSurfaces / closeSurfacesToRight / closeAllSurfaces, for the tab menu.
+  closeOthers(surfaceId: string): void {
+    updatePanel((state) => {
+      const surfaces = state.surfaces.filter((surface) => surface.id === surfaceId);
+      return { isOpen: state.isOpen && surfaces.length > 0, surfaces, activeSurfaceId: surfaces[0]?.id ?? null };
+    });
+  },
+  closeToRight(surfaceId: string): void {
+    updatePanel((state) => {
+      const index = state.surfaces.findIndex((surface) => surface.id === surfaceId);
+      if (index < 0) return state;
+      const surfaces = state.surfaces.slice(0, index + 1);
+      const activeSurfaceId = surfaces.some((surface) => surface.id === state.activeSurfaceId)
+        ? state.activeSurfaceId
+        : surfaceId;
+      return { ...state, surfaces, activeSurfaceId };
+    });
+  },
+  closeAll(): void {
+    updatePanel(() => ({ isOpen: false, surfaces: [], activeSurfaceId: null }));
+  },
   setDetailTab(surfaceId: string, detailTab: PullRequestDetailTab): void {
     updatePanel((state) => ({
       ...state,
@@ -250,6 +271,31 @@ export const pullRequestPanel = {
     }));
   },
 };
+
+/**
+ * web PullRequestDetailPanel `startAsk(..., { keepGuide: true })` opens the pull request (on its
+ * Guide) in the right panel of the draft the question went to. t3-term drafts have no right panel,
+ * so the draft view shows this one pull request beside its composer until it is closed.
+ */
+export interface DraftPullRequestPane {
+  readonly draftKey: string;
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+  readonly tab: PullRequestDetailTab;
+}
+
+export const draftPullRequestPaneAtom = Atom.make<DraftPullRequestPane | null>(null).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("t3term-pull-requests:draft-pane"),
+);
+
+/**
+ * The detail panel's width on the Pull requests page (web RightPanelTabs `widthStorageKey`
+ * "t3code:pull-request-panel-width"); null until the reader drags it, which means half the window.
+ */
+export const pullRequestPanelWidthAtom = persistedAtom<number | null>("pull-request-panel-width", null, (raw) =>
+  typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? Math.round(raw) : null,
+);
 
 // ── Environments that can list pull requests ─────────────────────────────
 

@@ -2,13 +2,17 @@
 // apps/web/src/components/chat/{ThreadDetailsPrRows.tsx,ThreadDetailsPrRow.tsx} and the
 // displayed-PR derivation in BranchToolbarBranchSelector.tsx.
 import { runPullRequestWrite } from "../../pullRequests/pullRequestWrites.ts";
+import { runPullRequestCheckoutHandoff } from "../../pullRequests/pullRequestHandoffs.ts";
+import { resolveDefaultPullRequestMergeMethodFor } from "../../pullRequests/pullRequestMergeDefaults.ts";
 import { useAtomValue } from "@effect/atom-react";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
   runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
   type EnvironmentId,
   type OrchestrationProjectShell,
@@ -30,6 +34,7 @@ import { useState } from "react";
 import { appAtomRegistry } from "../../runtime/runtime.ts";
 import { projectIndexAtom, threadEnvironment } from "../../state/environment.ts";
 import { openPullRequestSurface, pullRequestEnvironment } from "../../state/gitPullRequests.ts";
+import { lastPullRequestMergeMethodAtom } from "../../state/pullRequests.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import { Dialog, Tooltip } from "../../ui/overlay.tsx";
 import { Button } from "../../ui/primitives.tsx";
@@ -55,6 +60,10 @@ import {
   resolvePullRequestDetailChecks,
   resolveThreadPanelPullRequestAction,
 } from "../../web/components/pullRequest/pullRequestSurface.logic.ts";
+import {
+  buildFixFindingsHandoff,
+  buildResolveConflictsPrompt,
+} from "../../web/components/pullRequest/pullRequestDetail.logic.ts";
 import { useEnvironmentQuery } from "../../web/state/query.ts";
 import { readEnvironmentScope } from "../../web/state/session.ts";
 import { DetailsLabel, DetailsRow, DetailsSplit, useDetailsTokens } from "./detailsControls.tsx";
@@ -103,11 +112,20 @@ function ThreadDetailsPrRow(props: PrRowProps) {
   );
   const [confirmingMerge, setConfirmingMerge] = useState(false);
   const [actionPending, setActionPending] = useState(false);
+  // One hand-off at a time: Fix and Resolve both check the same pull request out.
+  const [handoff, setHandoff] = useState<"conflicts" | "findings" | null>(null);
 
   const rowAction = resolveThreadPanelPullRequestAction(detail);
+  if (confirmingMerge && rowAction !== "merge") setConfirmingMerge(false);
   const conflicting = isPullRequestConflicting(detail);
   const checksRollup = detail === null ? null : pullRequestChecksState(detail.checks);
-  const mergeMethod = allowedPullRequestMergeMethods(detail)[0] ?? null;
+  // web: the project's configured method, then the one last picked anywhere, then the first allowed.
+  useAtomValue(lastPullRequestMergeMethodAtom);
+  const allowedMergeMethods = allowedPullRequestMergeMethods(detail);
+  const mergeMethod =
+    reference === null || allowedMergeMethods.length === 0
+      ? null
+      : resolveDefaultPullRequestMergeMethodFor(environmentId, reference.projectId, allowedMergeMethods);
 
   const state = detail
     ? resolvePullRequestState(theme, { state: detail.state, isDraft: detail.isDraft })
@@ -153,18 +171,68 @@ function ThreadDetailsPrRow(props: PrRowProps) {
     props.onActed?.();
   };
 
+  // web usePullRequestHandoffs.startHandoff: check the branch out in a new worktree and open a
+  // thread on it with the task in the composer, for the reader to read over and send.
+  const startHandoff = async (kind: "conflicts" | "findings", prompt: string) => {
+    if (detail === null || handoff !== null) return;
+    if (
+      !readEnvironmentScope(environmentId, AuthSourceControlWriteScope) ||
+      !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)
+    ) {
+      toast({ type: "error", title: "Action unavailable", description: "This connection cannot check out branches or start threads." });
+      return;
+    }
+    setHandoff(kind);
+    await runPullRequestCheckoutHandoff({
+      environmentId,
+      projectRef: scopeProjectRef(environmentId, detail.projectId),
+      checkoutRoot: detail.workspaceRoot,
+      url: detail.url,
+      mode: "worktree",
+      task: { prompt },
+    });
+    setHandoff(null);
+  };
+  const startResolveConflicts = () => {
+    if (detail === null) return;
+    void startHandoff(
+      "conflicts",
+      buildResolveConflictsPrompt({ number: detail.number, url: detail.url, headBranch: detail.headBranch, baseBranch: detail.baseBranch }),
+    );
+  };
+  const startFixChecks = () => {
+    if (detail === null) return;
+    void startHandoff(
+      "findings",
+      buildFixFindingsHandoff({
+        number: detail.number,
+        title: detail.title,
+        url: detail.url,
+        headBranch: detail.headBranch,
+        baseBranch: detail.baseBranch,
+        reviewThreads: [],
+        comments: [],
+        checks: detail.checks,
+        commentsTruncated: false,
+      }).prompt,
+    );
+  };
+
   const trailingAction =
     rowAction === "resolve"
-      ? { label: "Resolve", destructive: true, external: true, tooltip: "Resolve the conflicts on the host (t3-term cannot start a handoff thread yet)" }
+      ? { label: handoff === "conflicts" ? "Preparing..." : "Resolve", destructive: true, external: true, tooltip: "Check the branch out and resolve the conflicts in a new thread" }
       : rowAction === "fix"
-        ? { label: "Fix", destructive: true, external: true, tooltip: "Open the failing checks on the host (t3-term cannot start a handoff thread yet)" }
+        ? { label: handoff === "findings" ? "Preparing..." : "Fix", destructive: true, external: true, tooltip: "Fix the failing checks in a new thread" }
         : rowAction === "ready"
           ? { label: actionPending ? "Marking..." : "Ready", destructive: false, external: false, tooltip: "Mark this pull request as ready for review" }
           : rowAction === "merge"
             ? { label: actionPending ? "Merging..." : "Merge", destructive: false, external: false, tooltip: `Merge this pull request (${mergeMethod ?? "merge"})` }
             : null;
+  const busy = actionPending || handoff !== null;
   const runTrailing = () => {
-    if (rowAction === "resolve" || rowAction === "fix") openExternalUrl(detail?.url ?? props.url);
+    if (busy) return;
+    if (rowAction === "resolve") startResolveConflicts();
+    else if (rowAction === "fix") startFixChecks();
     else if (rowAction === "ready") void perform("ready");
     else if (rowAction === "merge") setConfirmingMerge(true);
   };
@@ -238,7 +306,7 @@ function ThreadDetailsPrRow(props: PrRowProps) {
               <Tooltip content={trailingAction.tooltip} side="top">
                 <div
                   testId={`${props.testId}-action`}
-                  onClick={actionPending ? undefined : runTrailing}
+                  onClick={busy ? undefined : runTrailing}
                   style={{
                     display: "flex",
                     flexDirection: "row",
@@ -249,7 +317,7 @@ function ThreadDetailsPrRow(props: PrRowProps) {
                     paddingRight: 6,
                     borderRadius: RADIUS.sm,
                     cursor: "pointer",
-                    opacity: actionPending ? 0.64 : 1,
+                    opacity: busy ? 0.64 : 1,
                     hover: { backgroundColor: theme.appearance === "dark" ? "#ffffff14" : "#00000009" },
                   }}
                 >
@@ -293,7 +361,7 @@ function ThreadDetailsPrRow(props: PrRowProps) {
         <div style={{ display: "flex", flexDirection: "row", width: "100%", flexShrink: 0 }}>{openRow(props.label, false)}</div>
       )}
       <Dialog
-        open={confirmingMerge}
+        open={confirmingMerge && rowAction === "merge"}
         onOpenChange={setConfirmingMerge}
         title="Merge pull request?"
         description={`This merges #${number} using ${mergeMethod ?? "merge"}.`}
