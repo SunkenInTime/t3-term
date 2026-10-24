@@ -8,19 +8,18 @@
 //     footer px 16 pb 16: model · traits · mode … attach · meter · send
 //   context strip below (new-thread drafts) or the resting model strip
 //
-// Keyboard (gpuix textarea limits, docs/gpuix-notes.md): GPUI's editor actions consume
-// Enter, Up/Down and Backspace before onKeyDown, so the command menu uses:
-//   Enter (textarea onSubmit) or Tab  → select the highlighted item
-//   Ctrl+N / Ctrl+J, Ctrl+P / Ctrl+K   → move the highlight down / up (Up/Down never arrive)
+// The prompt editor is editor/ComposerEditor.tsx (web's Tiptap editor: inline chips, code
+// blocks). It hands composer-level keys here first (web useComposerCommandKey):
+//   Enter or Tab                        → select the highlighted menu item
+//   Up / Down, Ctrl+N/J, Ctrl+P/K       → move the menu highlight
 //   Shift+Tab                           → move the highlight up while the menu is open,
 //                                         otherwise toggle Build/Plan (web parity)
 //   Escape                              → dismiss the menu
+//   Enter                               → send; Shift+Enter is a new line (the editor's)
 // Modified Enter follows web composerSubmissionIntentForKey (alternate while running,
 // background in a draft, send-and-new in a thread). Other composer chords (effort, mode,
 // stash, branch, workspace, queue edit/steer) reach the window dispatcher, and this
 // composer claims them with registerShortcutHandler.
-// The caret position is not exposed by gpuix, so trigger detection uses the caret implied
-// by each edit (the end of the inserted text, or the deletion point).
 import { composerInsetAtom, restoredPromptAtom } from "../../state/timeline.ts";
 import { ChatLane, useDetailsCardInline } from "../chatLane.tsx";
 import { newThreadContextRequestAtom } from "../../state/sidebar.ts";
@@ -77,8 +76,9 @@ import {
   composerTargetKey,
   readComposerDraft,
   referencedReviewComments,
-  removeComposerTerminalContext,
-  terminalContextReferencesText,
+  referencedTerminalContexts,
+  referencedThreadContexts,
+  registerComposerInsertionHandler,
   removeComposerAttachment,
   setComposerInteractionMode,
   setComposerModelOptions,
@@ -202,8 +202,11 @@ import { usePendingThreadRequests } from "./usePendingThreadRequests.ts";
 import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
 import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
-import { ComposerPendingTerminalContexts } from "./ComposerPendingTerminalContexts.tsx";
 import { filterTerminalContextsWithText, type TerminalContextDraft } from "../../web/lib/terminalContext.ts";
+import { ComposerEditor, type ComposerEditorHandle, type ComposerEditorKeyContext } from "./editor/ComposerEditor.tsx";
+import type { ComposerChipEnvironment } from "./editor/ComposerInlineChip.tsx";
+import { reviewCommentContextId, terminalContextReference } from "../../web/lib/composerContextRecords.ts";
+import { rightPanelActions, threadKeyOf } from "../../state/rightPanel.ts";
 import {
   draftFanoutSelectionsAtom,
   type MultipleModelTarget,
@@ -252,21 +255,6 @@ const NO_SKILLS: ServerProvider["skills"] = [];
 const NO_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
 const DEFAULT_PLACEHOLDER = "Ask anything, @tag files/folders, $use skills, or / for commands";
 const PROMPT_LINE_HEIGHT = 23;
-
-/** Where the caret sits after an edit from `previous` to `next`: the end of what changed. */
-function caretAfterEdit(previous: string, next: string): number {
-  let start = 0;
-  const max = Math.min(previous.length, next.length);
-  while (start < max && previous[start] === next[start]) start++;
-  let end = 0;
-  while (
-    end < max - start &&
-    previous[previous.length - 1 - end] === next[next.length - 1 - end]
-  ) {
-    end++;
-  }
-  return next.length - end;
-}
 
 /** Mixes `color` over `base` at `amount`, for opaque stand-ins of web's translucent glass. */
 function mix(color: string, base: string, amount: number): string {
@@ -617,9 +605,11 @@ function ComposerBody({
   // ── Editor value ──────────────────────────────────────────────────────
   const editorValue = activePendingProgress ? activePendingProgress.customAnswer : prompt;
   const isChoiceOnlyPendingQuestion = activePendingProgress?.activeQuestion?.allowCustomAnswer === false;
+  // web isLiteralPendingAnswer: an answer seeded from the question keeps every character as text.
+  const isLiteralPendingAnswer = activePendingProgress?.activeQuestion?.initialAnswer !== undefined;
   const caretRef = useRef(editorValue.length);
   const valueRef = useRef(editorValue);
-  const editorRef = useRef<{ id: number } | null>(null);
+  const editorRef = useRef<ComposerEditorHandle | null>(null);
   const [trigger, setTriggerState] = useState<ComposerTrigger | null>(null);
   const dismissedTriggerRef = useRef<ComposerTrigger | null>(null);
   const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null);
@@ -661,7 +651,7 @@ function ComposerBody({
   };
 
   const focusEditor = () => {
-    if (editorRef.current) renderer.focusElement?.(editorRef.current.id);
+    editorRef.current?.focus();
   };
   const focusRequest = useAtomValue(composerFocusRequestAtom);
   const lastFocusRequestRef = useRef(focusRequest);
@@ -724,15 +714,18 @@ function ComposerBody({
     }
   };
 
-  const onEditorChange = (nextValue: string) => {
-    const caret = caretAfterEdit(valueRef.current, nextValue);
+  /** web onPromptChange: the editor reports every edit and caret move (a Markdown offset). */
+  const onEditorChange = (nextValue: string, caret: number, suppressTrigger: boolean) => {
+    const valueChanged = nextValue !== valueRef.current;
     valueRef.current = nextValue;
     caretRef.current = caret;
-    setSubmissionError(null);
+    if (valueChanged) setSubmissionError(null);
     if (isChoiceOnlyPendingQuestion) return;
-    writeEditorValue(nextValue);
-    if (restingRequested) appAtomRegistry.set(composerRestingAtom(draftKey), false);
-    setTrigger(activePendingProgress?.activeQuestion?.initialAnswer !== undefined ? null : detectComposerTrigger(nextValue, caret));
+    if (valueChanged) {
+      writeEditorValue(nextValue);
+      if (restingRequested) appAtomRegistry.set(composerRestingAtom(draftKey), false);
+    }
+    setTrigger(isLiteralPendingAnswer || suppressTrigger ? null : detectComposerTrigger(nextValue, caret));
   };
 
   const applyPromptReplacement = (rangeStart: number, rangeEnd: number, replacement: string) => {
@@ -889,10 +882,14 @@ function ComposerBody({
   }, [environmentId, threadId, draftKey]);
   // Terminal selections whose reference is still in the prompt (web composerDraft.terminalContexts).
   const composerTerminalContexts = promptDraft.terminalContexts ?? NO_TERMINAL_CONTEXTS;
+  const referencedComposerTerminalContexts = useMemo(
+    () => referencedTerminalContexts(promptDraft, prompt),
+    [promptDraft, prompt],
+  );
   const composerSendState = deriveComposerSendState({
     prompt,
     imageCount: draft.attachments.length,
-    terminalContexts: composerTerminalContexts,
+    terminalContexts: referencedComposerTerminalContexts,
     elementContextCount: referencedReviewComments(draft, prompt).length,
   });
   const providerSendBlockReason = getAntigravitySendBlockReason(selectedProviderStatus, selectedModel);
@@ -1117,10 +1114,12 @@ function ComposerBody({
       toast({ type: "warning", title: "Choose a project first" });
       return;
     }
-    // Terminal excerpts go out as inline references in the text plus context records, as on web.
-    const sendTerminalContexts = filterTerminalContextsWithText(readComposerDraft(promptKey).terminalContexts ?? []);
-    const terminalReferences = terminalContextReferencesText(sendTerminalContexts);
-    const messageText = [input.text, terminalReferences].filter((part) => part.length > 0).join(" ");
+    // Terminal excerpts and threads go out as their inline chips' references in the text plus
+    // context records, as on web; a record whose chip was deleted stays behind.
+    const draftAtSend = readComposerDraft(promptKey);
+    const sendTerminalContexts = filterTerminalContextsWithText(referencedTerminalContexts(draftAtSend, input.prompt));
+    const sendThreadContexts = referencedThreadContexts(draftAtSend, input.prompt);
+    const messageText = input.text;
     const outgoingText = formatOutgoingPrompt({
       provider: selectedProvider,
       model: selectedModel,
@@ -1157,6 +1156,7 @@ function ComposerBody({
       attachments: input.attachments,
       reviewComments: referencedReviewComments(readComposerDraft(draftKey), input.prompt),
       terminalContexts: sendTerminalContexts,
+      threadContexts: sendThreadContexts,
       modelSelection: selectedModelSelection,
       runtimeMode,
       interactionMode: input.interactionMode,
@@ -1409,63 +1409,63 @@ function ComposerBody({
     focusEditor();
   });
 
-  // ── Keyboard ──────────────────────────────────────────────────────────
-  const onEditorKeyDown = (event: KeyEvent) => {
+  // ── Keyboard (web useComposerCommandKey) ──────────────────────────────
+  /** Keys the composer takes before the editor; true when handled. */
+  const onEditorKeyCommand = (event: KeyEvent, _context: ComposerEditorKeyContext): boolean => {
     const key = event.key;
     const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
     const ctrl = Boolean(mods.ctrl || mods.cmd);
     // A key here proves editor focus even when focus moved without onFocus (focusElement).
     if (!appAtomRegistry.get(composerFocusAtom)) appAtomRegistry.set(composerFocusAtom, true);
+    const plainEnter = key === "enter" && !ctrl && !mods.alt && !mods.shift;
     if (stash.menuOpen && !menuIsOpen) {
       if (key === "escape") {
-        event.preventDefault();
-        event.stopPropagation();
         stash.close();
-        return;
+        return true;
       }
-      if ((key === "tab" && !mods.shift) || (ctrl && (key === "n" || key === "j"))) {
-        event.preventDefault();
+      if (plainEnter) {
+        stash.restoreHighlighted();
+        return true;
+      }
+      if ((key === "tab" && !mods.shift) || key === "down" || (ctrl && (key === "n" || key === "j"))) {
         stash.nudge(1);
-        return;
+        return true;
       }
-      if ((key === "tab" && mods.shift) || (ctrl && (key === "p" || key === "k"))) {
-        event.preventDefault();
+      if ((key === "tab" && mods.shift) || key === "up" || (ctrl && (key === "p" || key === "k"))) {
         stash.nudge(-1);
-        return;
+        return true;
       }
     }
     if (menuIsOpen) {
       if (key === "escape") {
-        event.preventDefault();
-        event.stopPropagation();
         dismissTrigger();
-        return;
+        return true;
       }
-      if (key === "tab" && !mods.shift) {
-        event.preventDefault();
-        const item = activeMenuItem ?? menu.items[0];
-        if (item) onSelectMenuItem(item);
-        return;
+      const item = activeMenuItem ?? menu.items[0];
+      if ((plainEnter || (key === "tab" && !mods.shift && !ctrl)) && item) {
+        onSelectMenuItem(item);
+        return true;
       }
-      if ((key === "tab" && mods.shift) || (ctrl && (key === "p" || key === "k"))) {
-        event.preventDefault();
+      if (((key === "tab" && mods.shift) || (ctrl && (key === "p" || key === "k")) || (key === "up" && !mods.shift && !ctrl && !mods.alt)) && menu.items.length > 0) {
         nudgeMenuHighlight(-1);
-        return;
+        return true;
       }
-      if (ctrl && (key === "n" || key === "j")) {
-        event.preventDefault();
+      if (((ctrl && (key === "n" || key === "j")) || (key === "down" && !mods.shift && !ctrl && !mods.alt)) && menu.items.length > 0) {
         nudgeMenuHighlight(1);
-        return;
+        return true;
       }
     }
-    if (key === "tab" && mods.shift) {
-      event.preventDefault();
+    if (key === "tab" && mods.shift && !ctrl && !mods.alt) {
       toggleInteractionMode();
-      return;
+      return true;
     }
-    // web composerSubmissionIntentForKey. Plain Enter never reaches here (the textarea's
-    // onSubmit takes it); modified Enter does. A chord bound to another command
-    // (mod+shift+enter steers the queue) is left to the window dispatcher.
+    if (plainEnter) {
+      if (event.isHeld) return true;
+      submit();
+      return true;
+    }
+    // web composerSubmissionIntentForKey. A chord bound to another command (mod+shift+enter
+    // steers the queue) is left to the window dispatcher.
     if (key === "enter" && (ctrl || mods.alt)) {
       const command = resolveKeyEventCommand(event, {
         composerFocus: true,
@@ -1482,9 +1482,8 @@ function ComposerBody({
               : command === null && !mods.shift && !mods.alt
                 ? "foreground"
                 : null;
-      if (submissionIntent === null) return;
-      event.preventDefault();
-      if (event.isHeld) return;
+      if (submissionIntent === null) return false;
+      if (event.isHeld) return true;
       submit(
         resolveComposerDispatchMode({
           running: isRunning,
@@ -1494,23 +1493,39 @@ function ComposerBody({
         }),
         submissionIntent,
       );
+      return true;
     }
+    return false;
   };
 
-  const onEditorSubmit = () => {
-    if (stash.menuOpen && !menuIsOpen) {
-      stash.restoreHighlighted();
-      return;
-    }
-    if (menuIsOpen) {
-      const item = activeMenuItem ?? menu.items[0];
-      if (item) {
-        onSelectMenuItem(item);
-        return;
-      }
-    }
-    submit();
+  // web setContextInsertionHandler: "Add to chat" from the terminal lands at the caret.
+  const insertAtCaretRef = useRef<(text: string) => boolean>(() => false);
+  insertAtCaretRef.current = (text) => {
+    if (activePendingProgress || isChoiceOnlyPendingQuestion) return false;
+    const editor = editorRef.current;
+    if (!editor) return false;
+    editor.insertText(text, "caret", { ensureLeadingBoundary: true });
+    editor.focus();
+    return true;
   };
+  useEffect(() => registerComposerInsertionHandler(promptKey, (text) => insertAtCaretRef.current(text)), [promptKey]);
+
+  // What the chips need: the records behind context references, and where a file opens.
+  const draftReviewComments = promptDraft.reviewComments;
+  const draftThreadContexts = promptDraft.threadContexts;
+  const chipEnvironment = useMemo<ComposerChipEnvironment>(
+    () => ({
+      environmentId,
+      cwd,
+      openMention: (path: string) => {
+        if (threadId) rightPanelActions.openFile(threadKeyOf(environmentId, threadId), path);
+      },
+      terminalContexts: new Map(composerTerminalContexts.map((context) => [terminalContextReference(context).contextId, context])),
+      reviewComments: new Map((draftReviewComments ?? []).map((comment) => [reviewCommentContextId(comment.id), comment])),
+      threadContexts: new Map((draftThreadContexts ?? []).map((record) => [record.contextId, record])),
+    }),
+    [environmentId, cwd, threadId, composerTerminalContexts, draftReviewComments, draftThreadContexts],
+  );
 
   // ── Shortcuts ─────────────────────────────────────────────────────────
   // The window dispatcher (keybindings/useGlobalKeybindings.ts) resolves the chord; the
@@ -1674,6 +1689,17 @@ function ComposerBody({
       appAtomRegistry.set(composerFocusAtom, false);
     };
   }, []);
+
+  const isPathQueryActive = () => trigger?.kind === "path";
+  const onEditorFocus = () => {
+    setFocused(true);
+    appAtomRegistry.set(composerFocusAtom, true);
+  };
+  const onEditorBlur = () => {
+    setFocused(false);
+    setMobileExpanded(false);
+    appAtomRegistry.set(composerFocusAtom, false);
+  };
 
   // ── Placeholder ───────────────────────────────────────────────────────
   const placeholder = isComposerApprovalState
@@ -2098,54 +2124,26 @@ function ComposerBody({
         >
           {!isResting ? <ComposerAttachmentMediaRow images={images} onRemove={(id) => removeComposerAttachment(draftKey, id)} /> : null}
           {!isResting ? <ComposerAttachmentFileList files={files} onRemove={(id) => removeComposerAttachment(draftKey, id)} /> : null}
-          {!isResting ? (
-            <ComposerPendingTerminalContexts
-              contexts={composerTerminalContexts}
-              onRemove={(contextId) => removeComposerTerminalContext(promptKey, contextId)}
-            />
-          ) : null}
           <div style={{ position: "relative", flexGrow: 1, minWidth: 0 }}>
-            {editorValue.length === 0 ? (
-              <text
-                style={{
-                  ...editorTextStyle,
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  color: alpha(theme.mutedForeground, 0.75),
-                  whiteSpace: isResting ? "nowrap" : undefined,
-                  textOverflow: isResting ? "ellipsis" : undefined,
-                  overflow: "hidden",
-                  pointerEvents: "none",
-                  ...(isResting ? { lineHeight: 32 } : {}),
-                }}
-              >
-                {placeholder}
-              </text>
-            ) : null}
-            <textarea
-              ref={editorRef as never}
+            <ComposerEditor
+              ref={editorRef}
               testId="composer"
               value={editorValue}
-              placeholder=""
+              cursor={caretRef.current}
+              skills={selectedProviderSkills}
+              codeBlocks={settings.composerRichTextEnabled}
+              literal={isLiteralPendingAnswer}
+              readOnly={isChoiceOnlyPendingQuestion || requests.activePendingIsResponding}
+              placeholder={placeholder}
+              resting={isResting}
               minRows={isResting ? 1 : 3}
               maxRows={isResting ? 1 : 9}
-              readOnly={isChoiceOnlyPendingQuestion || requests.activePendingIsResponding}
-              theme={{ caret: theme.foreground }}
-              style={{ ...editorTextStyle, ...(isResting ? { lineHeight: 32 } : {}) }}
-              onChange={(event) => onEditorChange(event.value ?? "")}
-              onSubmit={onEditorSubmit}
-              onKeyDown={onEditorKeyDown}
-              onFocus={() => {
-                setFocused(true);
-                appAtomRegistry.set(composerFocusAtom, true);
-              }}
-              onBlur={() => {
-                setFocused(false);
-                setMobileExpanded(false);
-                appAtomRegistry.set(composerFocusAtom, false);
-              }}
+              chipEnvironment={chipEnvironment}
+              isPathQueryActive={isPathQueryActive}
+              onChange={onEditorChange}
+              onKeyCommand={onEditorKeyCommand}
+              onFocus={onEditorFocus}
+              onBlur={onEditorBlur}
             />
           </div>
           {isResting ? (
