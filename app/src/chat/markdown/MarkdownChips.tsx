@@ -42,6 +42,10 @@ export type ChipKind =
   | "element"
   | "review-comment"
   | "pull-request"
+  | "pr-open"
+  | "pr-draft"
+  | "pr-merged"
+  | "pr-closed"
   | "neutral";
 
 const CHIP_ACCENTS: Record<Exclude<ChipKind, "neutral">, string> = {
@@ -56,6 +60,10 @@ const CHIP_ACCENTS: Record<Exclude<ChipKind, "neutral">, string> = {
   element: "oklch(0.62 0.134 70)",
   "review-comment": "oklch(0.62 0.16 292)",
   "pull-request": "oklch(0.62 0.16 277)",
+  "pr-open": "oklch(0.62 0.134 163)",
+  "pr-draft": "oklch(0.62 0.02 259)",
+  "pr-merged": "oklch(0.62 0.16 292)",
+  "pr-closed": "oklch(0.62 0.16 16)",
 };
 
 export interface ChipColors {
@@ -385,9 +393,11 @@ export interface CheckboxPayload {
   readonly type: "checkbox";
   readonly checked: boolean;
   readonly base: RunStyle;
+  /** Set when the task can be toggled (a rendered workspace Markdown file). */
+  readonly onToggle?: (() => void) | undefined;
 }
 
-export function checkboxAtom(id: string, checked: boolean, base: RunStyle, listIndent: number): BoxAtom {
+export function checkboxAtom(id: string, checked: boolean, base: RunStyle, listIndent: number, onToggle?: () => void): BoxAtom {
   // input: margin-inline -1.25rem 0.35em, vertical-align middle; Chrome's box is 13px.
   return {
     kind: "box",
@@ -396,7 +406,7 @@ export function checkboxAtom(id: string, checked: boolean, base: RunStyle, listI
     height: 13,
     marginLeft: -listIndent,
     marginRight: base.size * 0.35,
-    payload: { type: "checkbox", checked, base } satisfies CheckboxPayload,
+    payload: { type: "checkbox", checked, base, ...(onToggle ? { onToggle } : {}) } satisfies CheckboxPayload,
   };
 }
 
@@ -404,8 +414,10 @@ export function CheckboxBox({ atom, env }: { atom: BoxAtom; env: RenderEnv }) {
   const payload = atom.payload as CheckboxPayload;
   const palette = env.styles.palette;
   const top = middleAlignedTop(payload.base, 13) - payload.base.size * 0.075;
+  const dark = palette.appearance === "dark";
+  if (payload.onToggle) return <TaskCheckbox payload={payload} atom={atom} top={top} dark={dark} />;
   // A disabled, read-only checkbox: Chrome greys both states.
-  const fill = palette.appearance === "dark" ? "#6b6b6b" : "#a3a3a3";
+  const fill = dark ? "#6b6b6b" : "#a3a3a3";
   return (
     <div
       style={{
@@ -426,6 +438,39 @@ export function CheckboxBox({ atom, env }: { atom: BoxAtom; env: RenderEnv }) {
       }}
     >
       {payload.checked ? <Icon name="check" size={11} strokeWidth={3} color={palette.background} /> : null}
+    </div>
+  );
+}
+
+/** An enabled task checkbox (web's toggle in rendered Markdown files): Chrome's native box. */
+function TaskCheckbox({ payload, atom, top, dark }: { payload: CheckboxPayload; atom: BoxAtom; top: number; dark: boolean }) {
+  // Chrome's colours, sampled from web: dark #3b3b3b/#858585 and #99c8ff, light white/#767676 and #0075ff.
+  const checkedFill = dark ? "#99c8ff" : "#0075ff";
+  const uncheckedFill = dark ? "#3b3b3b" : "#ffffff";
+  const border = dark ? "#858585" : "#767676";
+  return (
+    <div
+      testId="markdown-task-checkbox"
+      onClick={() => payload.onToggle?.()}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 13,
+        height: 13,
+        flexShrink: 0,
+        marginTop: top,
+        marginLeft: atom.marginLeft ?? 0,
+        marginRight: atom.marginRight ?? 0,
+        borderRadius: 3,
+        borderWidth: payload.checked ? 0 : 1,
+        borderColor: border,
+        backgroundColor: payload.checked ? checkedFill : uncheckedFill,
+        cursor: "default",
+        userSelect: "none",
+      }}
+    >
+      {payload.checked ? <Icon name="check" size={11} strokeWidth={3} color={dark ? "#3b3b3b" : "#ffffff"} /> : null}
     </div>
   );
 }

@@ -104,3 +104,13 @@ Bundled highlight languages: Rust, TS, TSX, JS, JSX, Python, Go, JSON, Bash, TOM
 - **Copy joins runs with newlines**: `getSelectedText()` puts `\n` between runs unless they are adjacent bare strings of one parent. The markdown renderer ends continuing runs with U+2060 (zero width, not painted) and `chat/markdown/copy.ts` handles Ctrl/Cmd+C to drop the marker and its newline.
 - **`<img>` renders SVG text** from data URLs (usvg with system fonts), so full-colour SVG (Mermaid via pele, MathJax output) works through `<img src="data:image/svg+xml;base64,...">`. usvg has no CSS custom properties: inline `var(--x)` before handing the SVG over. `<img>` has no load/error events: fetch and validate bytes first if a fallback is needed.
 - **Auto-width chains multiply layout**: a content-sized bubble around markdown laid the subtree out once per auto-width ancestor (8× in the user bubble). Give the wrappers the content's width once it is known.
+
+## Findings from wave 7 reading and Files work (gpuix 0.11.0, Windows)
+
+- `highlight` `query` matches never cross a text group (adjacent raw-text leaves of one parent). A wrapped markdown paragraph is one group per painted line and a highlighted code line one group per token, so a phrase across them gets no wash and shifts the numbering of later matches. `chat/timeline/findOccurrence.ts` rebuilds the row's reading stream from `getAutomationTree()` and paints such matches with explicit `ranges`.
+- No bidirectional text: GPUI shapes and places every run left to right. Arabic and Hebrew shape with joined forms but read in reversed visual order, in `<text>` and in `<textarea>` alike, and gpuix's text path has no bidi pass. Right-aligning a block cannot fix that, so RTL prose is not laid out right to left.
+- In a focused `<textarea>`, Up/Down/Left/Right/Home/End/Backspace/Delete are GPUI actions that swallow the key before `onKeyDown`; JavaScript sees only `onKeyUp`, one per press even when the key auto-repeats. A textarea's Up on its first row moves the caret to offset 0, and Down on its last row to the end.
+- A textarea paints its selection even when unfocused. Collapse it with a key while focused, or remount it.
+- `simulateKeystrokes` costs one full frame per key (GPUI redraws a dirty window before each) and throws "Timed out after 2 seconds waiting for the GPUI key command" while the keys still land: wrap it in try/catch.
+- `focusElement` on an element inside a `<virtual-list>` scrolls that row's top to the viewport top even when it is already visible. `getElementBounds` returns null for the list itself.
+- `getScrollOffset`/`scrollTo` offsets are 0 at the start and negative as content scrolls, on both axes.

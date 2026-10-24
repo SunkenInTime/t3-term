@@ -345,12 +345,11 @@ export function PreviewAnnotationDetails({ record, image }: { record: ContextRec
               <div key={index} style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
                 <SelectorRow selector={element.selector || `<${element.tagName}>`} sourceLabel={sourceLabelOf(element.source)} />
                 {element.htmlPreview?.trim() ? (
-                  // max-h-24 whitespace-pre-wrap: wrapped lines capped at 96px.
-                  <div style={{ display: "flex", flexDirection: "column", marginTop: 4, maxHeight: 96, overflow: "hidden", borderRadius: 4, backgroundColor: alpha(theme.muted, 0.6), paddingLeft: 8, paddingRight: 8, paddingTop: 6, paddingBottom: 6 }}>
+                  // max-h-24 overflow-auto whitespace-pre-wrap: every wrapped line, scrolling past 96px.
+                  <div style={{ display: "flex", flexDirection: "column", marginTop: 4, maxHeight: 96, overflowY: "scroll", scrollbarColor: theme.scrollbar, borderRadius: 4, backgroundColor: alpha(theme.muted, 0.6), paddingLeft: 8, paddingRight: 8, paddingTop: 6, paddingBottom: 6 }}>
                     {element.htmlPreview
                       .trim()
                       .split("\n")
-                      .slice(0, 6)
                       .map((line, lineIndex) => (
                         <text key={lineIndex} style={{ color: theme.foreground, fontFamily: FONTS.mono, fontSize: 10, lineHeight: 16, minWidth: 0 }}>
                           {line.length === 0 ? " " : line}

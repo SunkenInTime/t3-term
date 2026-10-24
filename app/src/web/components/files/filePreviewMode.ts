@@ -1,5 +1,4 @@
-// Ported from apps/web/src/components/files/filePreviewMode.ts. setMarkdownTaskChecked
-// (task-list editing) is left out: t3-term's file preview is read-only.
+// Ported from apps/web/src/components/files/filePreviewMode.ts.
 import type { AssetResource, ProjectReadFileError, ScopedThreadRef } from "@t3tools/contracts";
 import { isHostPath, workspaceRelativeFilePath } from "@t3tools/shared/path";
 
@@ -38,6 +37,23 @@ export function shouldShowFileExplorer(input: {
     return false;
   }
   return input.explorerOpen || input.relativePath === null;
+}
+
+export function setMarkdownTaskChecked(
+  markdown: string,
+  markerOffset: number,
+  checked: boolean,
+): string {
+  if (
+    markerOffset < 0 ||
+    markdown[markerOffset] !== "[" ||
+    !/[ xX]/.test(markdown[markerOffset + 1] ?? "") ||
+    markdown[markerOffset + 2] !== "]"
+  ) {
+    return markdown;
+  }
+
+  return `${markdown.slice(0, markerOffset + 1)}${checked ? "x" : " "}${markdown.slice(markerOffset + 2)}`;
 }
 
 export function workspaceAssetResource(input: {

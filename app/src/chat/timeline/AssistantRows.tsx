@@ -6,11 +6,10 @@ import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/markdownPipel
 import { useGpuixRequired, type PublicInstance } from "@gpuix/react";
 import { memo, use, useRef, useState, type ReactNode } from "react";
 
-import { getClientSettings } from "../../state/clientSettings.ts";
-import { citationFromSelection, closeCitationToolbar, openCitationToolbar, readSelectedText, renderedPlainText } from "../markdown/citations.tsx";
+import { MessageId } from "@t3tools/contracts";
+import { closeCitationToolbar, openCitationToolbar, readSelectedText } from "../markdown/citations.tsx";
 import { cleanMarkdownSelection } from "../markdown/copy.ts";
-import { selectionOccurrence } from "./findOccurrence.ts";
-import { parseChatMarkdown } from "../markdown/parse.ts";
+import { citationSourceTestId, selectionSelector } from "./findOccurrence.ts";
 
 import { v2ItemSupportAtom } from "../../state/timeline.ts";
 import { Icon } from "../../ui/Icon.tsx";
@@ -33,7 +32,7 @@ export const AssistantTimelineRow = memo(function AssistantTimelineRow({ row }: 
   return (
     <div {...hover} style={{ display: "flex", flexDirection: "column", width: "100%", minWidth: 0, paddingLeft: 4, paddingRight: 4, paddingTop: 2, paddingBottom: 2 }}>
       {messageText.length > 0 ? (
-        <CitationSource messageId={row.message.id} text={messageText}>
+        <CitationSource messageId={row.message.id}>
           <ChatMarkdown text={messageText} tone="assistant" lineBreaks={shouldPreserveAssistantLineBreaks(messageText)} isStreaming={Boolean(row.message.streaming)} />
         </CitationSource>
       ) : null}
@@ -54,33 +53,39 @@ export const AssistantTimelineRow = memo(function AssistantTimelineRow({ row }: 
 
 /**
  * AssistantCitationSource: a drag that ends inside the reply and leaves a
- * selection in it offers the Cite button at the pointer.
+ * selection in it offers the Cite button at the pointer. web builds the
+ * selector from the DOM range; here the selection is found in the reply's
+ * rendered text, and the drag's two ends pick among repeated quotes.
  */
-function CitationSource({ messageId, text, children }: { messageId: string; text: string; children: ReactNode }) {
+function CitationSource({ messageId, children }: { messageId: string; children: ReactNode }) {
   const ctx = use(TimelineRowCtx);
   const renderer = useGpuixRequired();
   const rootRef = useRef<PublicInstance | null>(null);
+  const pressRef = useRef<{ x: number; y: number } | null>(null);
   return (
     <div
       ref={rootRef}
-      onMouseDown={() => closeCitationToolbar()}
+      testId={citationSourceTestId(messageId)}
+      onMouseDown={(event) => {
+        pressRef.current = { x: event.x ?? 0, y: event.y ?? 0 };
+        closeCitationToolbar();
+      }}
       onMouseUp={(event) => {
         const position = { x: (event.x ?? 0) + 4, y: (event.y ?? 0) + 12 };
-        const pointer = { x: event.x ?? 0, y: event.y ?? 0 };
+        const drag = { from: pressRef.current, to: { x: event.x ?? 0, y: event.y ?? 0 } };
+        pressRef.current = null;
         // The selection settles with the release; read it after this event.
         setTimeout(() => {
           const selected = readSelectedText();
-          if (!selected || !ctx) return;
-          const tree = parseChatMarkdown(text, {
-            lineBreaks: shouldPreserveAssistantLineBreaks(text),
-            math: getClientSettings().mathRenderingEnabled,
-          });
-          // A quote that repeats in the reply resolves to the occurrence under the pointer.
           const rootId = rootRef.current?.id;
-          const treeJson = rootId == null ? null : (renderer as { getAutomationTree?: () => string }).getAutomationTree?.();
-          const occurrence = treeJson && rootId != null ? (selectionOccurrence(treeJson, rootId, cleanMarkdownSelection(selected), pointer) ?? 0) : 0;
-          const citation = citationFromSelection(ctx.threadRef, messageId, renderedPlainText(tree), selected, occurrence);
-          if (citation) openCitationToolbar(citation, position);
+          if (!selected || !ctx || rootId == null) return;
+          const treeJson = (renderer as { getAutomationTree?: () => string }).getAutomationTree?.();
+          const selector = treeJson ? selectionSelector(treeJson, rootId, cleanMarkdownSelection(selected), drag) : null;
+          if (!selector) return;
+          openCitationToolbar(
+            { version: 1, environmentId: ctx.threadRef.environmentId, threadId: ctx.threadRef.threadId, messageId: MessageId.make(messageId), ...selector },
+            position,
+          );
         }, 30);
       }}
       style={{ display: "flex", flexDirection: "column", width: "100%", minWidth: 0 }}

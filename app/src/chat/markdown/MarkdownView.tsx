@@ -75,7 +75,8 @@ export interface InlineBoxRenderers {
   contextChip(kind: string, contextId: string, label: string, env: RenderEnv): BoxAtom | null;
   citationChip(entry: LinkEntry, env: RenderEnv): BoxAtom;
   favicon(host: string, link: number, env: RenderEnv): BoxAtom;
-  checkbox(checked: boolean, env: RenderEnv): BoxAtom;
+  /** `listItemOffset`: the task item's source offset (web's data-list-item-offset), for toggling. */
+  checkbox(checked: boolean, env: RenderEnv, listItemOffset: number | undefined): BoxAtom;
   skillChip(skill: InlineSkill, rawText: string, env: RenderEnv): BoxAtom;
   inlineMath(tex: string, display: boolean, env: RenderEnv, style: RunStyle): BoxAtom | null;
   inlineImage(node: Element, env: RenderEnv, style: RunStyle): BoxAtom | null;
@@ -473,6 +474,7 @@ function renderList(node: Element, width: number, env: RenderEnv, ctx: FlowCtx, 
   const childCtx: FlowCtx = { ...ctx, olDepth, ulDepth };
   const rows: Block[] = items.map((item, index) => {
     const isTask = /\btask-list-item\b/.test(className(item));
+    if (isTask) markTaskItem(item);
     const content = renderFlow(item.children, inner, env, childCtx, `${key}l${index}`);
     const { nodes, firstMt, lastMb } = stack(content);
     const marker = isTask ? null : listMarker(markerFor(index), ulDepth, indent, env, ctx.body);
@@ -493,6 +495,27 @@ function renderList(node: Element, width: number, env: RenderEnv, ctx: FlowCtx, 
   const nested = ctx.ulDepth + ctx.olDepth > 0;
   const own = nested ? 0 : styles.blockMargin;
   return { node: column(nodes), mt: Math.max(own, firstMt), mb: Math.max(own, lastMb) };
+}
+
+/** Task checkboxes by element, with their list item's source offset (web ChatMarkdown's `li`). */
+const taskItemOffsets = new WeakMap<Element, number>();
+
+function markTaskItem(item: Element) {
+  const offset = item.position?.start.offset;
+  if (offset === undefined) return;
+  const visit = (nodes: ReadonlyArray<ElementContent>): boolean => {
+    for (const child of nodes) {
+      if (child.type !== "element") continue;
+      if (child.tagName === "input" && child.properties.type === "checkbox") {
+        taskItemOffsets.set(child, offset);
+        return true;
+      }
+      // A nested list's checkboxes belong to its own items.
+      if (child.tagName !== "ul" && child.tagName !== "ol" && visit(child.children)) return true;
+    }
+    return false;
+  };
+  visit(item.children);
 }
 
 function listMarker(ordered: string | null, ulDepth: number, indent: number, env: RenderEnv, body: RunStyle): ReactNode {
@@ -636,7 +659,7 @@ function collectElement(node: Element, style: RunStyle, out: InlineCollect) {
       collectLink(node, style, out);
       return;
     case "input": {
-      if (node.properties.type === "checkbox") out.atoms.push(env.boxes.checkbox(Boolean(node.properties.checked), env));
+      if (node.properties.type === "checkbox") out.atoms.push(env.boxes.checkbox(Boolean(node.properties.checked), env, taskItemOffsets.get(node)));
       return;
     }
     case "img": {
