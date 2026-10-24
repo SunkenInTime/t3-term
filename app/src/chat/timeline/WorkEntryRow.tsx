@@ -11,6 +11,7 @@ import {
   turnItemDetailRevision,
   turnItemHasDetail,
   turnItemNeedsDetailFetch,
+  turnItemOutputImages,
   turnItemOutputText,
 } from "@t3tools/client-runtime/work-log/item-detail";
 import { workEntryViewedImagePath } from "@t3tools/client-runtime/work-log/presentation";
@@ -57,6 +58,7 @@ import {
   workLogEntryIsToolLike,
 } from "../../web/session-logic.ts";
 import { formatUpcomingTimestamp } from "../../web/timestampFormat.ts";
+import { AssetImage } from "../markdown/MarkdownMedia.tsx";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
 import { ShellCommandBlock } from "./ShellCommandBlock.tsx";
 import { SubagentNotificationLink } from "./EventRows.tsx";
@@ -441,6 +443,8 @@ function useFetchedTurnItem(projectedItem: OrchestrationV2ProjectedTurnItem, env
     item,
     output: {
       output: turnItemOutputText(item),
+      images: turnItemOutputImages(item),
+      environmentId,
       pending: fetches && item === wireItem && result._tag === "Initial",
       error: item !== wireItem ? null : data?.item === null ? "Output is no longer available." : result._tag === "Failure" ? "The request failed." : null,
       empty: fetches && item !== wireItem,
@@ -450,18 +454,35 @@ function useFetchedTurnItem(projectedItem: OrchestrationV2ProjectedTurnItem, env
 
 interface ToolOutputState {
   readonly output: string | null;
+  readonly images: ReturnType<typeof turnItemOutputImages>;
+  readonly environmentId: EnvironmentId;
   readonly pending: boolean;
   readonly error: string | null;
   readonly empty: boolean;
 }
 
+/** Images the tool returned (served as `tool-output-image` assets) above its text, like web. */
 function ToolOutput(props: ToolOutputState) {
   const theme = useTheme();
-  if (props.output) return <MonoBlock text={stripAnsi(props.output)} />;
-  if (props.pending) return <MonoBlock text="Loading output…" />;
-  if (props.error) return <MonoBlock text={`Couldn't load output: ${props.error}`} color={theme.errorForeground} />;
-  if (props.empty) return <MonoBlock text="No output." />;
-  return null;
+  const text = props.output ? (
+    <MonoBlock text={stripAnsi(props.output)} />
+  ) : props.pending ? (
+    <MonoBlock text="Loading output…" />
+  ) : props.error ? (
+    <MonoBlock text={`Couldn't load output: ${props.error}`} color={theme.errorForeground} />
+  ) : props.empty && props.images.length === 0 ? (
+    <MonoBlock text="No output." />
+  ) : null;
+  if (props.images.length === 0) return text;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+      {props.images.map((resource) => (
+        // web maxHeightRem={16}
+        <AssetImage key={resource.index} environmentId={props.environmentId} resource={resource} alt="Tool output image" maxHeight={256} />
+      ))}
+      {text}
+    </div>
+  );
 }
 
 function stripAnsi(text: string): string {
