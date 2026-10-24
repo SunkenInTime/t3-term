@@ -19,6 +19,7 @@ import { FONTS, RADIUS, alpha, useTheme } from "../ui/theme.ts";
 import { pullRequestEnvironment, useEnvironmentQuery } from "../state/pullRequests.ts";
 import { PullRequestSpeedActions } from "./PullRequestSpeedActions.tsx";
 import { PullRequestStackPopover, wasStackClick } from "./PullRequestStack.tsx";
+import { PullRequestLinkContextMenu } from "./PullRequestLinkContextMenu.tsx";
 import {
   pullRequestEntryKey,
   scorePullRequestMatch,
@@ -268,6 +269,7 @@ function PullRequestRowImpl({
   onSelect: (entry: PullRequestRowTarget) => void;
 }) {
   const theme = useTheme();
+  const [numberMenu, setNumberMenu] = useState<{ x: number; y: number } | null>(null);
   const muted = theme.mutedForeground;
   const metaText = { fontSize: 11, lineHeight: 16, fontFamily: FONTS.sans, color: muted } as const;
   const reference = {
@@ -306,17 +308,34 @@ function PullRequestRowImpl({
       />
       <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 }}>
         <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, height: 20 }}>
-          <text
-            style={{
-              color: muted,
-              fontSize: 12,
-              lineHeight: 16,
-              fontFamily: FONTS.mono,
-              flexShrink: 0,
+          {/* web PullRequestRow: a right click on the number offers Copy link and Open on host. */}
+          <div
+            testId={`pr-row-${entry.number}-number`}
+            onAuxClick={(event) => {
+              if (event.isRightClick) setNumberMenu({ x: event.x ?? 0, y: event.y ?? 0 });
             }}
+            style={{ display: "flex", flexShrink: 0 }}
           >
-            {`#${entry.number}`}
-          </text>
+            <text
+              style={{
+                color: muted,
+                fontSize: 12,
+                lineHeight: 16,
+                fontFamily: FONTS.mono,
+                flexShrink: 0,
+              }}
+            >
+              {`#${entry.number}`}
+            </text>
+            {numberMenu ? (
+              <PullRequestLinkContextMenu
+                url={entry.url}
+                provider={entry.provider}
+                position={numberMenu}
+                onClose={() => setNumberMenu(null)}
+              />
+            ) : null}
+          </div>
           <Text truncate style={{ flexShrink: 1 }}>
             {entry.title}
           </Text>

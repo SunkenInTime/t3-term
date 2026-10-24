@@ -5,24 +5,12 @@
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { resolveHandoffEndpoints, type HandoffEndpoints } from "@t3tools/client-runtime/handoff";
-import {
-  SECRET_REQUEST_DEFAULT_PLACEHOLDER,
-  SECRET_REQUEST_PRIVACY_NOTE,
-  secretRequestAnswerInput,
-  secretRequestDisplay,
-  secretRequestFailureMessage,
-  type SecretRequestItem,
-} from "@t3tools/client-runtime/secret-request";
+import { secretRequestDisplay, type SecretRequestItem } from "@t3tools/client-runtime/secret-request";
 import {
   formatSubagentDisplayTitle,
   subagentGroupSummary,
   summarizeSubagentStatuses,
 } from "@t3tools/client-runtime/state/subagent-display";
-import {
-  isAtomCommandInterrupted,
-  runAtomCommand,
-  squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
 import {
   isOrchestrationV2WorkActive,
   type EnvironmentId,
@@ -39,9 +27,9 @@ import {
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { deriveSubagentElapsedMs } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
-import { memo, use, useRef, useState, type ReactNode } from "react";
+import { memo, use, useState, type ReactNode } from "react";
 
-import { appAtomRegistry } from "../../runtime/runtime.ts";
+import { PendingSecretRequestForm } from "../../secrets/PendingSecretRequestForm.tsx";
 import { environmentThreadDetails, serverEnvironment } from "../../state/environment.ts";
 import { Icon, type IconName } from "../../ui/Icon.tsx";
 import { Tooltip } from "../../ui/overlay.tsx";
@@ -867,94 +855,3 @@ function SecretRequestCard(props: {
   return <PendingSecretRequestForm environmentId={props.environmentId} item={props.item} />;
 }
 
-const MASK = "•";
-
-/**
- * The secret field. gpuix inputs cannot mask, so the field shows bullets and
- * keeps the real text aside: typed or pasted characters append, deleting
- * trims from the end.
- */
-function PendingSecretRequestForm(props: { readonly environmentId: EnvironmentId; readonly item: SecretRequestItem }) {
-  const theme = useTheme();
-  const { item } = props;
-  const [secret, setSecret] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const inFlight = useRef(false);
-
-  const send = async (reply: { readonly type: "save"; readonly secret: string } | { readonly type: "decline" }) => {
-    const input = secretRequestAnswerInput(item, reply);
-    if (input === null || inFlight.current) return;
-    inFlight.current = true;
-    setSubmitting(true);
-    setError(null);
-    const result = await runAtomCommand(appAtomRegistry, serverEnvironment.answerSecretRequest, {
-      environmentId: props.environmentId,
-      input,
-    }).finally(() => {
-      inFlight.current = false;
-      setSubmitting(false);
-    });
-    if (result._tag === "Success") {
-      setSecret("");
-      return;
-    }
-    if (!isAtomCommandInterrupted(result)) setError(secretRequestFailureMessage(squashAtomCommandFailure(result)));
-  };
-
-  const onMaskedChange = (value: string) => {
-    if (value.length < secret.length && [...value].every((char) => char === MASK)) {
-      setSecret(secret.slice(0, value.length));
-      return;
-    }
-    const added = [...value].filter((char) => char !== MASK).join("");
-    setSecret(secret + added);
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0, padding: 16, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: alpha(theme.border, 0.6), backgroundColor: theme.card }}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
-        <Text size="sm" weight={500}>
-          {item.label}
-        </Text>
-        {item.reason.trim() ? (
-          <Text size="sm" color={theme.mutedForeground}>
-            {item.reason}
-          </Text>
-        ) : null}
-      </div>
-      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <div style={{ display: "flex", flexGrow: 1, flexBasis: 0, minWidth: 0, height: 32, alignItems: "center", paddingLeft: 10, paddingRight: 10, borderRadius: RADIUS.md, borderWidth: 1, borderColor: theme.input, backgroundColor: theme.appearance === "dark" ? "#ffffff05" : theme.popover }}>
-          <input
-            testId={`secret-input-${item.id}`}
-            value={MASK.repeat(secret.length)}
-            placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
-            readOnly={submitting}
-            onChange={(event) => onMaskedChange(event.value ?? "")}
-            onSubmit={() => void send({ type: "save", secret })}
-            style={{ flexGrow: 1, color: theme.foreground, fontSize: 14, fontFamily: FONTS.sans }}
-          />
-        </div>
-        <Button disabled={submitting || secret.trim().length === 0} onClick={() => void send({ type: "save", secret })}>
-          Save securely
-        </Button>
-      </div>
-      {error !== null ? (
-        <Text size="xs" color={theme.errorForeground}>
-          {error}
-        </Text>
-      ) : null}
-      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0 }}>
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
-          <Icon name="shield-check" size={14} color={theme.mutedForeground} />
-          <Text size="xs" color={theme.mutedForeground} truncate>
-            {SECRET_REQUEST_PRIVACY_NOTE}
-          </Text>
-        </div>
-        <Button size="xs" variant="ghost-muted" disabled={submitting} onClick={() => void send({ type: "decline" })}>
-          Decline
-        </Button>
-      </div>
-    </div>
-  );
-}

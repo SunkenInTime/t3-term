@@ -25,6 +25,8 @@ export interface Args {
   readonly help: boolean;
   /** A T3 Code prompt link to open once connected (promptLinks/promptLinkTarget.ts). */
   readonly open: string | undefined;
+  /** A folder to open a new thread in (activation/activation.ts), like `t3 <folder>`. */
+  readonly path: string | undefined;
 }
 
 export function parseArgs(argv: ReadonlyArray<string>): Args {
@@ -34,6 +36,7 @@ export function parseArgs(argv: ReadonlyArray<string>): Args {
   let terminal: boolean | undefined;
   let help = false;
   let open: string | undefined;
+  let path: string | undefined;
   let local = process.env.T3TERM_NO_LOCAL !== "1";
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -45,6 +48,7 @@ export function parseArgs(argv: ReadonlyArray<string>): Args {
     else if (arg === "--no-local") local = false;
     else if (arg === "--help" || arg === "-h") help = true;
     else if (arg === "--open") open = argv[++i];
+    else if (arg !== undefined && !arg.startsWith("-") && path === undefined) path = arg;
   }
   return {
     url,
@@ -54,6 +58,7 @@ export function parseArgs(argv: ReadonlyArray<string>): Args {
     local,
     help,
     open,
+    path,
   };
 }
 

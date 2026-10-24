@@ -31,7 +31,7 @@ import {
 import { SettingsSelect } from "./controls.tsx";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./layout.tsx";
 import { SettingsModelPicker, SettingsTraitsPicker } from "./ModelPicker.tsx";
-import { openSettingsPage } from "./navigation.ts";
+import { openProviderSettings } from "./navigation.ts";
 import {
   useScopedSettings,
   useScopedSettingSource,
@@ -174,19 +174,23 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
           <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
             <SettingsModelPicker
               testId="settings-default-model"
+              environmentId={representative?.environmentId ?? null}
               entries={entries}
               modelOptionsByInstance={modelOptions}
               activeInstanceId={selection.instanceId}
               model={selection.model}
               {...(mixedModel ? { triggerLabel: "Mixed" } : {})}
               getModelDisabledReason={modelDisabledReason}
-              onOpenProviderSetup={() => openSettingsPage("providers")}
+              onOpenProviderSetup={(instanceId) => {
+                if (representative) openProviderSettings({ environmentId: representative.environmentId, instanceId });
+              }}
               onInstanceModelChange={(instanceId, model) => setModel(createModelSelection(instanceId, model))}
             />
             {!mixedModel ? (
               <SettingsTraitsPicker
                 testId="settings-default-traits"
                 provider={activeEntry.driverKind}
+                instanceId={selection.instanceId}
                 models={activeEntry.models}
                 model={selection.model}
                 modelOptions={selection.options ?? []}

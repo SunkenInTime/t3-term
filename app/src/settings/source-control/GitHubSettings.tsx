@@ -91,6 +91,7 @@ export function GitHubTokenSettings({ environmentId, onSaved }: { environmentId:
           <TextField
             size="sm"
             width="100%"
+            secret
             value={draft}
             placeholder={isSaved ? "Stored secret, enter a new value to replace" : "Not set"}
             onChange={setDraft}

@@ -196,7 +196,7 @@ function AddUsageLimitSourceDialog({
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         {field("Hub URL", <TextField testId="usage-source-url" width="100%" placeholder="https://hub.example.ts.net:8318" value={url} onChange={setUrl} />)}
-        {field("Management key", <TextField testId="usage-source-key" width="100%" value={managementKey} onChange={setManagementKey} />)}
+        {field("Management key", <TextField testId="usage-source-key" width="100%" secret value={managementKey} onChange={setManagementKey} />)}
         {field(
           "Label (optional)",
           <TextField testId="usage-source-label" width="100%" placeholder="Defaults to the hub's host name" value={label} onChange={setLabel} />,

@@ -2,10 +2,18 @@
 //
 // Workspace files open in FileEditor (editable, autosaved, line comments to the
 // composer) when the connection may write them, else in the read-only SourceView.
-// Not ported, by platform: rendered HTML/PDF (sandboxed iframes) and video and audio
-// players; there is no browser surface here. HTML shows its source; the others show a notice.
+// Not available in gpuix: rendered HTML/PDF (sandboxed iframes) and video and audio
+// players. HTML shows its source; PDFs, video and audio show ExternalPreview, which
+// opens them in the system browser. HTML files also get web's "Open file in preview
+// browser" action (PDFs too on web; the server browser leaves PDFs to the client).
 import { useAtom, useAtomValue } from "@effect/atom-react";
-import { AuthFilesystemWriteScope, type EnvironmentId, type ScopedThreadRef, type ThreadId } from "@t3tools/contracts";
+import {
+  AuthFilesystemWriteScope,
+  AuthPreviewOperateScope,
+  type EnvironmentId,
+  type ScopedThreadRef,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { filePreviewDelimiter } from "@t3tools/shared/delimitedPreview";
 import {
@@ -14,7 +22,7 @@ import {
   isWorkspaceVideoPreviewPath,
 } from "@t3tools/shared/filePreview";
 import { isHostPath } from "@t3tools/shared/path";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { wordWrapPref } from "../../state/codeView.ts";
 import { persistedAtom } from "../../state/persistedAtom.ts";
@@ -38,10 +46,15 @@ import { useEnvironmentScope } from "../../web/state/session.ts";
 import { composerTargetKey } from "../../state/composer.ts";
 import { fileSavePendingAtom, fileSavePendingKey, setFileSavePending } from "../../state/files.ts";
 import { threadKeyOf } from "../../state/rightPanel.ts";
+import { ChatMarkdown } from "../../chat/timeline/ChatMarkdown.tsx";
+import { TimelineRowCtx, type TimelineRowSharedState } from "../../chat/timeline/rowContext.ts";
 import { FileEditor } from "./FileEditor.tsx";
+import { ExternalPreview, openAssetInBrowser } from "./ExternalPreview.tsx";
+import { useEnvironmentSupportsServerBrowser } from "../../state/preview.ts";
 import { DelimitedTablePreview } from "./DelimitedTablePreview.tsx";
 import { useFileSaveCoordinator } from "./useFileSaveCoordinator.ts";
 import { useAssetUrlState } from "./fileAssets.ts";
+import { toast } from "../../ui/toast.tsx";
 import FileBrowserPanel from "./FileBrowserPanel.tsx";
 import { OpenInEditorButton } from "./OpenInEditorButton.tsx";
 import { FileBreadcrumbs } from "./FileBreadcrumbs.tsx";
@@ -65,27 +78,59 @@ const renderMarkdownAtom = persistedAtom("file-render-markdown", false, decodeBo
 /** web: localStorage `t3code.renderTable`, default table. */
 const renderTableAtom = persistedAtom("file-render-table", true, decodeBoolean(true));
 
-function markdownTheme(theme: Palette) {
+const noop = () => {};
+
+/**
+ * What ChatMarkdown reads from its timeline row: the thread its file links open in and
+ * the folder they resolve against. A file preview has no row, so the rest is inert.
+ */
+function filePreviewRowContext(threadRef: ScopedThreadRef, cwd: string): TimelineRowSharedState {
   return {
-    appearance: theme.appearance,
-    text: alpha(theme.foreground, 0.8),
-    bg: theme.background,
-    accent: theme.infoForeground,
-    fontSans: FONTS.sans,
-    fontMono: FONTS.mono,
-    metrics: { mdTextSize: 14, mdLineHeight: 23, mdBlockGap: 10, mdHeadingSizes: [20, 18, 16, 14] },
-  };
+    timestampFormat: "locale",
+    routeThreadKey: threadKeyOf(threadRef.environmentId, threadRef.threadId),
+    threadRef,
+    markdownCwd: cwd,
+    skills: [],
+    workflowOpening: null,
+    workspaceRoot: cwd,
+    runs: [],
+    activeThreadEnvironmentId: threadRef.environmentId,
+    onRevertToTurnCount: noop,
+    onOpenTurnDiff: noop,
+    onOpenThread: noop,
+    onForkFromRun: async () => {},
+    onRollbackCheckpoint: noop,
+    onToggleTurnFold: noop,
+    onToggleAttemptFold: noop,
+    onToggleWorkGroup: noop,
+    onCancelWorktreeSetup: null,
+    retryableWorkspacePreparationRunIds: new Set(),
+    onRetryWorkspacePreparation: null,
+    onOpenWorktreeSetupTerminal: null,
+    workGroupViewState: { expandedEntries: new Set() },
+    changedFilesExpandedRunIds: new Set(),
+    onToggleChangedFilesExpanded: noop,
+  } as unknown as TimelineRowSharedState;
 }
 
-function RenderedMarkdown(props: { readonly text: string }) {
-  const theme = useTheme();
+/**
+ * web FileMarkdownPreview: the chat's markdown renderer (ChatMarkdown) at max-w-4xl
+ * px-6 py-5, so file links open in Files, web links in the browser, and code, tables,
+ * math and Mermaid render as in chat. Not ported: toggling task-list checkboxes (the
+ * shared markdown renderer has no checkbox press yet) and resolving images against the
+ * file's own folder (they resolve against the workspace, like its links).
+ */
+function RenderedMarkdown(props: { readonly text: string; readonly threadRef: ScopedThreadRef; readonly cwd: string }) {
+  const row = useMemo(() => filePreviewRowContext(props.threadRef, props.cwd), [props.threadRef.environmentId, props.threadRef.threadId, props.cwd]);
   return (
     <div
       testId="files-markdown"
       style={{ display: "flex", flexDirection: "column", alignItems: "center", flexGrow: 1, minHeight: 0, overflowY: "scroll" }}
     >
       <div style={{ width: "100%", maxWidth: 896, paddingLeft: 24, paddingRight: 24, paddingTop: 20, paddingBottom: 20, flexShrink: 0 }}>
-        <markdown source={props.text} theme={markdownTheme(theme)} />
+        <TimelineRowCtx.Provider value={row}>
+          <ChatMarkdown text={props.text} />
+        </TimelineRowCtx.Provider>
       </div>
     </div>
   );
@@ -132,17 +177,6 @@ function WorkspaceImagePreview(props: {
         objectFit="contain"
         style={{ width: "100%", height: "100%" }}
       />
-    </div>
-  );
-}
-
-function UnsupportedPreview(props: { readonly kind: string }) {
-  const theme = useTheme();
-  return (
-    <div style={{ display: "flex", flexGrow: 1, minHeight: 0, alignItems: "center", justifyContent: "center", paddingLeft: 24, paddingRight: 24 }}>
-      <Text size="xs" color={theme.mutedForeground} style={{ textAlign: "center", lineHeight: 19.5 }}>
-        {`${props.kind} previews are not available in t3-term yet.`}
-      </Text>
     </div>
   );
 }
@@ -267,6 +301,9 @@ export default function FilePreviewPanel({
   const isMedia = isImage || isVideo || isAudio;
   const isPdf = relativePath !== null && /\.pdf$/i.test(relativePath);
   const isHostFile = relativePath !== null && isHostPath(relativePath);
+  const isHtml = relativePath !== null && !isPdf && /\.html?$/i.test(relativePath.split(/[?#]/, 1)[0] ?? "");
+  const canOperatePreview = useEnvironmentScope(environmentId, AuthPreviewOperateScope);
+  const previewAvailable = useEnvironmentSupportsServerBrowser(environmentId);
   const file = useProjectFileQuery(environmentId, cwd, relativePath, relativePath !== null);
   const fileAccess = useFilesystemReadAccess(environmentId);
   const canWriteFiles = useEnvironmentScope(environmentId, AuthFilesystemWriteScope);
@@ -314,6 +351,32 @@ export default function FilePreviewPanel({
   };
   const absolutePath =
     breadcrumbPath === "" ? cwd : relativePath ? resolvePathLinkTarget(relativePath, cwd) : null;
+  // PDFs, HTML, video and audio go through a signed asset URL: web plays and frames them
+  // from it, and here the Browser and the system browser open it.
+  const assetKind = isVideo || isAudio ? ("media-file" as const) : isPdf || isHtml ? ("workspace-file" as const) : null;
+  const assetResource =
+    previewPath !== null && absolutePath !== null && assetKind !== null
+      ? workspaceAssetResource({
+          kind: assetKind === "workspace-file" && isHostFile ? "media-file" : assetKind,
+          threadRef,
+          draft: false,
+          workspaceRoot: cwd,
+          absolutePath,
+        })
+      : null;
+  const assetUrl = useAssetUrlState(environmentId, assetResource);
+  const assetHref = assetUrl._tag === "Success" ? assetUrl.url : null;
+  // web canOpenInBrowser: HTML and PDF files, when the thread's Browser is available. Here
+  // only HTML: the server browser hands PDFs to the desktop client to display ("This PDF
+  // is displayed in the connected client"), and t3-term has no PDF renderer to take it.
+  const canOpenInBrowser = canOperatePreview && previewPath !== null && previewAvailable && isHtml;
+  const openInBrowser = () => {
+    if (assetHref === null) {
+      toast({ type: "error", title: "Unable to open file in browser", description: "The file's address is not ready yet." });
+      return;
+    }
+    void openAssetInBrowser(threadRef, assetHref);
+  };
   useWorkspaceMutationRefresh({
     // An unsaved edit must not be replaced by a re-read of the old contents.
     enabled: relativePath !== null && (isFolder || (!isMedia && !isPdf)) && !selectedFilePending,
@@ -333,9 +396,18 @@ export default function FilePreviewPanel({
 
   const content = (() => {
     if (isFolder || !relativePath) return null;
-    if (isVideo) return <UnsupportedPreview kind="Video" />;
-    if (isAudio) return <UnsupportedPreview kind="Audio" />;
-    if (isPdf) return <UnsupportedPreview kind="PDF" />;
+    if (isVideo || isAudio || isPdf) {
+      return (
+        <ExternalPreview
+          key={relativePath}
+          kind={isPdf ? "pdf" : isVideo ? "video" : "audio"}
+          name={relativePath.split(/[\\/]/).at(-1) ?? relativePath}
+          url={assetHref}
+          failed={assetUrl._tag === "Failure"}
+          onOpenInBrowser={canOpenInBrowser ? openInBrowser : undefined}
+        />
+      );
+    }
     if (isImage && absolutePath) {
       return (
         <WorkspaceImagePreview
@@ -359,7 +431,7 @@ export default function FilePreviewPanel({
       );
     }
     if (file.data === null) return <FileSurfaceLoading />;
-    if (isMarkdown && renderMarkdown) return <RenderedMarkdown key={relativePath} text={file.data.contents} />;
+    if (isMarkdown && renderMarkdown) return <RenderedMarkdown key={relativePath} text={file.data.contents} threadRef={threadRef} cwd={cwd} />;
     if (tableDelimiter && renderTable) {
       return <DelimitedTablePreview key={relativePath} name={relativePath} text={file.data.contents} delimiter={tableDelimiter} />;
     }
@@ -461,6 +533,9 @@ export default function FilePreviewPanel({
               pressed={wordWrap}
               onPress={() => wordWrapPref.set(!wordWrap)}
             />
+          ) : null}
+          {canOpenInBrowser ? (
+            <FileSurfaceAction testId="files-open-in-browser" label="Open file in preview browser" icon="globe-2" onPress={openInBrowser} />
           ) : null}
           {!isHostFile && previewPath !== null ? (
             <FileSurfaceAction

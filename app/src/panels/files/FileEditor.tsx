@@ -18,7 +18,7 @@
 // moves focus instead of indenting; the list does not scroll to follow the caret.
 import type { EventPayload } from "@gpuix/native";
 import { useGpuixRequired, type KeyEvent } from "@gpuix/react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { addComposerReviewComment, removeComposerReviewComment } from "../../state/composer.ts";
 import { Icon } from "../../ui/Icon.tsx";
@@ -392,9 +392,23 @@ export function FileEditor(props: FileEditorProps) {
   const selectedRange = selection ? { from: Math.min(selection.anchor, selection.focus), to: Math.max(selection.anchor, selection.focus) } : null;
   const revealColor = mix(theme.codeBackground.slice(0, 7), theme.primary.slice(0, 7), 0.18);
 
+  // web installFileEditorDismissal: Escape in the editor, or a press outside it, drops the
+  // line selection and the editor's focus, unless a comment form is open.
+  const rootRef = useRef<{ id: number } | null>(null);
+  const dismissRef = useRef<(refocus: boolean) => void>(() => {});
+  dismissRef.current = (refocus) => {
+    if (hasOpenCommentForm) return;
+    setSelection(null);
+    if (refocus && rootRef.current) renderer.focusElement?.(rootRef.current.id);
+  };
+  const dismiss = useCallback((refocus: boolean) => dismissRef.current(refocus), []);
+
   return (
     <div
+      ref={rootRef as never}
+      tabIndex={-1}
       {...(props.testId ? { testId: props.testId } : {})}
+      onMouseDownOutside={() => dismiss(false)}
       onLayout={(event) => {
         const width = Math.floor(Number(event.width ?? 0));
         const height = Math.floor(Number(event.height ?? 0));
@@ -477,6 +491,7 @@ export function FileEditor(props: FileEditorProps) {
                 hoverApi={hoverApi}
                 gutterApi={gutterApi}
                 onChange={editChunk}
+                onEscape={dismiss}
               />
             );
           })}
@@ -520,6 +535,8 @@ const ChunkView = memo(function ChunkView(props: {
   hoverApi: HoverApi;
   gutterApi: GutterApi;
   onChange: (index: number, value: string) => void;
+  /** Escape in this chunk's textarea (installFileEditorDismissal). */
+  onEscape: (refocus: boolean) => void;
 }) {
   const { palette } = props;
   const value = props.lines.join("\n");
@@ -563,6 +580,11 @@ const ChunkView = memo(function ChunkView(props: {
           onKeyDown={(event: KeyEvent) => {
             // Ctrl/Cmd+Enter belongs to the composer, not to a file.
             if (event.key === "enter") event.stopPropagation();
+            if (event.key === "escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              props.onEscape(true);
+            }
           }}
           theme={{ caret: props.caret }}
           style={{

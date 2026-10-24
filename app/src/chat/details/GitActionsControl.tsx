@@ -198,6 +198,8 @@ export function GitActionsControl({
   const theme = useTheme();
   const scope = { environmentId, cwd: gitCwd };
   const scopeKey = `${environmentId}\u0000${gitCwd}`;
+  // web threadToastData: this control's toasts show only while its thread (or draft) is open.
+  const threadToastScope = thread ? { threadRef: { environmentId, threadId: thread.id } } : { draftKey };
   const canWrite = useEnvironmentScope(environmentId, AuthSourceControlWriteScope);
   const canOperate = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
   const statusQuery = useEnvironmentQuery(vcsEnvironment.status({ environmentId, input: { cwd: gitCwd } }));
@@ -318,7 +320,7 @@ export function GitActionsControl({
     )) as AtomCommandResult<GitRunStackedActionResult, unknown>;
     if (result._tag === "Failure") {
       if (isAtomCommandInterrupted(result)) return;
-      toast({ type: "error", title: "Action failed", description: errorMessage(squashAtomCommandFailure(result)), duration: 0 });
+      toast({ type: "error", title: "Action failed", description: errorMessage(squashAtomCommandFailure(result)), duration: 0, ...threadToastScope });
       return;
     }
     statusQuery.refresh();
@@ -333,7 +335,7 @@ export function GitActionsControl({
     )) as AtomCommandResult<{ status: string; refName: string; upstreamRef?: string | null }, unknown>;
     if (result._tag === "Failure") {
       if (isAtomCommandInterrupted(result)) return;
-      toast({ type: "error", title: "Pull failed", description: errorMessage(squashAtomCommandFailure(result)), duration: 0 });
+      toast({ type: "error", title: "Pull failed", description: errorMessage(squashAtomCommandFailure(result)), duration: 0, ...threadToastScope });
       return;
     }
     statusQuery.refresh();
@@ -357,7 +359,7 @@ export function GitActionsControl({
       return;
     }
     if (quickAction.kind === "show_hint") {
-      toast({ type: "info", title: quickAction.label, ...(quickAction.hint ? { description: quickAction.hint } : {}) });
+      toast({ type: "info", title: quickAction.label, ...(quickAction.hint ? { description: quickAction.hint } : {}), ...threadToastScope });
       return;
     }
     if (quickAction.action) void runGitAction({ action: quickAction.action });
@@ -403,7 +405,7 @@ export function GitActionsControl({
       runAtomCommand(appAtomRegistry, vcsEnvironment.init, { environmentId, input: { cwd: gitCwd } } as never, { reportFailure: false }),
     );
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-      toast({ type: "error", title: "Git initialization failed", description: errorMessage(squashAtomCommandFailure(result)) });
+      toast({ type: "error", title: "Git initialization failed", description: errorMessage(squashAtomCommandFailure(result)), ...threadToastScope });
       return;
     }
     statusQuery.refresh();

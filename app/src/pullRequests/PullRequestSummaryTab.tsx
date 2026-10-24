@@ -11,7 +11,8 @@ import type {
   PullRequestReviewThread,
 } from "@t3tools/contracts";
 import type * as Cause from "effect/Cause";
-import { useState, type ReactNode } from "react";
+import { useContext, useState, type ReactNode } from "react";
+import { splitPullRequestBody } from "@t3tools/client-runtime/pull-request-markdown";
 
 import { pullRequestEnvironment, pullRequestStorage } from "../state/pullRequests.ts";
 import { Icon } from "../ui/Icon.tsx";
@@ -55,6 +56,9 @@ import {
   pullRequestCheckStatusLabel,
 } from "./pullRequestPresentation.tsx";
 import { PullRequestDryRunError, runPullRequestWrite } from "./pullRequestWrites.ts";
+import { openPullRequestLink } from "./openPullRequestLink.ts";
+import { autolinkPullRequestMarkdown } from "./pullRequestMarkdownAutolinks.ts";
+import { PullRequestMarkdownContext } from "./pullRequestMarkdownContext.ts";
 
 const COMMENT_PAGE = 10;
 const COMMENT_FILTER_STORAGE_KEY = "t3code:pull-request-comment-filter:v1";
@@ -73,14 +77,84 @@ function readCommentFilter(): { bots: boolean; resolved: boolean } {
   }
 }
 
-/** Markdown as web's ChatMarkdown sets it: 14px, 1.625 line height, foreground at 80%. */
+/**
+ * web PullRequestMarkdown: the body split into prose and attachments (splitPullRequestBody),
+ * repository autolinks for `#123` and commit SHAs, and links that open pull requests inside
+ * t3-term (a thread's panel, or the Pull requests page) before falling back to the browser.
+ *
+ * Not ported: web plays videos inline (MediaVideoPlayer, with GitHub's authenticated media);
+ * gpuix has no video element, so a video line is an "Open video on GitHub" row like web's
+ * attachment fallback. Native <markdown> reports link clicks only, so its links have no hover
+ * preview or right-click menu.
+ */
 export function PrMarkdown({ source, size = 14 }: { source: string; size?: number }) {
+  const segments = splitPullRequestBody(source.replace(/<!--[\s\S]*?-->/gu, ""));
+  if (segments.length <= 1 && segments[0]?.kind !== "attachment") {
+    return <PrMarkdownText source={segments[0]?.kind === "markdown" ? segments[0].text : ""} size={size} />;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0, flexGrow: 1 }}>
+      {segments.map((segment) =>
+        segment.kind === "markdown" || segment.media === "image" ? (
+          <PrMarkdownText
+            key={segment.id}
+            source={segment.kind === "markdown" ? segment.text : `![](<${segment.url}>)`}
+            size={size}
+          />
+        ) : (
+          <PrAttachmentRow key={segment.id} url={segment.url} video={segment.media === "video"} />
+        ),
+      )}
+    </div>
+  );
+}
+
+function PrAttachmentRow({ url, video }: { url: string; video: boolean }) {
   const theme = useTheme();
   return (
+    <div
+      testId="pr-markdown-attachment"
+      onClick={() => openExternalUrl(url)}
+      style={{
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        paddingLeft: 12,
+        paddingRight: 12,
+        paddingTop: 8,
+        paddingBottom: 8,
+        borderRadius: RADIUS.lg,
+        borderWidth: 1,
+        borderColor: alpha(theme.border, 0.6),
+        backgroundColor: alpha(theme.muted, 0.3),
+        cursor: "pointer",
+        hover: { backgroundColor: alpha(theme.muted, 0.6) },
+      }}
+    >
+      <Icon name={video ? "video" : "paperclip"} size={14} color={theme.mutedForeground} />
+      <Text truncate style={{ flexGrow: 1 }}>
+        {video ? "Open video on GitHub" : "Open attachment on GitHub"}
+      </Text>
+      <Icon name="external-link" size={12} color={theme.mutedForeground} />
+    </div>
+  );
+}
+
+/** Markdown as web's ChatMarkdown sets it: 14px, 1.625 line height, foreground at 80%. */
+function PrMarkdownText({ source, size }: { source: string; size: number }) {
+  const theme = useTheme();
+  const context = useContext(PullRequestMarkdownContext);
+  return (
     <markdown
-      source={source.replace(/<!--[\s\S]*?-->/gu, "")}
+      source={autolinkPullRequestMarkdown(source, context?.repositoryUrl ?? null)}
       onLinkClick={(event) => {
-        if (event.value) openExternalUrl(event.value);
+        if (!event.value) return;
+        openPullRequestLink(event.value, {
+          threadRef: context?.threadRef ?? null,
+          environmentId: context?.environmentId ?? null,
+          modifiers: event.modifiers,
+        });
       }}
       style={{ minWidth: 0, flexGrow: 1 }}
       theme={{

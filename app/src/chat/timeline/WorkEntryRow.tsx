@@ -11,9 +11,10 @@ import {
   turnItemDetailRevision,
   turnItemHasDetail,
   turnItemNeedsDetailFetch,
+  turnItemOutputImages,
   turnItemOutputText,
 } from "@t3tools/client-runtime/work-log/item-detail";
-import { workEntryViewedImagePath } from "@t3tools/client-runtime/work-log/presentation";
+import { resolveViewedImageAsset, workEntryViewedImagePath } from "@t3tools/client-runtime/work-log/presentation";
 import {
   getQuestionAnswerPreview,
   getQuestionAnswerText,
@@ -37,6 +38,7 @@ import { Icon } from "../../ui/Icon.tsx";
 import { Button, Text } from "../../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme } from "../../ui/theme.ts";
 import { formatWorkspaceRelativePath } from "../../web/filePathDisplay.ts";
+import { resolveExternalWebLinkHref } from "../../web/components/chat/externalLinkContextMenu.ts";
 import {
   threadReadLabelPrefix,
   threadReadTargetId,
@@ -57,8 +59,10 @@ import {
   workLogEntryIsToolLike,
 } from "../../web/session-logic.ts";
 import { formatUpcomingTimestamp } from "../../web/timestampFormat.ts";
+import { AssetImage } from "../markdown/MarkdownMedia.tsx";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
 import { ShellCommandBlock } from "./ShellCommandBlock.tsx";
+import { openExternalUrl } from "./system.ts";
 import { SubagentNotificationLink } from "./EventRows.tsx";
 import { TimelineRowTimestamp, useHover } from "./parts.tsx";
 import { TimelineRowActivityCtx, TimelineRowCtx, type TimelineWorkEntry } from "./rowContext.ts";
@@ -256,26 +260,30 @@ function WorkEntryLogRow({ workEntry, workspaceRoot, displayLabel }: WorkEntryRo
   const skill = payload?.type === "dynamic_tool" ? claudeSkillInvocation(payload.toolName, payload.input) : undefined;
   const plainOutput =
     toolGroupAction(workEntry) === "read" ? workEntryReadOutput(workEntry, workspaceRoot) : skill ? (skill.args ?? null) : undefined;
+  // The picture a Read/view tool looked at, served from the workspace like web's media details.
+  const viewedImage = viewedImagePath ? resolveViewedImageAsset(viewedImagePath, { threadId: ctx.threadRef.threadId, workspaceRoot }) : null;
   const canExpand =
     previewText.trim().length > 0 ||
     (workEntry.itemType === "dynamic_tool" && workEntry.toolData !== undefined) ||
-    Boolean(workEntryRawCommand(workEntry) || workEntry.command?.trim() || workEntry.detail?.trim() || workEntry.changedFiles?.length);
+    Boolean(
+      workEntryRawCommand(workEntry) || workEntry.command?.trim() || workEntry.detail?.trim() || workEntry.changedFiles?.length || viewedImage,
+    );
   const expandedBody =
     expanded && !isReasoning
       ? plainOutput !== undefined
         ? plainOutput
-        : buildToolCallExpandedBody(workEntry, workspaceRoot, previewText, viewedImagePath)
+        : buildToolCallExpandedBody(workEntry, workspaceRoot, previewText, viewedImage ? viewedImagePath : null)
       : null;
   const plainOutputFetches =
     plainOutput !== undefined && workEntry.projectedItem !== undefined && turnItemNeedsDetailFetch(workEntry.projectedItem.item);
   const canExpandProjectedItem =
     plainOutput !== undefined
-      ? Boolean(plainOutput || viewedImagePath || workEntry.questionAnswer || plainOutputFetches)
+      ? Boolean(plainOutput || viewedImage || workEntry.questionAnswer || plainOutputFetches)
       : workEntry.projectedItem === undefined
         ? canExpand
         : isReasoning
           ? Boolean(workEntry.detail?.trim())
-          : Boolean(viewedImagePath || workEntry.questionAnswer || turnItemHasDetail(workEntry.projectedItem.item));
+          : Boolean(viewedImage || workEntry.questionAnswer || turnItemHasDetail(workEntry.projectedItem.item));
   const iconColor = showWarningIndicator
     ? theme.warning
     : showDestructiveRowStyle
@@ -357,6 +365,11 @@ function WorkEntryLogRow({ workEntry, workspaceRoot, displayLabel }: WorkEntryRo
         </>
       }
     >
+      {expanded && viewedImage ? (
+        <WorkLogDetails kind="media">
+          <AssetImage environmentId={ctx.threadRef.environmentId} resource={viewedImage.resource} alt={viewedImage.alt} maxHeight={256} />
+        </WorkLogDetails>
+      ) : null}
       {expanded && workEntry.questionAnswer ? <QuestionAnswerHistory answer={workEntry.questionAnswer} /> : null}
       {expanded && isReasoning ? <ReasoningTraceContent entries={[workEntry]} /> : null}
       {expanded &&
@@ -441,6 +454,8 @@ function useFetchedTurnItem(projectedItem: OrchestrationV2ProjectedTurnItem, env
     item,
     output: {
       output: turnItemOutputText(item),
+      images: turnItemOutputImages(item),
+      environmentId,
       pending: fetches && item === wireItem && result._tag === "Initial",
       error: item !== wireItem ? null : data?.item === null ? "Output is no longer available." : result._tag === "Failure" ? "The request failed." : null,
       empty: fetches && item !== wireItem,
@@ -450,18 +465,35 @@ function useFetchedTurnItem(projectedItem: OrchestrationV2ProjectedTurnItem, env
 
 interface ToolOutputState {
   readonly output: string | null;
+  readonly images: ReturnType<typeof turnItemOutputImages>;
+  readonly environmentId: EnvironmentId;
   readonly pending: boolean;
   readonly error: string | null;
   readonly empty: boolean;
 }
 
+/** Images the tool returned (served as `tool-output-image` assets) above its text, like web. */
 function ToolOutput(props: ToolOutputState) {
   const theme = useTheme();
-  if (props.output) return <MonoBlock text={stripAnsi(props.output)} />;
-  if (props.pending) return <MonoBlock text="Loading output…" />;
-  if (props.error) return <MonoBlock text={`Couldn't load output: ${props.error}`} color={theme.errorForeground} />;
-  if (props.empty) return <MonoBlock text="No output." />;
-  return null;
+  const text = props.output ? (
+    <MonoBlock text={stripAnsi(props.output)} />
+  ) : props.pending ? (
+    <MonoBlock text="Loading output…" />
+  ) : props.error ? (
+    <MonoBlock text={`Couldn't load output: ${props.error}`} color={theme.errorForeground} />
+  ) : props.empty && props.images.length === 0 ? (
+    <MonoBlock text="No output." />
+  ) : null;
+  if (props.images.length === 0) return text;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+      {props.images.map((resource) => (
+        // web maxHeightRem={16}
+        <AssetImage key={resource.index} environmentId={props.environmentId} resource={resource} alt="Tool output image" maxHeight={256} />
+      ))}
+      {text}
+    </div>
+  );
 }
 
 function stripAnsi(text: string): string {
@@ -555,6 +587,119 @@ function ArgLine({ name, value }: { name: string; value: string }) {
   );
 }
 
+// ── Search results ──────────────────────────────────────────────────────────
+
+type SearchResults<T extends "file_search" | "web_search"> = NonNullable<
+  Extract<OrchestrationV2ProjectedTurnItem["item"], { type: T }>["results"]
+>;
+
+/** Results listed before "Show all": every row is a few text elements, and a search can return hundreds. */
+const SEARCH_RESULTS_PREVIEW = 50;
+
+function useSearchResultsCap<T>(results: ReadonlyArray<T>) {
+  const [showAll, setShowAll] = useState(false);
+  const capped = !showAll && results.length > SEARCH_RESULTS_PREVIEW;
+  return {
+    shown: capped ? results.slice(0, SEARCH_RESULTS_PREVIEW) : results,
+    toggle:
+      results.length > SEARCH_RESULTS_PREVIEW ? (
+        <div style={{ display: "flex", flexDirection: "row", marginTop: 2 }}>
+          <Button size="xs" variant="ghost-muted" onClick={() => setShowAll((value) => !value)} style={{ marginLeft: -7 }}>
+            {showAll ? "Show less" : `Show all ${results.length} results`}
+          </Button>
+        </div>
+      ) : null,
+  };
+}
+
+/** Web lists every match (V2ItemInspector); long lists fold behind "Show all" so one row never holds hundreds of elements. */
+function FileSearchResults({ results, workspaceRoot }: { results: SearchResults<"file_search">; workspaceRoot: string | undefined }) {
+  const theme = useTheme();
+  const { shown, toggle } = useSearchResultsCap(results);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+      {shown.map((result, index) => (
+        <div key={index} style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+          <text style={{ color: alpha(theme.foreground, 0.8), fontSize: 12, lineHeight: 16, fontFamily: FONTS.mono, minWidth: 0 }}>
+            {`${formatWorkspaceRelativePath(result.fileName, workspaceRoot)}${result.line === undefined ? "" : `:${result.line}`}${result.column === undefined ? "" : `:${result.column}`}`}
+          </text>
+          {result.preview ? (
+            // whitespace-pre-wrap: one text per source line.
+            <div style={{ display: "flex", flexDirection: "column", marginTop: 2, minWidth: 0 }}>
+              {result.preview.split("\n").map((line, lineIndex) => (
+                <Text key={lineIndex} size="xs" color={theme.mutedForeground}>
+                  {line.length === 0 ? " " : line}
+                </Text>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ))}
+      {toggle}
+    </div>
+  );
+}
+
+function WebSearchResults({ results }: { results: SearchResults<"web_search"> }) {
+  const theme = useTheme();
+  const { shown, toggle } = useSearchResultsCap(results);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+      {shown.map((result, index) => (
+        <div key={index} style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+          <WebSearchResultTitle title={result.title} url={result.url} />
+          {result.snippet ? (
+            <Text size="xs" color={theme.mutedForeground}>
+              {result.snippet}
+            </Text>
+          ) : null}
+        </div>
+      ))}
+      {toggle}
+    </div>
+  );
+}
+
+/** A safe http(s) result opens in the system browser with web's external-link glyph; anything else stays plain text. */
+function WebSearchResultTitle({ title, url }: { title: string | undefined; url: string | undefined }) {
+  const theme = useTheme();
+  const [hovered, hover] = useHover();
+  const safeHref = resolveExternalWebLinkHref(url);
+  const label = title ?? url ?? "Search result";
+  if (!safeHref) {
+    return (
+      <Text size="xs" weight={500}>
+        {label}
+      </Text>
+    );
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "row", minWidth: 0 }}>
+      <div
+        {...hover}
+        onClick={() => openExternalUrl(safeHref)}
+        style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, minWidth: 0, flexShrink: 1, cursor: "pointer" }}
+      >
+        <text
+          style={{
+            color: theme.foreground,
+            fontSize: 12,
+            lineHeight: 16,
+            fontWeight: 500,
+            fontFamily: FONTS.sans,
+            minWidth: 0,
+            flexShrink: 1,
+            ...(hovered ? { textDecoration: "underline" } : {}),
+          }}
+        >
+          {label}
+        </text>
+        <Icon name="external-link" size={12} color={theme.foreground} />
+      </div>
+    </div>
+  );
+}
+
 export const ItemInspector = memo(function ItemInspector({ projectedItem }: { projectedItem: OrchestrationV2ProjectedTurnItem }) {
   const ctx = use(TimelineRowCtx);
   const theme = useTheme();
@@ -622,38 +767,8 @@ export const ItemInspector = memo(function ItemInspector({ projectedItem }: { pr
       ) : null}
       {item.type === "file_search" && item.pattern?.trim() ? text(item.pattern, alpha(theme.foreground, 0.85)) : null}
       {item.type === "web_search" && item.patterns?.length ? text(item.patterns.join("\n"), alpha(theme.foreground, 0.85)) : null}
-      {item.type === "file_search" && item.results?.length ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {item.results.slice(0, 50).map((result, index) => (
-            <div key={index} style={{ display: "flex", flexDirection: "column" }}>
-              <text style={{ color: alpha(theme.foreground, 0.8), fontSize: 12, lineHeight: 16, fontFamily: FONTS.mono }}>
-                {`${formatWorkspaceRelativePath(result.fileName, ctx.workspaceRoot)}${result.line === undefined ? "" : `:${result.line}`}${result.column === undefined ? "" : `:${result.column}`}`}
-              </text>
-              {result.preview ? (
-                <Text size="xs" color={muted}>
-                  {result.preview}
-                </Text>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      ) : null}
-      {item.type === "web_search" && item.results?.length ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {item.results.map((result, index) => (
-            <div key={index} style={{ display: "flex", flexDirection: "column" }}>
-              <Text size="xs" weight={500}>
-                {result.title ?? result.url ?? "Search result"}
-              </Text>
-              {result.snippet ? (
-                <Text size="xs" color={muted}>
-                  {result.snippet}
-                </Text>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      ) : null}
+      {item.type === "file_search" && item.results?.length ? <FileSearchResults results={item.results} workspaceRoot={ctx.workspaceRoot} /> : null}
+      {item.type === "web_search" && item.results?.length ? <WebSearchResults results={item.results} /> : null}
       {item.type === "dynamic_tool" ? <ToolCallBody toolName={item.toolName} args={item.input} {...fetched.output} /> : null}
       {item.type === "approval_request" && item.prompt ? text(item.prompt) : null}
       {item.type === "user_input_request" ? text(item.questions.map((question) => question.question).join("\n\n")) : null}

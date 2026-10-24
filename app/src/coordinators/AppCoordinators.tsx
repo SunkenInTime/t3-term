@@ -17,6 +17,7 @@ export function AppCoordinators() {
       <ProjectCloneToastCoordinator />
       {/* web: EventRouter's keybindings half. */}
       <KeybindingsToastCoordinator />
+      {/* EventRouter's welcome half (BootstrapThreadCoordinator) mounts behind FirstRunGate in App. */}
     </>
   );
 }

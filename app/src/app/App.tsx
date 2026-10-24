@@ -1,9 +1,12 @@
 import { RegistryContext, useAtom, useAtomValue } from "@effect/atom-react";
 import * as DialogPrimitive from "@gpuix/react/dialog";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import type { Boot } from "../connect/bootstrap.ts";
 import { ConnectGate } from "../connect/ConnectGate.tsx";
+import { BootstrapThreadCoordinator } from "../coordinators/BootstrapThreadCoordinator.tsx";
+import { FirstRunGate } from "../onboarding/FirstRunGate.tsx";
+import { WelcomeHost } from "../onboarding/WelcomeHost.tsx";
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { environmentCatalog } from "../state/environment.ts";
 import { routeAtom, sidebarMobileOpenAtom, sidebarOpenAtom } from "../state/ui.ts";
@@ -28,8 +31,11 @@ import { ThreadNotificationCoordinator } from "../notifications/ThreadNotificati
 import { AppCoordinators } from "../coordinators/AppCoordinators.tsx";
 import { noteUserInput } from "../notifications/platform.ts";
 import { PerfRegion } from "../dev/PerfRegion.tsx";
+import { AppErrorBoundary, DevCrash } from "./AppErrorBoundary.tsx";
 
 export function App({ boot }: { boot: Boot }) {
+  // "Reload app" on the error screen remounts everything under the boundary.
+  const [appKey, setAppKey] = useState(0);
   return (
     <RegistryContext.Provider value={appAtomRegistry}>
       <AppThemeProvider>
@@ -37,24 +43,36 @@ export function App({ boot }: { boot: Boot }) {
           {/* One host root: gpuix paints a single root element, so sibling
               overlays at the top level would replace the shell when they mount. */}
           <div
-            // Pointer movement marks the user as present (gpuix has no window-focus state).
+            // Pointer movement marks the user as present where focus has no native signal (notifications/focus.ts).
             // onMouseMove alone doesn't arm pointer capture, so children keep their clicks.
             onMouseMove={noteUserInput}
             style={{ position: "relative", display: "flex", flexDirection: "column", width: "100%", height: "100%" }}
           >
             <ViewportSync />
-            <ConnectGate bootError={boot.error}>
-              <Shell boot={boot} />
-              {/* Before the palette and dialogs: same layer priority, so they paint over the editor. */}
-              <ThemeEditorHost />
-              <CommandPalette />
-              <DialogHost />
-              <ChatGptWelcomeCoordinator />
-              <EnvironmentThemeSync />
-            </ConnectGate>
-            <ThreadNotificationCoordinator />
-            <PullRequestGuideRunCoordinator />
-            <AppCoordinators />
+            {/* web __root errorComponent: a render error shows the report instead of the app. */}
+            <AppErrorBoundary key={appKey} onReload={() => setAppKey((key) => key + 1)}>
+              <DevCrash />
+              <ConnectGate bootError={boot.error}>
+                {/* web FirstRunGate: nothing until the workspace is known to need setup or not. */}
+                <FirstRunGate>
+                  {/* web: EventRouter's welcome half, which the gate holds back while it decides.
+                      Ahead of the shell, as web's EventRouter is ahead of its outlet: its effect must
+                      open the bootstrap thread before home's starts a draft in the latest project. */}
+                  <BootstrapThreadCoordinator />
+                  <Shell boot={boot} />
+                  {/* Before the palette and dialogs: same layer priority, so they paint over the editor. */}
+                  <ThemeEditorHost />
+                  <WelcomeHost />
+                <CommandPalette />
+                <DialogHost />
+                <ChatGptWelcomeCoordinator />
+                <EnvironmentThemeSync />
+                </FirstRunGate>
+              </ConnectGate>
+              <ThreadNotificationCoordinator />
+              <PullRequestGuideRunCoordinator />
+              <AppCoordinators />
+            </AppErrorBoundary>
             <ToastHost />
           </div>
         </TooltipProvider>

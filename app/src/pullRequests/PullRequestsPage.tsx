@@ -14,12 +14,16 @@ import {
   type PullRequestListInput,
   type PullRequestListResult,
   type PullRequestListState,
+  type PullRequestRef,
   type SourceControlProviderKind,
 } from "@t3tools/contracts";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
+import { copyTextToClipboard } from "../chat/header/osActions.ts";
+import { registerShortcutHandler } from "../keybindings/useGlobalKeybindings.ts";
+import { toast } from "../ui/toast.tsx";
 import {
   pullRequestEnvironment,
   pullRequestPanel,
@@ -30,6 +34,7 @@ import {
   usePullRequestList,
   usePullRequestListStats,
   usePullRequestTurnRefreshes,
+  useEnvironmentQuery,
   type EnvironmentQueryTarget,
   type PullRequestSurface,
 } from "../state/pullRequests.ts";
@@ -702,6 +707,88 @@ export function PullRequestsPage() {
   const rightPanelMaximized = panel.isOpen && maximized;
   if (!panel.isOpen && maximized) setMaximized(false);
 
+  const selectActivePanelSurface = () => {
+    const next = appAtomRegistry.get(pullRequestPanelAtom);
+    selectSurfaceInSearch(next.surfaces.find((entry) => entry.id === next.activeSurfaceId) ?? null);
+  };
+  const closePanelSurface = (surface: PullRequestSurface) => {
+    pullRequestPanel.closeSurface(surface.id);
+    selectActivePanelSurface();
+  };
+
+  // web PullRequestsPage: the open pull request's link, for Copy link (thread.copyReference).
+  const activeSurfaceDetail = useEnvironmentQuery(
+    activeSurface === null || panelEnvironmentId === null
+      ? null
+      : pullRequestEnvironment.detail({
+          environmentId: panelEnvironmentId,
+          input: {
+            projectId: activeSurface.projectId as PullRequestRef["projectId"],
+            repository: activeSurface.repository,
+            number: activeSurface.number,
+            ...(activeSurface.host ? { host: activeSurface.host } : {}),
+          },
+        }),
+  ).data;
+  const openPanelPullRequestUrl = activeSurfaceDetail?.url ?? null;
+
+  // web PullRequestsPage's page shortcuts: the chat built-ins only act on thread routes, so the
+  // page claims the panel commands and Copy link while it is mounted.
+  const pageShortcuts = useRef({
+    close: () => false as boolean,
+    toggle: () => false as boolean,
+    maximize: () => false as boolean,
+    copy: () => false as boolean,
+  });
+  pageShortcuts.current = {
+    close: () => {
+      if (activeSurface === null) return false;
+      closePanelSurface(activeSurface);
+      return true;
+    },
+    toggle: () => {
+      if (!rightPanelAvailable) return false;
+      toggleRightPanel();
+      return true;
+    },
+    maximize: () => {
+      if (!panel.isOpen) return false;
+      setMaximized((value) => !value);
+      return true;
+    },
+    copy: () => {
+      if (!openPanelPullRequestUrl) return false;
+      const url = openPanelPullRequestUrl;
+      void copyTextToClipboard(url).then(
+        () => toast({ type: "success", title: "PR link copied", description: url }),
+        (error: unknown) =>
+          toast({
+            type: "error",
+            title: "Failed to copy PR link",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+      );
+      return true;
+    },
+  };
+  useEffect(() => {
+    const held = (event: { isHeld?: boolean }, run: () => boolean) => {
+      if (event.isHeld) return true;
+      return run();
+    };
+    const unregister = [
+      registerShortcutHandler("rightPanel.close", (_command, event) => held(event, () => pageShortcuts.current.close())),
+      registerShortcutHandler("rightPanel.toggle", (_command, event) => held(event, () => pageShortcuts.current.toggle())),
+      registerShortcutHandler("rightPanel.toggleMaximized", (_command, event) =>
+        held(event, () => pageShortcuts.current.maximize()),
+      ),
+      registerShortcutHandler("thread.copyReference", (_command, event) => held(event, () => pageShortcuts.current.copy())),
+    ];
+    return () => {
+      for (const stop of unregister) stop();
+    };
+  }, []);
+
   const unavailableProjects = new Map(
     listErrors.map(
       (error) =>
@@ -918,10 +1005,18 @@ export function PullRequestsPage() {
             pullRequestPanel.activate(surface.id);
             selectSurfaceInSearch(surface);
           }}
-          onCloseSurface={(surface) => {
-            pullRequestPanel.closeSurface(surface.id);
-            const next = appAtomRegistry.get(pullRequestPanelAtom);
-            selectSurfaceInSearch(next.surfaces.find((entry) => entry.id === next.activeSurfaceId) ?? null);
+          onCloseSurface={closePanelSurface}
+          onCloseOtherSurfaces={(surface) => {
+            pullRequestPanel.closeOthers(surface.id);
+            selectActivePanelSurface();
+          }}
+          onCloseSurfacesToRight={(surface) => {
+            pullRequestPanel.closeToRight(surface.id);
+            selectActivePanelSurface();
+          }}
+          onCloseAllSurfaces={() => {
+            pullRequestPanel.closeAll();
+            selectActivePanelSurface();
           }}
           listEntry={listedPullRequestsBySurface.get(pullRequestListEntryId(activeSurface)) ?? null}
           refreshToken={detailRefreshToken}

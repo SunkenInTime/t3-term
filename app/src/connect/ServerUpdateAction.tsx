@@ -4,8 +4,8 @@
 //
 // Self-updates run through client-runtime's serverEnvironment.updateServer, as on
 // web, so the operation survives this button unmounting while the host restarts.
-// Not ported: OutdatedServerUpdateAction (web's connection settings row for a host
-// too old to deliver a server config); nothing in t3-term shows that row yet.
+// OutdatedServerUpdateAction is web's connection-settings action for a host too
+// old to deliver a server config.
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthEnvironmentMaintainScope,
@@ -15,6 +15,7 @@ import {
   type ServerSelfUpdateCapability,
   sessionGrantsScope,
 } from "@t3tools/contracts";
+import { createOutdatedServerUpdateCommand } from "@t3tools/client-runtime/state/outdatedServerUpdate";
 import type { ServerUpdateStage, ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import {
   isAtomCommandInterrupted,
@@ -27,7 +28,7 @@ import { useRef, useState } from "react";
 
 import { requestConfirmDialog } from "../dialogs/confirmDialog.ts";
 import { copyToClipboard } from "../lib/clipboard.ts";
-import { appAtomRegistry } from "../runtime/runtime.ts";
+import { appAtomRegistry, connectionAtomRuntime } from "../runtime/runtime.ts";
 import { environmentSession, serverEnvironment } from "../state/environment.ts";
 import { Icon } from "../ui/Icon.tsx";
 import { Tooltip } from "../ui/overlay.tsx";
@@ -276,6 +277,49 @@ export function ServerUpdateAction({
   return (
     <Button size={size} variant={variant} disabled={disabled} onClick={onClick} testId={testId}>
       {actionLabel}
+    </Button>
+  );
+}
+
+/** apps/web/src/state/server.ts updateOutdatedServer. */
+const updateOutdatedServer = createOutdatedServerUpdateCommand(connectionAtomRuntime);
+
+/** Its version comes from the host descriptor because the host never delivers a server config. */
+export function OutdatedServerUpdateAction({
+  environmentId,
+  serverLabel,
+  fromVersion,
+  targetVersion,
+  label = "Update",
+  testId,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly serverLabel: string;
+  readonly fromVersion: string | undefined;
+  readonly targetVersion: string;
+  readonly label?: string;
+  readonly testId?: string;
+}) {
+  const handleUpdate = async () => {
+    if (pendingUpdateEnvironmentIds.has(environmentId)) return;
+    pendingUpdateEnvironmentIds.add(environmentId);
+    const result = await runAtomCommand(
+      appAtomRegistry,
+      updateOutdatedServer,
+      { environmentId, input: { targetVersion }, ...(fromVersion === undefined ? {} : { fromVersion }) },
+      { reportFailure: false },
+    );
+    pendingUpdateEnvironmentIds.delete(environmentId);
+    if (result._tag === "Failure") {
+      if (isAtomCommandInterrupted(result)) return;
+      toast({ type: "error", title: `${serverLabel} update failed`, description: updateFailureMessage(squashAtomCommandFailure(result)) });
+      return;
+    }
+    toast({ type: "success", title: `${serverLabel} updated`, description: `Reconnected on t3@${result.value.targetVersion}.` });
+  };
+  return (
+    <Button size="xs" variant="outline" onClick={() => void handleUpdate()} {...(testId ? { testId } : {})}>
+      {label}
     </Button>
   );
 }
