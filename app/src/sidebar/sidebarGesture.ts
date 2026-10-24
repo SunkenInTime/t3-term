@@ -67,7 +67,6 @@ export function claimRowPress(run: () => void, sweep: SidebarSweepAction | null 
 }
 
 export function rowMouseDown(threadKey: string, event: { x?: number; y?: number; button?: number }): void {
-  if (process.env.T3TERM_DRAG_DEBUG) console.error("[drag] down", threadKey.slice(-12), event.x, event.y, event.button, press?.phase);
   // A control's claim lands just before its row's press; anything older is stale.
   const claim = pendingClaim !== null && performance.now() - pendingClaim.at < 1_000 ? pendingClaim : null;
   pendingClaim = null;
@@ -88,7 +87,6 @@ export function rowMouseMove(event: { x?: number; y?: number; pressedButton?: nu
   // Desktop can report no button on the last move before the release, and a
   // release outside the window never arrives: either way the press is over.
   if (event.pressedButton === undefined || event.pressedButton === null) {
-    if (process.env.T3TERM_DRAG_DEBUG) console.error("[drag] move-unpressed", point.x, point.y, current.phase);
     finish(point, current.phase === "dragging");
     return;
   }
@@ -111,7 +109,6 @@ export function rowMouseMove(event: { x?: number; y?: number; pressedButton?: nu
 }
 
 export function rowMouseUp(event: { x?: number; y?: number }): void {
-  if (process.env.T3TERM_DRAG_DEBUG) console.error("[drag] up", event.x, event.y, press?.phase);
   if (press === null) return;
   finish({ x: event.x ?? 0, y: event.y ?? 0 }, true);
 }

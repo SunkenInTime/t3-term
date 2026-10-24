@@ -203,7 +203,6 @@ function commitDrop(list: SidebarThreadList, activeKey: string, activeSection: S
   if (activeThread === undefined) return;
   const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
   const plan = planDrop(list, activeKey, activeSection, target);
-  if (process.env.T3TERM_DRAG_DEBUG) console.error("[drag] plan", JSON.stringify({ target: target.section, plan }));
   if (plan === null || plan.kind === "none") return;
   if (plan.kind === "settle" && isThreadSettling(activeKey)) return;
   const assignments =
@@ -409,7 +408,6 @@ export function useSidebarThreadDrag(input: Input): {
         firstShelfTop: shelfIndex === -1 ? null : painted(shelfIndex),
       });
       const overId = collisions[0]?.id ?? null;
-      if (process.env.T3TERM_DRAG_DEBUG) console.error("[drag] upd", JSON.stringify({ py: Math.round(pointer.y), scroll: Math.round(metrics.scrollTop), ch: Math.round(metrics.contentHeight), shelf: shelfIndex === -1 ? null : Math.round(painted(shelfIndex)), ghost: Math.round(activeRect.top + transformY), over: overId?.slice(-12), c1: collisions[1]?.id.slice(-12) }));
       const overIndex = overId === null ? -1 : current.items.findIndex((item) => sidebarListItemId(item) === overId);
       current.overId = overId;
       current.transforms =
@@ -496,7 +494,6 @@ export function useSidebarThreadDrag(input: Input): {
         stopAutoScroll();
         session = null;
         setDragView(null);
-        if (process.env.T3TERM_DRAG_DEBUG) console.error("[drag] end", JSON.stringify({ point, overId: current.overId, active: current.activeKey }));
         if (point === null || current.overId === null) return;
         const target = resolveSidebarDropTarget(current.items, current.activeKey, current.overId);
         if (target === null) return;

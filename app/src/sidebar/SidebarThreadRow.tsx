@@ -658,7 +658,8 @@ function SidebarThreadRowView(props: SidebarThreadRowProps) {
       : sweepAction;
   const dragDestination = destinationVerb !== null ? <DragDestination verb={destinationVerb} /> : null;
   const [hoveredRaw, setHovered] = useState(false);
-  const hovered = hoveredRaw && !ghost;
+  // The dragged row is under the pointer in web, so its copy keeps hover styling.
+  const hovered = ghost || hoveredRaw;
   const [snoozeMenuOpenRaw, setSnoozeMenuOpen] = useState(false);
   const isRegeneratingTitle = thread.titleRegeneration != null;
 
