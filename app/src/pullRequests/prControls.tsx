@@ -2,7 +2,7 @@
 // apps/web/src/components/ui/{button,badge,textarea,input,toggle-group}.tsx as the
 // pullRequest components use them (xs buttons, control badges, segmented toggles).
 import type { EventPayload } from "@gpuix/native";
-import { useGpuixRequired, type PublicInstance } from "@gpuix/react";
+import { useGpuixRequired, type KeyEvent, type PublicInstance } from "@gpuix/react";
 import { useContext, useEffect, useRef, type ReactNode } from "react";
 
 import { DiffFocusKeeperContext } from "../panels/diff/DiffView.tsx";
@@ -69,6 +69,7 @@ export function PrButton({
   disabled,
   onClick,
   onMouseDownOutside,
+  pointer,
   testId,
   style,
   minWidth,
@@ -82,6 +83,17 @@ export function PrButton({
   disabled?: boolean;
   onClick?: (event: EventPayload) => void;
   onMouseDownOutside?: () => void;
+  /**
+   * Raw press, move and release, even while disabled (a drag that starts here). On the button
+   * itself: its fill hides it from its ancestors' pointer listeners.
+   */
+  pointer?: {
+    readonly onMouseDown: (event: EventPayload) => void;
+    readonly onMouseMove: (event: EventPayload) => void;
+    readonly onMouseUp: (event: EventPayload) => void;
+    /** Keys while the press holds focus here (a press focuses a focusable element). */
+    readonly onKeyDown?: (event: KeyEvent) => void;
+  };
   testId?: string;
   style?: Style;
   minWidth?: number;
@@ -94,6 +106,7 @@ export function PrButton({
       testId={testId}
       onClick={disabled ? undefined : onClick}
       {...(onMouseDownOutside ? { onMouseDownOutside } : {})}
+      {...(pointer ? { ...pointer, tabIndex: -1 } : {})}
       style={{
         display: "flex",
         flexDirection: "row",
