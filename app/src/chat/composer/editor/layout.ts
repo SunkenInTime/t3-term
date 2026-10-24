@@ -15,6 +15,8 @@ import { assistantCitationLabel } from "@t3tools/shared/assistantCitations";
 
 import { advanceEm, type FontFace, graphemeList } from "../../markdown/measure.ts";
 import { chipMetrics } from "../../markdown/MarkdownChips.tsx";
+import { middleTruncateAttachmentName } from "../../../web/components/composerInlineChip.ts";
+import { ATTACHMENT_CHIP_TRAILING_FONT_SIZE, attachmentChipTrailing } from "./attachmentChips.ts";
 import { ATOM_CHAR, type Atom, type Block, type Doc, type Pos, atomIndexAt } from "./doc.ts";
 import { type ItemPlace, type ListNode, listPlaces } from "./lists.ts";
 
@@ -101,7 +103,15 @@ export function atomWidth(atom: Atom, fontSize: number, maxWidth: number): numbe
   // web ContextChipLabel max-w-[16em] on citations.
   if (atom.kind === "citation") labelWidth = Math.min(labelWidth, metrics.fontSize * 16);
   // The citation's comment button: the chip's gap, then ml-[0.17em] size-[1.17em].
-  const action = atom.kind === "citation" ? metrics.gap + metrics.fontSize * (0.17 + 1.17) : 0;
+  let action = atom.kind === "citation" ? metrics.gap + metrics.fontSize * (0.17 + 1.17) : 0;
+  if (atom.kind === "context" && (atom.contextKind === "file" || atom.contextKind === "image")) {
+    // web FileChip / ImageChipButton: the name stops at max-w-72, then the size and the
+    // upload's state follow in text-3xs, a gap apart.
+    labelWidth = Math.min(labelWidth, 288);
+    for (const text of attachmentChipTrailing(atom.contextId)) {
+      action += metrics.gap + textAdvance(SANS_MEDIUM, ATTACHMENT_CHIP_TRAILING_FONT_SIZE, text);
+    }
+  }
   const natural = 2 + 2 * metrics.padX + metrics.icon + metrics.gap + labelWidth + action;
   return Math.ceil(Math.min(natural, Math.max(40, maxWidth)));
 }
@@ -118,7 +128,7 @@ export function atomLabel(atom: Atom): string {
     case "citation":
       return assistantCitationLabel(atom.citation);
     case "context":
-      return atom.label;
+      return atom.contextKind === "file" || atom.contextKind === "image" ? middleTruncateAttachmentName(atom.label) : atom.label;
   }
 }
 
@@ -280,7 +290,7 @@ function wrapText(
 
 const blockCache = new WeakMap<Block, { key: string; layout: Omit<BlockLayout, "y"> }>();
 
-function layoutBlock(block: Block, width: number, metrics: EditorMetrics, epoch: number, contentX: number): Omit<BlockLayout, "y"> {
+function layoutBlock(block: Block, width: number, metrics: EditorMetrics, epoch: number | string, contentX: number): Omit<BlockLayout, "y"> {
   const key = `${width}|${epoch}|${metrics.fontSize}|${metrics.lineHeight}|${metrics.codeFontSize}|${contentX}`;
   const cached = blockCache.get(block);
   if (cached && cached.key === key) return cached.layout;
@@ -392,7 +402,8 @@ function listGeometry(doc: Doc, places: ReadonlyArray<ItemPlace | null>, metrics
   });
 }
 
-export function layoutDoc(doc: Doc, width: number, metrics: EditorMetrics, epoch: number): DocLayout {
+/** `epoch` changes whenever glyph widths or chip contents change under an unchanged doc. */
+export function layoutDoc(doc: Doc, width: number, metrics: EditorMetrics, epoch: number | string): DocLayout {
   let y = 0;
   const blocks: BlockLayout[] = [];
   const hasLists = doc.blocks.some((block) => block.kind === "paragraph" && block.list !== undefined);

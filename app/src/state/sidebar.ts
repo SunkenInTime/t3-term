@@ -7,6 +7,8 @@ import { clearComposerContent, composerDraftHasUserContent, composerDraftsAtom }
 import * as NodeFs from "node:fs";
 import * as NodePath from "node:path";
 
+import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
+
 import {
   parseScopedThreadKey,
   scopeThreadRef,
@@ -250,7 +252,9 @@ export const sidebarDraftsAtom = Atom.make((get): ReadonlyArray<SidebarDraftEntr
     if (!key.startsWith("draft:") || !composerDraftHasUserContent(draft)) continue;
     const [, environmentId, projectId] = key.split(":");
     if (!environmentId || !projectId || environmentId === "-" || projectId === "-") continue;
-    const firstLine = draft.prompt.trim().split(/\r?\n/)[0] ?? "";
+    // web SidebarDraftRow: inline references read as their labels.
+    const firstLine =
+      replaceComposerContextReferences(draft.prompt, (occurrence) => occurrence.label).trim().split(/\r?\n/)[0] ?? "";
     entries.push({
       draftId: key,
       environmentId: environmentId as EnvironmentId,

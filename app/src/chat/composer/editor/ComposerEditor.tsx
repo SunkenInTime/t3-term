@@ -192,6 +192,8 @@ export interface ComposerEditorProps {
   readonly resting: boolean;
   readonly minRows: number;
   readonly maxRows: number;
+  /** Changes when an attachment chip's size or upload text does (editor/attachmentChips.ts). */
+  readonly chipLayoutKey?: string;
   readonly testId?: string;
   /** web onChange(value, cursor, expandedCursor, cursorAdjacentToMention). */
   readonly onChange: (value: string, cursor: number, suppressTrigger: boolean) => void;
@@ -291,7 +293,8 @@ export const ComposerEditor = memo(
   forwardRef<ComposerEditorHandle, ComposerEditorProps>(function ComposerEditor(props, ref) {
     const theme = useTheme();
     const gpuix = useGpuixRequired();
-    const epoch = useTextMetricsEpoch();
+    const metricsEpoch = useTextMetricsEpoch();
+    const epoch = props.chipLayoutKey ? `${metricsEpoch}|${props.chipLayoutKey}` : metricsEpoch;
     const skillMeta = useMemo(() => skillMetaFor(props.skills), [props.skills]);
     const skillMetaRef = useRef(skillMeta);
     skillMetaRef.current = skillMeta;

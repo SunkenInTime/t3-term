@@ -97,6 +97,7 @@ import {
   addComposerThreadContext,
   addComposerReviewComment,
   removeComposerAttachment,
+  updateComposerDraft,
   setComposerInteractionMode,
   setComposerModelOptions,
   setComposerModelSelection,
@@ -239,7 +240,7 @@ import {
   resolveKeyEventCommand,
   toShortcutEvent,
 } from "../../keybindings/useGlobalKeybindings.ts";
-import { isConfirmDialogActive } from "../../dialogs/confirmDialog.ts";
+import { isConfirmDialogActive, requestConfirmDialog } from "../../dialogs/confirmDialog.ts";
 import { readClipboardText } from "../../terminal/clipboard.ts";
 import { activeKeybindingsAtom, composerFocusAtom, terminalFocusAtom } from "../../state/keybindings.ts";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
@@ -268,13 +269,27 @@ import {
 } from "./editor/ComposerEditor.tsx";
 import type { ComposerChipEnvironment } from "./editor/ComposerInlineChip.tsx";
 import {
+  attachmentChipTrailingAtom,
+  type ComposerChipAttachment,
+  publishAttachmentChipTrailing,
+} from "./editor/attachmentChips.ts";
+import {
   reviewCommentContextId,
   reviewCommentContextReference,
   terminalContextReference,
   threadContextRecord,
   threadContextReference,
+  fileContextReference,
+  imageContextReference,
 } from "../../web/lib/composerContextRecords.ts";
-import { formatInlineContextReference } from "../../web/lib/composerContextReferences.ts";
+import {
+  collectInlineContextIds,
+  type ComposerContextReference,
+  ensureInlineContextReferences,
+  formatInlineContextReference,
+  removeInlineContextReference,
+  stripInlineContextReferences,
+} from "../../web/lib/composerContextReferences.ts";
 import { rightPanelActions, threadKeyOf } from "../../state/rightPanel.ts";
 import { ThreadContextDragGhost } from "./threadContextDrag.tsx";
 import {
@@ -580,6 +595,8 @@ function ComposerBody({
   const queuedEdit = useQueuedRunEdit({ environmentId, threadId });
   const promptKey = queuedEdit.isEditing ? queuedEdit.draftKey ?? draftKey : draftKey;
   const promptDraft = useTypingDeferredDraft(promptKey);
+  const livePromptKeyRef = useRef(promptKey);
+  livePromptKeyRef.current = promptKey;
   // Staged attachments live with the prompt: a queued edit's new attachments in its edit draft.
   const stagedAttachments = promptDraft.attachments;
   const editingAttachments = queuedEdit.editingAttachments;
@@ -926,6 +943,53 @@ function ComposerBody({
     }
   };
 
+  /**
+   * web onPromptChange reconcileAttachmentContextReferences: deleting a file's chip removes the
+   * file from the draft, and undo bringing the chip back restores it. Removed files are held
+   * for that until the draft changes (their uploads stay, as on web).
+   */
+  const retainedFilesRef = useRef<{ key: string; files: Map<string, ComposerAttachmentDraft> }>({ key: "", files: new Map() });
+  const reconcileAttachmentReferences = (nextValue: string) => {
+    if (retainedFilesRef.current.key !== promptKey) retainedFilesRef.current = { key: promptKey, files: new Map() };
+    const retained = retainedFilesRef.current.files;
+    const current = readComposerDraft(promptKey);
+    const files = current.attachments.filter((attachment) => attachment.type === "file");
+    if (files.length === 0 && retained.size === 0) return;
+    const referenced = new Set(collectInlineContextIds(nextValue));
+    const removed: string[] = [];
+    for (const file of files) {
+      const contextId = fileContextReference(file).contextId;
+      if (referenced.has(contextId)) continue;
+      retained.set(contextId, file);
+      removed.push(file.id);
+    }
+    const live = new Set(files.map((file) => fileContextReference(file).contextId));
+    const restored = [...referenced].flatMap((contextId) => {
+      if (live.has(contextId)) return [];
+      const file = retained.get(contextId);
+      return file ? [file] : [];
+    });
+    if (removed.length === 0 && restored.length === 0) return;
+    updateComposerDraft(promptKey, (draft) => ({
+      ...draft,
+      attachments: [
+        ...draft.attachments.filter((attachment) => !removed.includes(attachment.id)),
+        ...restored.filter((file) => !draft.attachments.some((attachment) => attachment.id === file.id)),
+      ],
+    }));
+  };
+  // A draft saved before files became chips: give its files their chips once, so the next
+  // edit does not take them for deleted ones.
+  useEffect(() => {
+    if (activePendingProgress) return;
+    const current = readComposerDraft(promptKey);
+    const files = current.attachments.filter((attachment) => attachment.type === "file");
+    if (files.length === 0) return;
+    const prompt = ensureInlineContextReferences(current.prompt, files.map(fileContextReference));
+    if (prompt !== current.prompt) setComposerPrompt(promptKey, prompt);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [promptKey]);
+
   /** web onPromptChange: the editor reports every edit and caret move (a Markdown offset). */
   const onEditorChange = (nextValue: string, caret: number, suppressTrigger: boolean) => {
     const valueChanged = nextValue !== valueRef.current;
@@ -943,6 +1007,7 @@ function ComposerBody({
     }
     if (valueChanged) {
       writeTypedPrompt(promptKey, nextValue, () => writeEditorValue(nextValue));
+      if (!activePendingProgress) reconcileAttachmentReferences(nextValue);
       if (restingRequested) appAtomRegistry.set(composerRestingAtom(draftKey), false);
     }
     setTrigger(isLiteralPendingAnswer || suppressTrigger ? null : detectComposerTrigger(nextValue, caret));
@@ -1721,6 +1786,7 @@ function ComposerBody({
   const stageAttachments = (
     attachments: ReadonlyArray<ComposerAttachmentDraft>,
     priorError: string | null = null,
+    options?: { readonly imageChips?: boolean },
   ): ComposerAttachmentDraft[] => {
     let error: string | null = priorError;
     let reserved = readComposerDraft(attachmentKey).attachments.length + (questionAttachmentKey ? 0 : (editingAttachments?.length ?? 0));
@@ -1739,17 +1805,70 @@ function ComposerBody({
       reserved += 1;
     }
     appAtomRegistry.set(composerSendErrorAtom(draftKey), error);
-    if (accepted.length > 0) addComposerAttachments(attachmentKey, accepted);
+    if (accepted.length > 0) {
+      addComposerAttachments(attachmentKey, accepted);
+      // web useComposerAttachmentIntake: every file gets an inline chip at the caret; an image
+      // gets one too when the prompt already holds text (otherwise its thumbnail says enough).
+      // Question answers carry attachments beside the answer, never as chips.
+      if (questionAttachmentKey === null) {
+        const storedIds = new Set(readComposerDraft(attachmentKey).attachments.map((attachment) => attachment.id));
+        const stored = accepted.filter((attachment) => storedIds.has(attachment.id));
+        const references = [
+          ...stored.filter((attachment) => attachment.type === "file").map(fileContextReference),
+          ...(options?.imageChips ? stored.filter((attachment) => attachment.type === "image").map(imageContextReference) : []),
+        ];
+        insertAttachmentReferences(attachmentKey, references);
+      }
+    }
     return accepted;
+  };
+  /**
+   * web insertAttachmentReferencesForDraft: references land at the caret of the draft that
+   * accepted the files. When that draft is no longer the one in the editor (an image finished
+   * preparing after a switch), they go on the end of its stored prompt.
+   */
+  const insertAttachmentReferences = (targetKey: string, references: ReadonlyArray<ComposerContextReference>) => {
+    if (references.length === 0) return;
+    const editor = editorRef.current;
+    if (targetKey === livePromptKeyRef.current && editor && !activePendingProgress) {
+      editor.insertText(`${references.map(formatInlineContextReference).join(" ")} `, "caret", { ensureLeadingBoundary: true });
+      return;
+    }
+    updateComposerDraft(targetKey, (current) => {
+      const prompt = ensureInlineContextReferences(current.prompt, references);
+      return prompt === current.prompt ? current : { ...current, prompt };
+    });
   };
   const removeStagedAttachment = (attachmentId: string) => {
     const removed = readComposerDraft(attachmentKey).attachments.find((attachment) => attachment.id === attachmentId);
-    removeComposerAttachment(attachmentKey, attachmentId);
-    releaseAttachmentUpload(attachmentId, removed);
+    const remove = () => {
+      if (removed && questionAttachmentKey === null) {
+        // web removeFile / removeImage: the attachment's inline references go with it.
+        const contextId = (removed.type === "image" ? imageContextReference(removed) : fileContextReference(removed)).contextId;
+        updateComposerDraft(attachmentKey, (current) => {
+          const prompt = removeInlineContextReference(current.prompt, contextId).prompt;
+          return prompt === current.prompt ? current : { ...current, prompt };
+        });
+      }
+      removeComposerAttachment(attachmentKey, attachmentId);
+      releaseAttachmentUpload(attachmentId, removed);
+    };
+    // web removeComposerImage: an image the text refers to asks first.
+    const referenced =
+      removed?.type === "image" &&
+      questionAttachmentKey === null &&
+      collectInlineContextIds(readComposerDraft(attachmentKey).prompt).includes(imageContextReference(removed).contextId);
+    if (!referenced) return remove();
+    void requestConfirmDialog(
+      `Remove ${removed.name} from the message?\nIt is referenced in your text; removing it also removes every reference.`,
+      { variant: "destructive" },
+    ).then((confirmed) => {
+      if (confirmed) remove();
+    });
   };
   // web compressAndStoreImages: images are converted (HEIC) or shrunk to the provider's limit
   // before they are staged; a send meanwhile waits, or the image would miss the turn.
-  const prepareAndStageImages = async (images: ReadonlyArray<ComposerAttachmentDraft>, priorError: string | null) => {
+  const prepareAndStageImages = async (images: ReadonlyArray<ComposerAttachmentDraft>, priorError: string | null, imageChips: boolean) => {
     pendingImagePreparations.set(draftKey, (pendingImagePreparations.get(draftKey) ?? 0) + images.length);
     try {
       let error = priorError;
@@ -1767,7 +1886,7 @@ function ComposerBody({
         }
         prepared.push({ ...image, path: result.path, name: result.name, mimeType: result.mimeType, sizeBytes: result.sizeBytes });
       }
-      stageAttachments(prepared, error);
+      stageAttachments(prepared, error, { imageChips });
     } finally {
       const remaining = (pendingImagePreparations.get(draftKey) ?? 0) - images.length;
       if (remaining > 0) pendingImagePreparations.set(draftKey, remaining);
@@ -1780,7 +1899,12 @@ function ComposerBody({
     const images = attachments.filter((attachment) => attachment.type === "image");
     const files = attachments.filter((attachment) => attachment.type !== "image");
     if (files.length > 0 || (unsupportedError && images.length === 0)) stageAttachments(files, unsupportedError);
-    if (images.length > 0) void prepareAndStageImages(images, files.length > 0 ? null : unsupportedError);
+    // web imageAttachmentsGetChips, decided before the images are prepared.
+    const imageChips =
+      phase === "connecting" ||
+      requests.pendingUserInputs.length > 0 ||
+      stripInlineContextReferences(valueRef.current).trim().length > 0;
+    if (images.length > 0) void prepareAndStageImages(images, files.length > 0 ? null : unsupportedError, imageChips);
     if (folders.length > 0) {
       const mentions = folders.map((folder) => serializeComposerFileLink(folder)).join(" ");
       const current = valueRef.current;
@@ -1891,6 +2015,16 @@ function ComposerBody({
       ),
     [visibleStaged],
   );
+  // web composerOtherFilesForPresentation: a file with an inline chip is shown by the chip.
+  const inlineFileIds = useMemo(() => {
+    if (questionAttachmentKey !== null) return new Set<string>();
+    const contextIds = new Set(collectInlineContextIds(promptDraft.prompt));
+    return new Set(
+      stagedAttachments
+        .filter((attachment) => attachment.type === "file" && contextIds.has(fileContextReference(attachment).contextId))
+        .map((attachment) => attachment.id),
+    );
+  }, [questionAttachmentKey, promptDraft.prompt, stagedAttachments]);
   // The queued message's own attachments come first, from the server; then staged ones.
   const images: ComposerMediaItem[] = [
     ...(editingAttachments ?? [])
@@ -1922,6 +2056,8 @@ function ComposerBody({
         }
       : image,
   );
+  const imagesRef = useRef(images);
+  imagesRef.current = images;
   const files: ComposerFileItem[] = [
     ...(editingAttachments ?? [])
       .filter((attachment) => attachment.type !== "image")
@@ -1932,7 +2068,7 @@ function ComposerBody({
         onRemove: () => queuedEdit.removeEditingAttachment(attachment.id),
       })),
     ...visibleStaged
-      .filter((attachment) => attachment.type === "file")
+      .filter((attachment) => attachment.type === "file" && !inlineFileIds.has(attachment.id))
       .map((attachment) => ({
         id: attachment.id,
         name: attachment.name,
@@ -2135,8 +2271,33 @@ function ComposerBody({
       terminalContexts: new Map(composerTerminalContexts.map((context) => [terminalContextReference(context).contextId, context])),
       reviewComments: new Map((draftReviewComments ?? []).map((comment) => [reviewCommentContextId(comment.id), comment])),
       threadContexts: new Map((draftThreadContexts ?? []).map((record) => [record.contextId, record])),
+      attachments: new Map(
+        stagedAttachments.map((attachment): [string, ComposerChipAttachment] => [
+          (attachment.type === "image" ? imageContextReference(attachment) : fileContextReference(attachment)).contextId,
+          {
+            id: attachment.id,
+            type: attachment.type,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            path: attachment.path,
+            needsReattach: missingAttachmentIds.has(attachment.id),
+            tracksUpload: uploadsEnabled,
+          },
+        ]),
+      ),
+      expandImage: (attachmentId: string) => imagesRef.current.find((image) => image.id === attachmentId)?.onExpand?.(),
     }),
-    [environmentId, cwd, threadId, composerTerminalContexts, draftReviewComments, draftThreadContexts],
+    [environmentId, cwd, threadId, composerTerminalContexts, draftReviewComments, draftThreadContexts, stagedAttachments, missingAttachmentIds, uploadsEnabled],
+  );
+
+  // Attachment chips grow with their upload's progress text; the editor lays them out again
+  // when it changes (one re-render per 5% step, as on web).
+  const chipAttachmentSpec = useMemo(() => JSON.stringify([...chipEnvironment.attachments]), [chipEnvironment.attachments]);
+  const chipTrailing = useAtomValue(attachmentChipTrailingAtom(chipAttachmentSpec));
+  const chipLayoutKey = useMemo(
+    () => publishAttachmentChipTrailing(JSON.parse(chipTrailing) as Array<[string, string[]]>),
+    [chipTrailing],
   );
 
   // ── Shortcuts ─────────────────────────────────────────────────────────
@@ -2789,6 +2950,7 @@ function ComposerBody({
             <ComposerEditor
               ref={editorRef}
               testId="composer"
+              chipLayoutKey={chipLayoutKey}
               value={editorValue}
               cursor={caretRef.current}
               skills={selectedProviderSkills}

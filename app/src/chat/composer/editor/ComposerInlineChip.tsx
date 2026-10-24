@@ -13,7 +13,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { AssistantCitation, EnvironmentId } from "@t3tools/contracts";
 import { assistantCitationLabel, withAssistantCitationComment } from "@t3tools/shared/assistantCitations";
-import { createContext, memo, use, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, use, useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 
 import { appAtomRegistry } from "../../../runtime/runtime.ts";
 import { FileEntryIcon } from "../../../panels/files/FileEntryIcon.tsx";
@@ -22,12 +22,24 @@ import { environmentThreadShells, projectIndexAtom } from "../../../state/enviro
 import { routeAtom } from "../../../state/ui.ts";
 import { Icon, type IconName } from "../../../ui/Icon.tsx";
 import { Popover, Tooltip } from "../../../ui/overlay.tsx";
-import { FONTS, RADIUS, alpha, useTheme } from "../../../ui/theme.ts";
-import { chipColors, chipMetrics, type ChipKind } from "../../markdown/MarkdownChips.tsx";
+import { FONTS, RADIUS, alpha, type Palette, useTheme } from "../../../ui/theme.ts";
+import { type ChipColors, chipColors, chipMetrics, type ChipKind } from "../../markdown/MarkdownChips.tsx";
 import { SKILL_CHIP_ICON_SVG } from "../../markdown/chipIcons.ts";
 import { isTerminalContextExpired, type TerminalContextDraft } from "../../../web/lib/terminalContext.ts";
 import type { ReviewCommentContext } from "../../../web/reviewCommentContext.ts";
+import { videoMimeType } from "@t3tools/shared/video";
+import { middleTruncateAttachmentName } from "../../../web/components/composerInlineChip.ts";
+import { attachmentUploadStateAtom } from "../attachmentUploads.ts";
+import {
+  ATTACHMENT_CHIP_TRAILING_FONT_SIZE,
+  attachmentChipSize,
+  attachmentChipSuffix,
+  attachmentChipTooltip,
+  type ComposerChipAttachment,
+} from "./attachmentChips.ts";
 import type { Atom } from "./doc.ts";
+import { imageAccentAtom } from "./imageAccent.ts";
+import { mixOklab, withAlpha } from "../../markdown/colors.ts";
 import { atomLabel } from "./layout.ts";
 
 /** What the chips need from the composer around the editor. */
@@ -40,6 +52,10 @@ export interface ComposerChipEnvironment {
   readonly terminalContexts: ReadonlyMap<string, TerminalContextDraft>;
   readonly reviewComments: ReadonlyMap<string, ReviewCommentContext>;
   readonly threadContexts: ReadonlyMap<string, { readonly environmentId: EnvironmentId; readonly threadId: string; readonly title: string }>;
+  /** Staged attachments by context id (web ComposerContextRecordsContext image/file entries). */
+  readonly attachments: ReadonlyMap<string, ComposerChipAttachment>;
+  /** web ComposerContextActions.expandImage: the viewer opens on this staged image. */
+  readonly expandImage: (attachmentId: string) => void;
 }
 
 export interface ComposerChipActions {
@@ -60,6 +76,8 @@ export const ComposerChipEnvironmentContext = createContext<ComposerChipEnvironm
   terminalContexts: new Map(),
   reviewComments: new Map(),
   threadContexts: new Map(),
+  attachments: new Map(),
+  expandImage: () => {},
 });
 
 export const ComposerChipActionsContext = createContext<ComposerChipActions>({
@@ -104,16 +122,26 @@ interface ChipShellProps {
   icon: ReactNode;
   label: string;
   invalid?: boolean;
+  /** web state "unresolved": a dashed outline. */
+  dashed?: boolean;
+  /** Colours from another accent than the kind's (an image chip's sampled colour). */
+  colors?: ChipColors | undefined;
   testId?: string;
   onPress?: (() => void) | undefined;
   trailing?: ReactNode;
+  // What a Tooltip/Popover trigger (asChild) merges onto its child: without forwarding them
+  // the chip never reports hover or its box, and its tooltip never opens.
+  onMouseEnter?: ((event: never) => void) | undefined;
+  onMouseLeave?: ((event: never) => void) | undefined;
+  onMouseDown?: ((event: never) => void) | undefined;
+  ref?: Ref<never> | undefined;
 }
 
 /** web ContextChip: the box every composer chip is drawn in. */
 function ChipShell(props: ChipShellProps) {
   const theme = useTheme();
   const metrics = chipMetrics(props.fontSize);
-  const colors = chipColors(theme, props.kind);
+  const colors = props.colors ?? chipColors(theme, props.kind);
   const [hovered, setHovered] = useState(false);
   const interactive = props.onPress !== undefined;
   const active = interactive && hovered;
@@ -123,12 +151,20 @@ function ChipShell(props: ChipShellProps) {
   return (
     <div
       testId={props.testId}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      ref={props.ref as never}
+      onMouseEnter={(event) => {
+        setHovered(true);
+        props.onMouseEnter?.(event as never);
+      }}
+      onMouseLeave={(event) => {
+        setHovered(false);
+        props.onMouseLeave?.(event as never);
+      }}
       onMouseDown={
-        props.onPress
+        props.onPress || props.onMouseDown
           ? (event) => {
-              if ((event.button ?? 0) === 0) props.onPress?.();
+              props.onMouseDown?.(event as never);
+              if (props.onPress && (event.button ?? 0) === 0) props.onPress();
             }
           : undefined
       }
@@ -146,6 +182,7 @@ function ChipShell(props: ChipShellProps) {
         borderRadius: metrics.radius,
         borderWidth: 1,
         borderColor: border,
+        ...(props.dashed ? { borderStyle: "dashed" as const } : {}),
         backgroundColor: background,
         cursor: interactive ? "pointer" : "default",
         overflow: "hidden",
@@ -426,12 +463,93 @@ function ContextReferenceChip({ atom, width, fontSize, selected }: { atom: Extra
     if (!record) return <UnresolvedChip label={atom.label} width={width} fontSize={fontSize} selected={selected} />;
     return <ThreadChip record={record} label={atom.label} width={width} fontSize={fontSize} selected={selected} />;
   }
+  if (atom.contextKind === "file" || atom.contextKind === "image") {
+    const record = env.attachments.get(atom.contextId);
+    if (!record || record.type !== atom.contextKind) return <UnresolvedChip label={atom.label} width={width} fontSize={fontSize} selected={selected} />;
+    return <AttachmentChip record={record} width={width} fontSize={fontSize} selected={selected} />;
+  }
   if (atom.contextKind === "review-comment") {
     const record = env.reviewComments.get(atom.contextId);
     if (!record) return <UnresolvedChip label={atom.label} width={width} fontSize={fontSize} selected={selected} />;
     return <ReviewCommentChip record={record} label={atom.label} width={width} fontSize={fontSize} selected={selected} />;
   }
   return <UnresolvedChip label={atom.label} width={width} fontSize={fontSize} selected={selected} />;
+}
+
+/**
+ * web ImageContextChip / FileContextChip (contextChipParts ImageChipButton, FileChip): the
+ * thumbnail or the file's icon, the name (middle-truncated), then the size and the upload's
+ * state in text-3xs. A failed upload draws the chip invalid; a file to attach again, dashed.
+ */
+function AttachmentChip({ record, width, fontSize, selected }: { record: ComposerChipAttachment; width: number; fontSize: number; selected: boolean }) {
+  const env = use(ComposerChipEnvironmentContext);
+  const theme = useTheme();
+  const metrics = chipMetrics(fontSize);
+  const kind: ChipKind = record.type === "image" ? "image" : isVideoName(record) ? "video" : "file";
+  // web ImageChipButton: the chip takes the picture's average colour as its accent.
+  const sampledAccent = useAtomValue(imageAccentAtom(record.type === "image" ? record.path : ""));
+  const colors = sampledAccent ? chipColorsForAccent(theme, sampledAccent) : chipColors(theme, kind);
+  const upload = useAtomValue(attachmentUploadStateAtom(record.tracksUpload ? record.id : ""));
+  const suffix = attachmentChipSuffix(record, upload);
+  const failed = record.tracksUpload && upload?.status === "failed";
+  const unresolved = record.type === "file" && record.needsReattach;
+  const foreground = failed || unresolved ? theme.errorForeground : colors.foreground;
+  const trailingStyle = {
+    fontFamily: FONTS.sans,
+    fontSize: ATTACHMENT_CHIP_TRAILING_FONT_SIZE,
+    fontWeight: 500,
+    lineHeight: metrics.fontSize * 1.25,
+    color: foreground,
+    whiteSpace: "nowrap",
+    flexShrink: 0,
+    pointerEvents: "none",
+  } as const;
+  const icon =
+    record.type === "image" ? (
+      <img src={record.path} objectFit="cover" style={{ width: metrics.icon, height: metrics.icon, borderRadius: RADIUS.sm, pointerEvents: "none" }} />
+    ) : kind === "video" ? (
+      chipIcon("film", metrics.icon, foreground)
+    ) : (
+      <FileEntryIcon pathValue={record.name} kind="file" size={metrics.icon} />
+    );
+  return (
+    <Tooltip content={attachmentChipTooltip(record, upload)} side="top">
+      <ChipShell
+        kind={kind}
+        colors={colors}
+        testId={`composer-chip-${record.type}`}
+        width={width}
+        fontSize={fontSize}
+        selected={selected}
+        invalid={failed}
+        dashed={unresolved}
+        icon={icon}
+        label={middleTruncateAttachmentName(record.name)}
+        onPress={record.type === "image" ? () => env.expandImage(record.id) : undefined}
+        trailing={
+          <>
+            <text style={trailingStyle}>{attachmentChipSize(record)}</text>
+            {suffix ? <text style={trailingStyle}>{suffix}</text> : null}
+          </>
+        }
+      />
+    </Tooltip>
+  );
+}
+
+/** MarkdownChips chipColors' formulas around an accent of the caller's choosing. */
+function chipColorsForAccent(theme: Palette, accent: string): ChipColors {
+  return {
+    border: mixOklab(accent, theme.border, 0.34),
+    borderHover: mixOklab(accent, theme.border, 0.48),
+    background: withAlpha(accent, 0.11),
+    backgroundHover: withAlpha(accent, 0.17),
+    foreground: mixOklab(accent, theme.foreground, 0.22),
+  };
+}
+
+function isVideoName(record: ComposerChipAttachment): boolean {
+  return videoMimeType({ name: record.name, mimeType: record.mimeType }) !== null;
 }
 
 /** web UnresolvedChip: a reference whose record is gone. */

@@ -286,7 +286,7 @@ async function runUpload(entry: InFlight): Promise<AttachmentUploadState> {
     attachment.type === "image"
       ? { name: attachment.name, sizeBytes: attachment.sizeBytes, mimeType: mimeType as SupportedImageMimeType }
       : { type: "file" as const, name: attachment.name, sizeBytes: attachment.sizeBytes, mimeType };
-  let lastShown = 0;
+  let lastStep = 0;
   const result = await runAttachmentUploadCycle({
     registry: appAtomRegistry,
     createUploadUrl: composerAttachmentEnvironment.createUploadUrl,
@@ -304,10 +304,10 @@ async function runUpload(entry: InFlight): Promise<AttachmentUploadState> {
     },
     transport: (url) =>
       postFile(url, attachment.path, mimeType, attachment.sizeBytes, (fraction) => {
-        // One state write per visible percent: the strip re-renders on each.
-        const shown = Math.floor(fraction * 100);
-        if (shown === lastShown || entry.cancelled) return;
-        lastShown = shown;
+        // web: one state write per 5% step; each one re-renders (and re-lays out) the chip.
+        const step = Math.floor(fraction * 20);
+        if (step === lastStep || entry.cancelled) return;
+        lastStep = step;
         setState(attachment.id, { status: "uploading", environmentId, progress: fraction });
       }),
     onTransferStart: (abort) => {
