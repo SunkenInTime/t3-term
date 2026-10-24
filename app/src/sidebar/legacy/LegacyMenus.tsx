@@ -36,7 +36,6 @@ import {
   canOperateEnvironmentAtom,
   clearThreadSelection,
   getThreadKeysToDeselectAfterDelete,
-  newThreadContextRequestAtom,
   readCanOperate,
   readThreadSelection,
   removeFromThreadSelection,
@@ -134,8 +133,6 @@ type ThreadMenuId =
   | "project-settings"
   | "delete";
 
-let newThreadContextNonce = 0;
-
 function ThreadContextMenu({
   threadKey,
   projectKey,
@@ -174,15 +171,12 @@ function ThreadContextMenu({
         if (project) openProjectSettings(project, { environmentId: thread.environmentId, projectId: thread.projectId });
         return;
       case "new-thread-on-branch":
-        appAtomRegistry.set(newThreadContextRequestAtom, {
-          environmentId: thread.environmentId,
-          projectId: thread.projectId,
+        startNewThread(scopeProjectRef(thread.environmentId, thread.projectId), {
           branch: thread.branch,
           worktreePath: thread.worktreePath,
           envMode: thread.worktreePath ? "worktree" : "local",
-          nonce: ++newThreadContextNonce,
+          startFromOrigin: false,
         });
-        appAtomRegistry.set(routeAtom, { kind: "draft", environmentId: thread.environmentId, projectId: thread.projectId });
         return;
       case "rename":
         if (checkTaskPermission(thread.environmentId)) setRename({ threadKey, title: thread.title });
@@ -272,7 +266,7 @@ async function handleSelectionAction(
   }
   const { deletedThreadKeys, firstFailure } = await deleteSelectedThreadEntries({
     entries,
-    delete: ({ threadRef }) => deleteThread(threadRef),
+    delete: ({ threadRef }, deletedThreadKeys) => deleteThread(threadRef, { deletedThreadKeys }),
   });
   if (firstFailure !== null) reportResult(firstFailure, "Failed to delete threads");
   removeFromThreadSelection(

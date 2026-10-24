@@ -1,8 +1,9 @@
 // The thread title menu, after apps/web/src/hooks/useThreadActionMenu.ts and the
 // parts of hooks/useThreadActions.ts it calls. Item building is the ported
 // buildThreadActionMenuItems; this file runs the chosen action.
-import { scopeProjectRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { startNewThread } from "../../palette/actions.ts";
+import { attemptDelete } from "../../sidebar/threadActions.ts";
 import { requestCustomSnooze } from "../../dialogs/CustomSnoozeDialog.tsx";
 import {
   isAtomCommandInterrupted,
@@ -142,8 +143,13 @@ export async function runThreadAction(action: ThreadActionMenuId, context: Threa
   }
   switch (action) {
     case "new-thread-on-branch":
-      // The draft opens in the thread's project; the composer owns branch/worktree seeding.
-      startNewThread(scopeProjectRef(ref.environmentId, thread.projectId));
+      // The new draft starts on this thread's branch and checkout, from the local branch as it is.
+      startNewThread(scopeProjectRef(ref.environmentId, thread.projectId), {
+        branch: thread.branch,
+        worktreePath: thread.worktreePath,
+        envMode: thread.worktreePath ? "worktree" : "local",
+        startFromOrigin: false,
+      });
       return;
     case "project-settings":
       openProjectSettings({ environmentId: ref.environmentId, projectId: thread.projectId });
@@ -233,25 +239,11 @@ export async function runThreadAction(action: ThreadActionMenuId, context: Threa
       }
       return;
     }
-    case "delete": {
-      const confirmed = await context.confirm({
-        title: `Delete thread "${thread.title}"?`,
-        description: "This permanently clears conversation history for this thread.",
-        confirmLabel: "Delete",
-        destructive: true,
-      });
-      if (!confirmed) return;
-      const result = await reportFailure("Failed to delete thread", () =>
-        command(threadEnvironment.delete, ref, { threadId: ref.threadId }),
-      );
-      if (result._tag === "Success") {
-        const route = appAtomRegistry.get(routeAtom);
-        if (route.kind === "thread" && scopedThreadKey(route) === scopedThreadKey(ref)) {
-          appAtomRegistry.set(routeAtom, { kind: "home" });
-        }
-      }
+    case "delete":
+      // useThreadActions.deleteThread via the sidebar's flow: the confirm setting, the
+      // fallback route, and the offer to remove a worktree only this thread used.
+      await attemptDelete(ref);
       return;
-    }
     default:
       return;
   }

@@ -25,7 +25,6 @@ import {
   canOperateEnvironmentAtom,
   commandPaletteModeRequestAtom,
   connectedEnvironmentIdsAtom,
-  newThreadContextRequestAtom,
   primaryEnvironmentIdAtom,
   projectByKeyAtom,
   projectDisplayNameByKeyAtom,
@@ -958,8 +957,6 @@ function SidebarEmptyState({ noProjects, scopedName }: { noProjects: boolean; sc
 
 // ── Context menus (web: handleThreadContextMenu / handleDraftContextMenu) ──
 
-let newThreadContextNonce = 0;
-
 function SidebarContextMenuHost() {
   const menu = useAtomValue(sidebarContextMenuAtom);
   const setMenu = useAtomSet(sidebarContextMenuAtom);
@@ -1126,10 +1123,10 @@ function SelectionContextMenu({ x, y, onClose }: { x: number; y: number; onClose
           if (!checkThreadOperations(selectedThreads)) return;
           const { deletedThreadKeys, firstFailure } = await deleteSelectedThreadEntries({
             entries: threadKeys.map((threadKey) => ({ threadKey })),
-            delete: async ({ threadKey }) => {
+            delete: async ({ threadKey }, deletedThreadKeys) => {
               const thread = appAtomRegistry.get(sidebarThreadListAtom).threadByKey.get(threadKey);
               if (!thread) return null;
-              return deleteThread(scopeThreadRef(thread.environmentId, thread.id));
+              return deleteThread(scopeThreadRef(thread.environmentId, thread.id), { deletedThreadKeys });
             },
           });
           if (firstFailure !== null) reportResult(firstFailure, "Failed to delete threads");
@@ -1240,15 +1237,12 @@ async function handleThreadAction(
       }
       return;
     case "new-thread-on-branch":
-      appAtomRegistry.set(newThreadContextRequestAtom, {
-        environmentId: thread.environmentId,
-        projectId: thread.projectId,
+      startNewThread(scopeProjectRef(thread.environmentId, thread.projectId), {
         branch: thread.branch,
         worktreePath: thread.worktreePath,
         envMode: thread.worktreePath ? "worktree" : "local",
-        nonce: ++newThreadContextNonce,
+        startFromOrigin: false,
       });
-      appAtomRegistry.set(routeAtom, { kind: "draft", environmentId: thread.environmentId, projectId: thread.projectId });
       return;
     case "settle":
       attemptSettle(threadRef);
