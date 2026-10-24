@@ -44,8 +44,9 @@ function terminalNotification(title: string, body: string): boolean {
   switch (terminalKind()) {
     case "kitty": {
       // https://sw.kovidgoyal.net/kitty/desktop-notifications/: title then body, d=0 until the last part.
+      // BEL-terminated: kitty 0.32 drops a two-part notification whose parts end in ESC \.
       const id = nextKittyId++;
-      return writeTty(`\x1b]99;i=${id}:d=0:p=title;${sanitize(title)}\x1b\\\x1b]99;i=${id}:d=1:p=body;${sanitize(body)}\x1b\\`);
+      return writeTty(`\x1b]99;i=${id}:d=0:p=title;${sanitize(title)}\x07\x1b]99;i=${id}:d=1:p=body;${sanitize(body)}\x07`);
     }
     case "ghostty":
       return writeTty(`\x1b]777;notify;${sanitize(title)};${sanitize(body)}\x07`);
