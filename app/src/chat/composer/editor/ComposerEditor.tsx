@@ -191,8 +191,11 @@ export interface ComposerEditorProps {
   readonly testId?: string;
   /** web onChange(value, cursor, expandedCursor, cursorAdjacentToMention). */
   readonly onChange: (value: string, cursor: number, suppressTrigger: boolean) => void;
-  /** Composer-level keys (menus, send, mode); true when it handled the key. */
-  readonly onKeyCommand: (event: KeyEvent, context: ComposerEditorKeyContext) => boolean;
+  /**
+   * Composer-level keys (menus, send, mode); true when it handled the key, "pass" when the key
+   * is a window shortcut the editor must leave alone (it goes on to the window dispatcher).
+   */
+  readonly onKeyCommand: (event: KeyEvent, context: ComposerEditorKeyContext) => boolean | "pass";
   /**
    * A paste's text before it goes in; true when the composer took it (web foldPastedText
    * attaches a long paste as a file). Not called for paste-as-text (Shift).
@@ -631,7 +634,9 @@ export const ComposerEditor = memo(
         return;
       }
 
-      if (p.onKeyCommand(event, { inCodeBlock: inCode, snapshot })) {
+      const command = p.onKeyCommand(event, { inCodeBlock: inCode, snapshot });
+      if (command === "pass") return;
+      if (command) {
         handled();
         return;
       }

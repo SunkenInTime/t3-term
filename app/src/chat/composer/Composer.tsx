@@ -118,6 +118,8 @@ import { Text } from "../../ui/primitives.tsx";
 import {
   type ComposerSubmissionIntent,
   type ComposerTrigger,
+  composerRequiresModifier,
+  composerSubmissionIntentForKey,
   detectComposerTrigger,
   extendReplacementRangeForTrailingSpace,
   parseStandaloneComposerSlashCommand,
@@ -212,10 +214,11 @@ import {
   registerShortcutHandler,
   registerTypeToFocusHandler,
   resolveKeyEventCommand,
+  toShortcutEvent,
 } from "../../keybindings/useGlobalKeybindings.ts";
 import { isConfirmDialogActive } from "../../dialogs/confirmDialog.ts";
 import { readClipboardText } from "../../terminal/clipboard.ts";
-import { composerFocusAtom, terminalFocusAtom } from "../../state/keybindings.ts";
+import { activeKeybindingsAtom, composerFocusAtom, terminalFocusAtom } from "../../state/keybindings.ts";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
 import type { KeybindingCommand } from "@t3tools/contracts";
 import { TraitsMenuContent, TraitsPicker } from "./TraitsPicker.tsx";
@@ -298,6 +301,12 @@ const ALL_RUNTIME_MODE_OPTIONS: ReadonlyArray<RuntimeModeOption> = runtimeModes.
 }));
 const NO_SKILLS: ServerProvider["skills"] = [];
 const NO_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
+/** The send chords the composer resolves itself (web composerSubmissionIntentForKey). */
+const COMPOSER_SEND_COMMANDS: ReadonlySet<KeybindingCommand> = new Set([
+  "composer.sendAlternate",
+  "composer.sendBackground",
+  "composer.sendAndNewThread",
+]);
 const DEFAULT_PLACEHOLDER = "Ask anything, @tag files/folders, $use skills, or / for commands";
 const PROMPT_LINE_HEIGHT = 23;
 
@@ -1718,7 +1727,7 @@ function ComposerBody({
 
   // ── Keyboard (web useComposerCommandKey) ──────────────────────────────
   /** Keys the composer takes before the editor; true when handled. */
-  const onEditorKeyCommand = (event: KeyEvent, _context: ComposerEditorKeyContext): boolean => {
+  const onEditorKeyCommand = (event: KeyEvent, _context: ComposerEditorKeyContext): boolean | "pass" => {
     const key = event.key;
     const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
     const ctrl = Boolean(mods.ctrl || mods.cmd);
@@ -1747,56 +1756,64 @@ function ComposerBody({
         return true;
       }
     }
+    // web composerSubmissionIntentForKey: the send-modifier setting decides whether plain Enter
+    // sends or breaks the line, and the send commands go wherever they are bound.
+    const shortcutContext = {
+      composerFocus: true,
+      editableFocus: true,
+      draftThreadRoute: target.kind === "draft",
+      turnRunning: isRunning,
+      composerRequiresModifier: composerRequiresModifier(settings.sendShortcut, valueRef.current),
+    };
+    const command = resolveKeyEventCommand(event, shortcutContext);
+    const shortcutEvent = toShortcutEvent(event);
+    const submissionIntent = composerSubmissionIntentForKey({
+      event: { ...shortcutEvent, key: shortcutEvent.key === "enter" ? "Enter" : shortcutEvent.key, repeat: false },
+      keybindings: appAtomRegistry.get(activeKeybindingsAtom),
+      isSoftwareKeyboardOpen: false,
+      isDraftThread: target.kind === "draft",
+      isRunning,
+      ...(settings.sendShortcut ? { sendShortcut: settings.sendShortcut } : {}),
+      prompt: valueRef.current,
+    });
     if (menuIsOpen) {
       if (key === "escape") {
         dismissTrigger();
         return true;
       }
-      const item = activeMenuItem ?? menu.items[0];
-      if ((plainEnter || (key === "tab" && !mods.shift && !ctrl)) && item) {
-        onSelectMenuItem(item);
-        return true;
-      }
-      if (((key === "tab" && mods.shift) || (ctrl && (key === "p" || key === "k")) || (key === "up" && !mods.shift && !ctrl && !mods.alt)) && menu.items.length > 0) {
-        nudgeMenuHighlight(-1);
-        return true;
-      }
-      if (((ctrl && (key === "n" || key === "j")) || (key === "down" && !mods.shift && !ctrl && !mods.alt)) && menu.items.length > 0) {
-        nudgeMenuHighlight(1);
-        return true;
+      if (submissionIntent === null || submissionIntent === "foreground") {
+        const item = activeMenuItem ?? menu.items[0];
+        if ((key === "enter" || (key === "tab" && !mods.shift && !ctrl)) && item) {
+          onSelectMenuItem(item);
+          return true;
+        }
+        if (((key === "tab" && mods.shift) || (ctrl && (key === "p" || key === "k")) || (key === "up" && !mods.shift && !ctrl && !mods.alt)) && menu.items.length > 0) {
+          nudgeMenuHighlight(-1);
+          return true;
+        }
+        if (((ctrl && (key === "n" || key === "j")) || (key === "down" && !mods.shift && !ctrl && !mods.alt)) && menu.items.length > 0) {
+          nudgeMenuHighlight(1);
+          return true;
+        }
       }
     }
-    if (key === "tab" && mods.shift && !ctrl && !mods.alt) {
+    // web's chat shortcuts listen on the window in the capture phase, ahead of the editor: a
+    // chord bound to a command (Alt+Up edits the last queued message, Mod+Shift+Enter steers)
+    // runs it before the editor treats the key as caret movement or a line break. The commands
+    // this composer owns run here; any other goes on to the window dispatcher untouched.
+    if (command !== null && !COMPOSER_SEND_COMMANDS.has(command)) {
+      const handler = shortcutCommandsRef.current[command];
+      if (!handler) return "pass";
+      if (handler(event)) return true;
+    }
+    if (key === "tab" && mods.shift && !ctrl && !mods.alt && submissionIntent === null) {
       toggleInteractionMode();
       return true;
     }
-    if (key === "up" || key === "down") {
+    if ((key === "up" || key === "down") && submissionIntent === null) {
       return navigatePromptHistory(key === "up" ? "backward" : "forward", event);
     }
-    if (plainEnter) {
-      if (event.isHeld) return true;
-      submit();
-      return true;
-    }
-    // web composerSubmissionIntentForKey. A chord bound to another command (mod+shift+enter
-    // steers the queue) is left to the window dispatcher.
-    if (key === "enter" && (ctrl || mods.alt)) {
-      const command = resolveKeyEventCommand(event, {
-        composerFocus: true,
-        draftThreadRoute: target.kind === "draft",
-        turnRunning: isRunning,
-      });
-      const submissionIntent: ComposerSubmissionIntent | null =
-        command === "composer.sendAlternate" && isRunning
-          ? "alternate"
-          : command === "composer.sendBackground" && target.kind === "draft"
-            ? "background"
-            : command === "composer.sendAndNewThread" && target.kind === "thread"
-              ? "background"
-              : command === null && !mods.shift && !mods.alt
-                ? "foreground"
-                : null;
-      if (submissionIntent === null) return false;
+    if (submissionIntent !== null) {
       if (event.isHeld) return true;
       submit(
         resolveComposerDispatchMode({
