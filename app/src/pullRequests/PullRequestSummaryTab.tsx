@@ -60,6 +60,9 @@ import { PullRequestDryRunError, runPullRequestWrite } from "./pullRequestWrites
 import { openPullRequestLink } from "./openPullRequestLink.ts";
 import { autolinkPullRequestMarkdown } from "./pullRequestMarkdownAutolinks.ts";
 import { PullRequestMarkdownContext } from "./pullRequestMarkdownContext.ts";
+import { PrRichMarkdown } from "./PullRequestRichMarkdown.tsx";
+import { useTimelineAssetUrl } from "../chat/markdown/MarkdownMedia.tsx";
+import { githubMediaFetchUrl } from "@t3tools/shared/githubMedia";
 import { sectionCollapseAnchorScrollTop } from "../web/components/pullRequest/pullRequestSummaryScroll.logic.ts";
 
 const COMMENT_PAGE = 10;
@@ -81,13 +84,12 @@ function readCommentFilter(): { bots: boolean; resolved: boolean } {
 
 /**
  * web PullRequestMarkdown: the body split into prose and attachments (splitPullRequestBody),
- * repository autolinks for `#123` and commit SHAs, and links that open pull requests inside
- * t3-term (a thread's panel, or the Pull requests page) before falling back to the browser.
+ * rendered like chat markdown (PullRequestRichMarkdown.tsx: image viewer, GitHub uploads through
+ * the server, pull request links in the app with hover previews, link and file menus).
  *
- * Not ported: web plays videos inline (MediaVideoPlayer, with GitHub's authenticated media);
- * gpuix has no video element, so a video line is an "Open video on GitHub" row like web's
- * attachment fallback. Native <markdown> reports link clicks only, so its links have no hover
- * preview or right-click menu.
+ * Not ported: web plays videos inline (MediaVideoPlayer); gpuix has no video element, so a video
+ * line is a row that opens it, through the server's authenticated GitHub media when it is an
+ * upload, like web's attachment fallback.
  */
 export function PrMarkdown({ source, size = 14 }: { source: string; size?: number }) {
   const segments = splitPullRequestBody(source.replace(/<!--[\s\S]*?-->/gu, ""));
@@ -113,10 +115,20 @@ export function PrMarkdown({ source, size = 14 }: { source: string; size?: numbe
 
 function PrAttachmentRow({ url, video }: { url: string; video: boolean }) {
   const theme = useTheme();
+  const context = useContext(PullRequestMarkdownContext);
+  const environmentId = context?.environmentId ?? null;
+  const cwd = context?.cwd ?? null;
+  // web PullRequestGitHubVideo: an upload plays from the server's authenticated copy.
+  const fetchUrl = video && environmentId !== null && cwd ? githubMediaFetchUrl(url) : null;
+  const asset = useTimelineAssetUrl(
+    environmentId ?? ("" as EnvironmentId),
+    fetchUrl !== null && cwd ? { _tag: "github-media", cwd, url: fetchUrl } : null,
+  );
+  const target = asset._tag === "Success" ? asset.url : url;
   return (
     <div
       testId="pr-markdown-attachment"
-      onClick={() => openExternalUrl(url)}
+      onClick={() => openExternalUrl(target)}
       style={{
         display: "flex",
         flexDirection: "row",
@@ -136,15 +148,22 @@ function PrAttachmentRow({ url, video }: { url: string; video: boolean }) {
     >
       <Icon name={video ? "video" : "paperclip"} size={14} color={theme.mutedForeground} />
       <Text truncate style={{ flexGrow: 1 }}>
-        {video ? "Open video on GitHub" : "Open attachment on GitHub"}
+        {video ? (asset._tag === "Success" ? "Play video" : "Open video on GitHub") : "Open attachment on GitHub"}
       </Text>
       <Icon name="external-link" size={12} color={theme.mutedForeground} />
     </div>
   );
 }
 
-/** Markdown as web's ChatMarkdown sets it: 14px, 1.625 line height, foreground at 80%. */
+// T3TERM_NATIVE_MD=1: the previous native renderer, for perf comparisons only (as in chat).
+const NATIVE_MARKDOWN = process.env.T3TERM_NATIVE_MD === "1";
+
 function PrMarkdownText({ source, size }: { source: string; size: number }) {
+  return NATIVE_MARKDOWN ? <PrNativeMarkdownText source={source} size={size} /> : <PrRichMarkdown source={source} size={size} />;
+}
+
+/** Markdown as web's ChatMarkdown sets it: 14px, 1.625 line height, foreground at 80%. */
+function PrNativeMarkdownText({ source, size }: { source: string; size: number }) {
   const theme = useTheme();
   const context = useContext(PullRequestMarkdownContext);
   return (

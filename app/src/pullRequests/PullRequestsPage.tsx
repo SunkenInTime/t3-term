@@ -25,6 +25,7 @@ import { copyTextToClipboard } from "../chat/header/osActions.ts";
 import { registerShortcutHandler } from "../keybindings/useGlobalKeybindings.ts";
 import { toast } from "../ui/toast.tsx";
 import { usePullRequestCloseSweep } from "./usePullRequestCloseSweep.ts";
+import { MarkdownOverlayHost } from "../chat/markdown/overlays.tsx";
 import {
   pullRequestEnvironment,
   pullRequestPanel,
@@ -1025,6 +1026,8 @@ export function PullRequestsPage() {
   return (
     <div style={{ display: "flex", flexDirection: "row", flexGrow: 1, minHeight: 0, minWidth: 0, height: "100%" }}>
       {column}
+      {/* Markdown's menus and image viewer (the thread view's timeline mounts its own host). */}
+      <MarkdownOverlayHost />
       {panel.isOpen && activeSurface && panelEnvironmentId !== null ? (
         <PullRequestDetailPanel
           key={activeSurface.id}
