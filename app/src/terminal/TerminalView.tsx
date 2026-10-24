@@ -63,6 +63,8 @@ import { addTerminalContextToThreadComposer } from "../chat/composer/terminalCon
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import { isAtomCommandInterrupted, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { encodeKey } from "./vt/keys.ts";
+import { resolveKeyEventCommand } from "../keybindings/useGlobalKeybindings.ts";
+import { TERMINAL_SHORTCUT_COMMANDS, type TerminalShortcutCommand } from "./drawerShortcuts.ts";
 
 /** apps/web/src/terminal/ghostty/surface.ts */
 const CONTENT_PADDING = 4;
@@ -103,7 +105,7 @@ interface SelectAllState {
   readonly text: string;
 }
 
-export type TerminalShortcutCommand = "split" | "splitVertical" | "new" | "close";
+export type { TerminalShortcutCommand };
 
 export interface TerminalViewProps {
   readonly environmentId: EnvironmentId;
@@ -418,6 +420,26 @@ function TerminalSessionView({
 
   // ── Selection ───────────────────────────────────────────────────────
 
+  // gpuix owns the text selection and reports only its text. The rows it spans
+  // come from the gesture that made it: the press and release cells (a double or
+  // triple click stays on the pressed row). `text` is what that gesture selected,
+  // so a selection changed some other way falls back to searching the screen.
+  const selectionRows = useRef<{ anchor: number; end: number; text: string | null } | null>(null);
+  const noteSelectionPress = (event: { x?: number; y?: number }) => {
+    const cell = cellAt(event.x ?? 0, event.y ?? 0, true);
+    selectionRows.current = cell === null ? null : { anchor: cell.y, end: cell.y, text: null };
+  };
+  const noteSelectionRelease = (event: { x?: number; y?: number }) => {
+    const rows = selectionRows.current;
+    if (rows === null || rows.text !== null) return;
+    const cell = cellAt(event.x ?? 0, event.y ?? 0, true);
+    if (cell !== null) rows.end = cell.y;
+    // The selection settles after the release is dispatched.
+    setTimeout(() => {
+      if (selectionRows.current === rows) rows.text = renderer.getSelectedText?.() ?? "";
+    }, 0);
+  };
+
   const readSelection = (): CapturedSelection | null => {
     if (selectAll !== null) {
       return { clipboardText: selectAll.text, text: selectAll.text, lineStart: selectAll.first + 1, lineEnd: selectAll.last + 1 };
@@ -426,6 +448,17 @@ function TerminalSessionView({
     if (!raw) return null;
     const text = raw.replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, "");
     if (text.length === 0) return null;
+    const rows = selectionRows.current;
+    if (rows !== null && rows.text === raw) {
+      // web terminalSelectionLineRange: the 1-based buffer lines of the selection's start and end.
+      const top = emulator.terminal.buffer.active.viewportY;
+      return {
+        clipboardText: raw,
+        text,
+        lineStart: top + Math.min(rows.anchor, rows.end) + 1,
+        lineEnd: top + Math.max(rows.anchor, rows.end) + 1,
+      };
+    }
     const { lineStart, lineEnd } = locateSelectionLines(emulator, text);
     return { clipboardText: raw, text, lineStart, lineEnd };
   };
@@ -610,26 +643,19 @@ function TerminalSessionView({
       return;
     }
 
-    // Terminal commands bound with `when: terminalFocus` (packages/shared/src/keybindings.ts).
-    if (mod && !mods.alt) {
-      const command: TerminalShortcutCommand | null =
-        key === "d" ? (mods.shift ? "splitVertical" : "split") : key === "n" && !mods.shift ? "new" : key === "w" && !mods.shift ? "close" : null;
-      if (command !== null && callbacks.current.onShortcut) {
-        consume();
-        callbacks.current.onShortcut(command);
-        return;
-      }
-      // App shortcuts that stay live inside the terminal go to the window handler.
-      if (
-        key === "j" ||
-        key === "o" ||
-        (mods.shift && (key === "[" || key === "]" || key === "t" || key === "j")) ||
-        (!mods.shift && /^[1-9]$/.test(key))
-      ) {
-        return;
-      }
+    // The user's keybindings decide, read with terminal focus like web's
+    // handleBeforeKey and chat shortcuts: terminal.* acts on this terminal, and
+    // any other command that applies with terminal focus goes to the window
+    // dispatcher instead of the shell. Removing or remapping a binding changes both.
+    const command = resolveKeyEventCommand(event, { terminalFocus: true, composerFocus: false });
+    const terminalCommand = command === null ? undefined : TERMINAL_SHORTCUT_COMMANDS[command];
+    if (terminalCommand !== undefined) {
+      consume();
+      // web preventRepeatedTerminalCloseShortcut: a held close chord closes once.
+      if (!(terminalCommand === "close" && event.isHeld)) callbacks.current.onShortcut?.(terminalCommand);
+      return;
     }
-    if (mod && mods.alt && key === "b") return;
+    if (command !== null) return;
 
     // surface.ts selectAllShortcut: Cmd+A on macOS, Ctrl+Shift+A elsewhere.
     if (key === "a" && mod && !mods.alt && (isMac ? !mods.shift && !mods.ctrl : mods.shift && !mods.cmd)) {
@@ -711,6 +737,7 @@ function TerminalSessionView({
         }
         if (button !== 0) return;
         setSelectAll(null);
+        noteSelectionPress(event);
         const link = !modifiers.shift && (event.clickCount ?? 1) === 1 ? linkAt(event.x ?? 0, event.y ?? 0) : null;
         linkPressRef.current = link;
         selectionGesture.current = link === null;
@@ -757,6 +784,7 @@ function TerminalSessionView({
           reportMouse(event, button, MOUSE_ACTION.up, event.modifiers ?? NO_MODIFIERS);
           return;
         }
+        if (button === 0) noteSelectionRelease(event);
         if (button !== 0 || !selectionGesture.current) return;
         selectionGesture.current = false;
         const pointer = { x: event.x ?? 0, y: event.y ?? 0 };

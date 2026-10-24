@@ -137,6 +137,13 @@ export class TerminalEmulator {
     });
     // DSR/DA replies (ConPTY asks for the cursor position on start) go back to the PTY.
     this.terminal.onData(onReply);
+    // Legacy mouse reports (DEC 1000/1002/1003 without SGR 1006) arrive here as a
+    // binary string, one char per byte. The PTY write takes UTF-8 text, so a byte
+    // above 0x7f (a column or row past 94) would reach the program as two bytes
+    // and the rest of the report as stray keys; such reports are dropped.
+    this.terminal.onBinary((data) => {
+      if (!/[\x80-\xff]/.test(data)) onReply(data);
+    });
     this.terminal.onWriteParsed(() => this.emit());
     this.terminal.onScroll(() => this.emit());
   }
