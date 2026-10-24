@@ -3,6 +3,7 @@
 // steps: [{click: testId}|{clickText: text}|{press: "ctrl-k"}|{fill:[testId,text]}|{wait: ms}|{shot: name}|{mouse:[x,y]}
 //         |{hover:[x,y]}|{hoverTestId: testId}|{hoverText: text}|{rightClick:[x,y]}|{rightClickText: text}
 //         |{wheel:[x,y,dy]}|{wheelXY:[x,y,dx,dy]}|{mouseMods:[x,y,"shift"]}|{dblclick:[x,y]}|{dblclickText: text}
+//         |{down:[x,y]}|{downTestId: testId}|{move:[x,y]} (button held)|{up:[x,y]} (a held gesture, to shoot mid-drag)
 //         |{wheelTestId:[testId,dx,dy]}|{dragTestId:[testId,dx,dy]}|{dragXY:[x1,y1,x2,y2]}|{rightClickTestId: testId}|{tryClick: testId}
 //         |{keys: "g p u"} (key-downs to whatever has focus, without focusing a target first)
 //         |{keyUp: "backspace"} (a key release; `keys` sends none)
@@ -129,6 +130,10 @@ async function runSteps(list: any[]) {
       writeFileSync(join(outDir, `${step.selected}.txt`), text ?? "");
     }
     if (step.wheelTestId) await app.getByTestId(step.wheelTestId[0]).wheel(step.wheelTestId[1], step.wheelTestId[2]);
+    if (step.down) await app.mouse.down({ x: step.down[0], y: step.down[1] });
+    if (step.downTestId) await app.mouse.down(app.getByTestId(step.downTestId));
+    if (step.move) await app.mouse.move({ x: step.move[0], y: step.move[1] }, { pressedButton: 0 });
+    if (step.up) await app.mouse.up({ x: step.up[0], y: step.up[1] });
     // A press-move-release between two window points (a text selection, say).
     // A drag held open for a screenshot: {mouseDown:[x,y]}, {mouseDrag:[x,y]} (moves with the button held), {mouseUp:[x,y]}.
     if (step.mouseDown) {
