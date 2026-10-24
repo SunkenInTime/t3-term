@@ -191,7 +191,7 @@ export function ProviderAuthTerminal({
               measuredCellWidth = probeWidth / PROBE.length;
               setCellWidth(measuredCellWidth);
             }}
-            style={{ position: "absolute", top: 0, left: 0, opacity: 0, whiteSpace: "nowrap", fontFamily: FONTS.mono, fontSize: FONT_SIZE, color: theme.foreground }}
+            style={{ position: "absolute", top: 0, left: 0, opacity: 0, pointerEvents: "none", whiteSpace: "nowrap", fontFamily: FONTS.mono, fontSize: FONT_SIZE, color: theme.foreground }}
           >
             {PROBE}
           </text>
@@ -204,7 +204,9 @@ export function ProviderAuthTerminal({
 const Grid = memo(function Grid({ frame, cellWidth, theme, focused }: { frame: TerminalFrame; cellWidth: number; theme: TerminalTheme; focused: boolean }) {
   const cursor = frame.cursor;
   return (
-    <div style={{ position: "absolute", top: PADDING, left: PADDING, right: 0, bottom: 0 }}>
+    // gpuix ends the hit test at any absolutely positioned box, so the grid lets
+    // clicks through to the terminal (focus, link clicks).
+    <div style={{ position: "absolute", top: PADDING, left: PADDING, right: 0, bottom: 0, pointerEvents: "none" }}>
       {frame.rows.map((runs, row) => (runs.length === 0 ? null : <Row key={row} runs={runs} row={row} cellWidth={cellWidth} />))}
       {cursor ? (
         <div
@@ -225,7 +227,7 @@ const Grid = memo(function Grid({ frame, cellWidth, theme, focused }: { frame: T
 
 function Row({ runs, row, cellWidth }: { runs: ReadonlyArray<CellRun>; row: number; cellWidth: number }) {
   return (
-    <div style={{ position: "absolute", top: row * CELL_HEIGHT, left: 0, right: 0, height: CELL_HEIGHT }}>
+    <div style={{ position: "absolute", top: row * CELL_HEIGHT, left: 0, right: 0, height: CELL_HEIGHT, pointerEvents: "none" }}>
       {runs.map((run) => (
         <text
           key={run.col}
@@ -239,6 +241,7 @@ function Row({ runs, row, cellWidth }: { runs: ReadonlyArray<CellRun>; row: numb
             fontSize: FONT_SIZE,
             fontFamily: FONTS.mono,
             whiteSpace: "nowrap",
+            pointerEvents: "none",
             color: run.fg,
             ...(run.bg !== null ? { backgroundColor: run.bg } : {}),
             ...(run.bold ? { fontWeight: 700 } : {}),

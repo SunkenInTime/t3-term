@@ -8,7 +8,7 @@ import {
   type ThemeDefinition,
 } from "@t3tools/shared/themePalettes";
 
-import { getCustomThemes } from "../web/themePalette.ts";
+import { getCustomThemes, getEnvironmentThemes } from "../web/themePalette.ts";
 
 export interface Palette {
   readonly appearance: "dark" | "light";
@@ -240,12 +240,13 @@ const LEGACY_THEME_ID_ALIASES: Readonly<Record<string, string>> = {
   "t3-iris": "iris",
 };
 
-/** Built-in themes first, then the themes saved by the theme editor (web/themePalette.ts). */
+/** Built-in themes first, then saved themes, then themes the primary environment publishes (web/themePalette.ts). */
 export function getThemeDefinition(themeId: string): ThemeDefinition | null {
   const id = LEGACY_THEME_ID_ALIASES[themeId] ?? themeId;
   return (
     BUILT_IN_THEME_DEFINITIONS.find((definition) => definition.id === id) ??
     getCustomThemes().find((definition) => definition.id === id) ??
+    getEnvironmentThemes().find((definition) => definition.id === id) ??
     null
   );
 }

@@ -14,6 +14,7 @@ import { CommandPalette } from "../palette/CommandPalette.tsx";
 import { DialogHost } from "../dialogs/DialogHost.tsx";
 import { ThemeEditorHost } from "../settings/appearance/ThemeEditorHost.tsx";
 import { ChatGptWelcomeCoordinator } from "../settings/providers/ChatGptWelcomeCoordinator.tsx";
+import { EnvironmentThemeSync } from "../web/hooks/useEnvironmentTheme.ts";
 import { MainView } from "./MainView.tsx";
 import { alpha, useTheme } from "../ui/theme.ts";
 import { AppThemeProvider } from "../state/clientSettings.ts";
@@ -44,6 +45,7 @@ export function App({ boot }: { boot: Boot }) {
               <CommandPalette />
               <DialogHost />
               <ChatGptWelcomeCoordinator />
+              <EnvironmentThemeSync />
             </ConnectGate>
             <ThreadNotificationCoordinator />
             <ToastHost />
