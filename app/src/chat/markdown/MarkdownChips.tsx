@@ -42,6 +42,10 @@ export type ChipKind =
   | "element"
   | "review-comment"
   | "pull-request"
+  | "pr-open"
+  | "pr-draft"
+  | "pr-merged"
+  | "pr-closed"
   | "neutral";
 
 const CHIP_ACCENTS: Record<Exclude<ChipKind, "neutral">, string> = {
@@ -56,6 +60,10 @@ const CHIP_ACCENTS: Record<Exclude<ChipKind, "neutral">, string> = {
   element: "oklch(0.62 0.134 70)",
   "review-comment": "oklch(0.62 0.16 292)",
   "pull-request": "oklch(0.62 0.16 277)",
+  "pr-open": "oklch(0.62 0.134 163)",
+  "pr-draft": "oklch(0.62 0.02 259)",
+  "pr-merged": "oklch(0.62 0.16 292)",
+  "pr-closed": "oklch(0.62 0.16 16)",
 };
 
 export interface ChipColors {
