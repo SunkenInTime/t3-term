@@ -1,16 +1,14 @@
 // Paints pending measurement probes (measure.ts) out of sight and feeds their
-// laid-out widths back. Mounted once by the timeline; probes only exist until
+// laid-out widths back. Mounted by the timeline (and by the composer); probes only exist until
 // their first layout, so a settled app paints none.
 import { useEffect, useReducer } from "react";
 
-import { MEASURE_FONT_SIZE, pendingProbes, recordProbe, setMeasureHostUpdater } from "./measure.ts";
+import { MEASURE_FONT_SIZE, isActiveMeasureHost, pendingProbes, recordProbe, registerMeasureHost } from "./measure.ts";
 
 export function TextMeasureHost() {
   const [, bump] = useReducer((value: number) => value + 1, 0);
-  useEffect(() => {
-    setMeasureHostUpdater(bump);
-    return () => setMeasureHostUpdater(null);
-  }, []);
+  useEffect(() => registerMeasureHost(bump), []);
+  if (!isActiveMeasureHost(bump)) return null;
   const probes = pendingProbes();
   if (probes.length === 0) return null;
   return (

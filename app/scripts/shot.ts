@@ -7,6 +7,7 @@
 //         |{wheelTestId:[testId,dx,dy]}|{dragTestId:[testId,dx,dy]}|{dragXY:[x1,y1,x2,y2]}|{rightClickTestId: testId}|{tryClick: testId}
 //         |{keys: "g p u"} (key-downs to whatever has focus, without focusing a target first)
 //         |{keyUp: "backspace"} (a key release; `keys` sends none)
+//         |{mouseDown:[x,y]} / {mouseDrag:[x,y]} / {mouseUp:[x,y]} (a drag held open between steps)
 //         |{tree: name} (writes the retained element tree to <out-dir>/<name>.tree.json)
 //         |{perf: "label"} / {perfEnd: true} (phase markers for T3TERM_PERF=<dir>, see src/dev/perfProbe.ts)
 //         |{repeat: n, every: ms, steps: [...]} (runs steps n times, `every` ms apart; `$i` in strings is the index, "=expr" strings evaluate to numbers)]
@@ -134,6 +135,13 @@ async function runSteps(list: any[]) {
     if (step.move) await app.mouse.move({ x: step.move[0], y: step.move[1] }, { pressedButton: 0 });
     if (step.up) await app.mouse.up({ x: step.up[0], y: step.up[1] });
     // A press-move-release between two window points (a text selection, say).
+    // A drag held open for a screenshot: {mouseDown:[x,y]}, {mouseDrag:[x,y]} (moves with the button held), {mouseUp:[x,y]}.
+    if (step.mouseDown) {
+      await app.mouse.move({ x: step.mouseDown[0], y: step.mouseDown[1] });
+      await app.mouse.down({ x: step.mouseDown[0], y: step.mouseDown[1] }, { button: 0 });
+    }
+    if (step.mouseDrag) await app.mouse.move({ x: step.mouseDrag[0], y: step.mouseDrag[1] }, { pressedButton: 0 });
+    if (step.mouseUp) await app.mouse.up({ x: step.mouseUp[0], y: step.mouseUp[1] }, { button: 0 });
     if (step.dragXY) await app.mouse.drag({ x: step.dragXY[0], y: step.dragXY[1] }, { x: step.dragXY[2], y: step.dragXY[3] }, { steps: 8 });
     if (step.dragTestId) await app.getByTestId(step.dragTestId[0]).dragBy(step.dragTestId[1], step.dragTestId[2], { steps: 8 });
     if (step.rightClickTestId) await app.getByTestId(step.rightClickTestId).click({ button: 2 });

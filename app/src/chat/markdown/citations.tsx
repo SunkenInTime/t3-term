@@ -9,7 +9,7 @@ import type { GpuixRenderer } from "@gpuix/native";
 import { ASSISTANT_CITATION_CONTEXT_LENGTH, ASSISTANT_CITATION_MAX_TEXT_LENGTH, MessageId, type AssistantCitation, type ScopedThreadRef } from "@t3tools/contracts";
 import type { Element, ElementContent, Root } from "hast";
 
-import { composerTargetKey, focusComposer, updateComposerDraft } from "../../state/composer.ts";
+import { citeInComposer as insertCitation, composerTargetKey } from "../../state/composer.ts";
 import { Icon } from "../../ui/Icon.tsx";
 import { FONTS, alpha, useTheme } from "../../ui/theme.ts";
 import { formatAssistantCitationForComposer } from "../../web/composer-logic.ts";
@@ -98,13 +98,9 @@ export function closeCitationToolbar() {
 
 function citeInComposer(citation: AssistantCitation) {
   const key = composerTargetKey({ kind: "thread", environmentId: citation.environmentId, threadId: citation.threadId });
-  const reference = formatAssistantCitationForComposer(citation);
-  updateComposerDraft(key, (draft) => ({
-    ...draft,
-    prompt: draft.prompt.length === 0 || /\s$/.test(draft.prompt) ? draft.prompt + reference : `${draft.prompt} ${reference}`,
-  }));
+  // web inserts at the composer's caret and opens the chip's comment editor.
+  insertCitation(key, formatAssistantCitationForComposer(citation));
   renderer()?.clearSelection();
-  focusComposer();
 }
 
 /** Button size="xs" variant="glass": rounded-full glass surface, border-border/60, shadow-sm. */
