@@ -699,8 +699,15 @@ function renderListMarker(
 /** The thread list's visible window in content pixels, from ScrollFadeRegion. */
 const ListViewportContext = createContext<{ top: number; height: number } | null>(null);
 
+// Rows kept mounted beyond each edge of the viewport, in viewport heights.
+// GPUI rebuilds every mounted row on every frame, so each one is paid for on
+// every keystroke anywhere in the window: a full viewport each side cost about
+// 1 ms more per frame than half of one. Half a viewport still covers what GPUI
+// scrolls in one frame before React catches up.
+const CULL_MARGIN = 0.5;
+
 /**
- * The list's items, with those more than a viewport above or below the visible
+ * The list's items, with those more than CULL_MARGIN viewports above or below the visible
  * window replaced by an empty box of their last measured height. GPUI builds
  * every child of a plain scroller each frame (about 0.25 ms per thread row), so
  * without this every frame of the window grew with the thread count: 100 rows
@@ -749,7 +756,7 @@ function CulledListItems({
       height !== undefined &&
       viewport !== null &&
       viewport.height > 0 &&
-      (top + height < viewport.top - viewport.height || top > viewport.top + 2 * viewport.height);
+      (top + height < viewport.top - CULL_MARGIN * viewport.height || top > viewport.top + (1 + CULL_MARGIN) * viewport.height);
     const shift = offsets?.get(key);
     return (
       <div
