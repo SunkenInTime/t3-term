@@ -114,6 +114,12 @@ async function runSteps(list: any[]) {
     if (step.keys) await (app as unknown as { call: (method: string, params: object) => Promise<unknown> }).call("keystrokes", { keys: step.keys });
     if (step.keyUp) await (app as unknown as { call: (method: string, params: object) => Promise<unknown> }).call("keyUp", { key: step.keyUp });
     if (step.press) await app.getByTestId(step.target ?? "composer").press(step.press);
+    // {drag: [x1, y1, x2, y2]} drags the pointer (text selection); {selected: name} writes the selection to <out-dir>/<name>.txt.
+    if (step.drag) await app.mouse.drag({ x: step.drag[0], y: step.drag[1] }, { x: step.drag[2], y: step.drag[3] }, { steps: 10 });
+    if (step.selected) {
+      const { text } = await (app as unknown as { call: (method: string, params: object) => Promise<{ text: string | null }> }).call("getSelectedText", {});
+      writeFileSync(join(outDir, `${step.selected}.txt`), text ?? "");
+    }
     if (step.wheelTestId) await app.getByTestId(step.wheelTestId[0]).wheel(step.wheelTestId[1], step.wheelTestId[2]);
     if (step.down) await app.mouse.down({ x: step.down[0], y: step.down[1] });
     if (step.downTestId) await app.mouse.down(app.getByTestId(step.downTestId));

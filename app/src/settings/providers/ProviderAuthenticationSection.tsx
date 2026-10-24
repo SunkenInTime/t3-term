@@ -1,14 +1,13 @@
 // Port of apps/web/src/components/settings/ProviderAuthenticationSection.tsx: the "Account"
 // row of a provider's Setup section (sign in, change account, sign out, and the
 // browser / device code / credentials / callback steps of a sign-in flow).
-// The terminal interaction (ProviderAuthTerminal, an xterm on web) is shown as its
-// latest output only; typing into it is not ported.
+// The terminal interaction is ProviderAuthTerminal.tsx: a live terminal you can type into.
+// Sign-in commands go through dryRun.ts so screenshots can click them safely.
 import { isAtomCommandInterrupted, squashAtomCommandFailure, type AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ProviderAuthResponse, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
+import type { EnvironmentId, ProviderAuthRespondInput, ProviderAuthResponse, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
 import { useMemo, useRef, useState } from "react";
 
 import { serverEnvironment } from "../../state/environment.ts";
-import { useAtomCommand } from "../../state/settings.ts";
 import { Dialog, Tooltip } from "../../ui/overlay.tsx";
 import { Button, IconButton, Text } from "../../ui/primitives.tsx";
 import { RADIUS, alpha, useTheme } from "../../ui/theme.ts";
@@ -16,7 +15,9 @@ import { SettingsSelect, TextField } from "../controls.tsx";
 import { copyText, openExternal } from "../openExternal.ts";
 import { useEnvironmentQuery } from "../query.ts";
 import { RedactedText } from "../RedactedText.tsx";
+import { useDryRunAuthTerminal, useProviderActionCommand } from "./dryRun.ts";
 import { StackedRow } from "./parts.tsx";
+import { ProviderAuthTerminal } from "./ProviderAuthTerminal.tsx";
 
 const DEFAULT_METHOD = "__default__";
 
@@ -37,18 +38,29 @@ export function ProviderAuthenticationSection({
   const target = useMemo(() => ({ environmentId, input: { instanceId } }), [environmentId, instanceId]);
   const query = useEnvironmentQuery(serverEnvironment.providerAuthState(target));
   const commands = { reportFailure: false, reportDefect: false };
-  const start = useAtomCommand(serverEnvironment.startProviderAuth, commands);
-  const respond = useAtomCommand(serverEnvironment.respondProviderAuth, commands);
-  const complete = useAtomCommand(serverEnvironment.completeProviderAuth, commands);
-  const cancel = useAtomCommand(serverEnvironment.cancelProviderAuth, commands);
-  const logout = useAtomCommand(serverEnvironment.logoutProviderAuth, commands);
+  const startCommand = useProviderActionCommand(serverEnvironment.startProviderAuth, "Start sign-in", commands);
+  const respond = useProviderActionCommand(serverEnvironment.respondProviderAuth, "Respond to sign-in", commands, true);
+  const complete = useProviderActionCommand(serverEnvironment.completeProviderAuth, "Complete sign-in", commands);
+  const cancelCommand = useProviderActionCommand(serverEnvironment.cancelProviderAuth, "Cancel sign-in", commands);
+  const logout = useProviderActionCommand(serverEnvironment.logoutProviderAuth, "Sign out", commands);
+  const dryRunTerminal = useDryRunAuthTerminal(instanceId);
+  const start: typeof startCommand = (value) => {
+    dryRunTerminal?.open();
+    return startCommand(value);
+  };
+  const cancel: typeof cancelCommand = (value) => {
+    dryRunTerminal?.close();
+    return cancelCommand(value);
+  };
+  const terminalQueue = useRef<ProviderAuthRespondInput[]>([]);
+  const terminalSending = useRef(false);
   const [methodId, setMethodId] = useState("");
   const [draft, setDraft] = useState({ id: "", values: {} as Record<string, string> });
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [confirmingLogout, setConfirmingLogout] = useState(false);
   const pendingRef = useRef(false);
-  const auth = query.data;
+  const auth = dryRunTerminal?.auth ?? query.data;
   const interaction = auth?.interaction;
   const active = auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying";
   const signedIn = provider.auth.status === "authenticated" || (provider.auth.status === "unknown" && auth?.phase === "succeeded");
@@ -233,27 +245,46 @@ export function ProviderAuthenticationSection({
               </div>
             ) : null}
             {interaction?.type === "terminal" ? (
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  marginTop: 8,
-                  marginBottom: 8,
-                  padding: 8,
-                  borderRadius: RADIUS.md,
-                  borderWidth: 1,
-                  borderColor: theme.border,
-                  backgroundColor: theme.codeBackground,
-                }}
-              >
-                {interaction.output
-                  .split(/\r?\n/)
-                  .slice(-12)
-                  .map((line, index) => (
-                    <Text key={index} size="2xs" mono color={theme.mutedForeground}>
-                      {line.replace(/\u001b\[[0-9;?]*[a-zA-Z]/g, "") || " "}
-                    </Text>
-                  ))}
+              <div style={{ display: "flex", flexDirection: "column", paddingTop: 8, paddingBottom: 8 }}>
+                <ProviderAuthTerminal
+                  key={`${auth?.flowId}:${interaction.id}`}
+                  testId="provider-auth-terminal"
+                  output={interaction.output}
+                  outputOffset={interaction.outputOffset}
+                  onResponse={(response) => {
+                    if (readOnly || !auth?.flowId) return;
+                    if (response.data.length > 0) dryRunTerminal?.echo(response.data);
+                    // The server takes at most 4096 characters per response, in order.
+                    for (let offset = 0; offset < Math.max(1, response.data.length); offset += 4_096) {
+                      terminalQueue.current.push({
+                        instanceId,
+                        flowId: auth.flowId,
+                        interactionId: interaction.id,
+                        response: { ...response, data: response.data.slice(offset, offset + 4_096) },
+                      });
+                    }
+                    if (terminalSending.current) return;
+                    terminalSending.current = true;
+                    void (async () => {
+                      while (terminalQueue.current.length > 0) {
+                        const input = terminalQueue.current.shift()!;
+                        const result = await respond({ environmentId, input });
+                        if (result._tag !== "Success") {
+                          terminalQueue.current = [];
+                          if (!isAtomCommandInterrupted(result)) setError("The provider sign-in terminal is no longer available.");
+                          break;
+                        }
+                      }
+                    })()
+                      .catch(() => {
+                        terminalQueue.current = [];
+                        setError("Could not send input to the provider sign-in terminal.");
+                      })
+                      .finally(() => {
+                        terminalSending.current = false;
+                      });
+                  }}
+                />
               </div>
             ) : null}
             {interaction?.type === "credentials" ? (

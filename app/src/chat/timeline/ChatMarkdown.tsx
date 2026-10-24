@@ -1,147 +1,350 @@
-// apps/web/src/components/ChatMarkdown.tsx rendered by the native <markdown>
-// element. Sizes and colors follow the .chat-markdown rules in
-// apps/web/src/index.css (1787-2185): body 14px / 1.625, headings 20/18/16/14
-// at 1.3, inline code 12px radius 6, fenced code radius 10 at 13px.
-import { memo } from "react";
+// apps/web/src/components/ChatMarkdown.tsx. The markdown goes through web's
+// remark/rehype pipeline (chat/markdown/parse.ts) and renders tag by tag the
+// way web's components do (chat/markdown/MarkdownView.tsx), with inline
+// content laid out in JavaScript because gpuix has no inline formatting
+// context. Links route like web: file links open the Files surface at the
+// line, thread links navigate, web links open the system browser.
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { ContextMenuItem } from "@t3tools/contracts";
+import { isHostPath } from "@t3tools/shared/path";
+import { assistantCitationLabel } from "@t3tools/shared/assistantCitations";
+import { formatProviderSkillDisplayName, type InlineSkill } from "@t3tools/shared/inlineSkills";
+import { SKILL_CHIP_ICON_SVG } from "../markdown/chipIcons.ts";
+import { mediaMimeTypeFromExtension } from "@t3tools/shared/filePreview";
+import { memo, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 
-import { FONTS, alpha, type Palette, useTheme } from "../../ui/theme.ts";
-import { openExternalUrl } from "./system.ts";
+import { appAtomRegistry } from "../../runtime/runtime.ts";
+import { useClientSettings } from "../../state/clientSettings.ts";
+import { rightPanelActions, threadKeyOf } from "../../state/rightPanel.ts";
+import { routeAtom } from "../../state/ui.ts";
+import { toast } from "../../ui/toast.tsx";
+import { useTheme } from "../../ui/theme.ts";
+import { markdownFileCopyMenuItems } from "../../web/components/chat/MarkdownFileLink.logic.ts";
+import { chipAtom, checkboxAtom, CheckboxBox, ChipBox, faviconAtom, FaviconBox, type ChipPayload } from "../markdown/MarkdownChips.tsx";
+import { MarkdownCodeBlock } from "../markdown/MarkdownCodeBlock.tsx";
+import { InlineMathBox, inlineMathAtom, MathBlock, MermaidBlock } from "../markdown/MarkdownDiagrams.tsx";
+import { InlineImageBox, inlineImageAtom, MarkdownImage } from "../markdown/MarkdownMedia.tsx";
+import { asyncLayoutEpoch, subscribeAsyncLayout } from "../markdown/diagrams.ts";
+import { MarkdownDetails } from "../markdown/MarkdownDetails.tsx";
+import { MarkdownTable } from "../markdown/MarkdownTable.tsx";
+import { useTextMetricsEpoch } from "../markdown/measure.ts";
+import {
+  HoverStore,
+  renderDocument,
+  type BlockRenderers,
+  type InlineBoxRenderers,
+  type LinkEntry,
+  type MarkdownActions,
+  type RenderEnv,
+} from "../markdown/MarkdownView.tsx";
+import type { BoxAtom } from "../markdown/inline.ts";
+import { messageLinkIndex, type FileChipTarget } from "../markdown/links.ts";
+import { parseChatMarkdown } from "../markdown/parse.ts";
+import { showMarkdownContextMenu } from "../markdown/overlays.tsx";
+import { markdownStyles, type ChatMarkdownTone } from "../markdown/styles.ts";
+import { NativeChatMarkdown } from "../../dev/nativeMarkdown.tsx";
+import { TimelineRowCtx, type TimelineRowSharedState } from "./rowContext.ts";
+import { copyTextToClipboard, openExternalUrl } from "./system.ts";
 
-export type ChatMarkdownTone = "assistant" | "user" | "muted";
+export type { ChatMarkdownTone };
 
-interface MarkdownTheme {
-  readonly appearance: "dark" | "light";
-  readonly bg: string;
-  readonly text: string;
-  readonly textMuted: string;
-  readonly textFaint: string;
-  readonly textDim: string;
-  readonly border: string;
-  readonly accent: string;
-  readonly codeText: string;
-  readonly codeWash: string;
-  readonly fontSans: string;
-  readonly fontMono: string;
-  readonly metrics: Record<string, number | number[]>;
+const NO_SKILLS: ReadonlyArray<InlineSkill> = [];
+
+/** Last measured width per placement, so a remounted row lays out at the right width in its first frame. */
+const lastWidths = new Map<string, number>();
+
+interface LinkContext {
+  readonly row: TimelineRowSharedState | null;
+  readonly contextChip: ((reference: { kind: string; contextId: string; label: string }) => ChipPayload | null) | undefined;
 }
 
-const themeCache = new WeakMap<Palette, Map<string, MarkdownTheme>>();
-
-function toneColor(theme: Palette, tone: ChatMarkdownTone): string {
-  switch (tone) {
-    case "assistant":
-      return alpha(theme.foreground, 0.8);
-    case "user":
-      return theme.foreground;
-    case "muted":
-      return theme.mutedForeground;
-  }
+function panelPathFor(target: FileChipTarget): string | null {
+  const meta = target.meta;
+  const canPreviewMedia = mediaMimeTypeFromExtension(meta.basename.slice(meta.basename.lastIndexOf("."))) !== null;
+  return meta.workspaceRelativePath ?? (!canPreviewMedia && isHostPath(meta.filePath) ? meta.filePath : null);
 }
 
-export function chatMarkdownTheme(
-  theme: Palette,
-  tone: ChatMarkdownTone,
-  textSize: 14 | 12 = 14,
-): MarkdownTheme {
-  let byKey = themeCache.get(theme);
-  if (!byKey) {
-    byKey = new Map();
-    themeCache.set(theme, byKey);
+function openFileTarget(target: FileChipTarget, context: LinkContext) {
+  const row = context.row;
+  const panelPath = panelPathFor(target);
+  if (!row || !panelPath) {
+    toast({ type: "info", title: "Can't open this file here", description: target.meta.targetPath });
+    return;
   }
-  const key = `${tone}:${textSize}`;
-  const cached = byKey.get(key);
-  if (cached) return cached;
-  const text = toneColor(theme, tone);
-  const lineHeight = textSize === 14 ? 23 : 20;
-  const value: MarkdownTheme = {
-    appearance: theme.appearance,
-    bg: theme.background,
-    text,
-    textMuted: theme.mutedForeground,
-    textFaint: alpha(theme.mutedForeground, 0.7),
-    textDim: theme.mutedForeground,
-    border: theme.border,
-    // gpuix tints list markers and the quote rail with `accent`; web draws
-    // both in the text color, so the accent follows the tone.
-    accent: text,
-    codeText: theme.foreground,
-    // Web paints inline code on --muted with a 1px contrast border; one wash
-    // a step lighter than the card reads the same at 12px.
-    codeWash: theme.appearance === "dark" ? "#ffffff14" : "#0000000d",
-    fontSans: FONTS.sans,
-    fontMono: FONTS.mono,
-    metrics: {
-      mdTextSize: textSize,
-      mdLineHeight: lineHeight,
-      mdBlockGap: textSize === 14 ? 10 : 8,
-      mdHeadingSizes: textSize === 14 ? [20, 18, 16, 14] : [16, 14, 13, 12],
-      mdHeadingLineHeights: textSize === 14 ? [26, 23, 21, 18] : [21, 18, 17, 16],
-      mdInlineCodeRadius: 6,
-      mdCodeRadius: 10,
-      mdCodePaddingX: 12,
-      mdCodePaddingY: 9,
-      mdCodeHeaderPaddingY: 6,
-      mdCodeHeaderTextSize: 11,
-      codeTextSize: 13,
-      codeLineHeight: 18,
-      mdTableCellPadding: 10,
+  rightPanelActions.openFile(threadKeyOf(row.threadRef.environmentId, row.threadRef.threadId), panelPath, target.meta.line);
+}
+
+function copyWithToast(text: string, title: string) {
+  copyTextToClipboard(text).then(
+    () => toast({ type: "success", title: `${title} copied`, description: text }),
+    (error: unknown) =>
+      toast({
+        type: "error",
+        title: `Failed to copy ${title.toLowerCase()}`,
+        description: error instanceof Error ? error.message : "The clipboard is unavailable.",
+      }),
+  );
+}
+
+function fileContextMenu(target: FileChipTarget, context: LinkContext, position: { x: number; y: number }) {
+  const copyItems = markdownFileCopyMenuItems({ targetPath: target.meta.targetPath, workspaceRelativePath: target.meta.workspaceRelativePath });
+  const panelPath = panelPathFor(target);
+  const items: ContextMenuItem<string>[] = [
+    ...(context.row && panelPath ? [{ id: "open-in-panel", label: "Open file" }] : []),
+    ...copyItems.map(({ id, label }) => ({ id, label })),
+  ];
+  void showMarkdownContextMenu(items, position).then((clicked) => {
+    if (clicked === "open-in-panel") openFileTarget(target, context);
+    const copyItem = copyItems.find((item) => item.id === clicked);
+    if (copyItem) copyWithToast(copyItem.value, copyItem.title);
+  });
+}
+
+function externalContextMenu(href: string, position: { x: number; y: number }) {
+  // web externalLinkContextMenu: without an integrated browser for this client, the
+  // menu offers the system browser and copying.
+  const items: ContextMenuItem<string>[] = [
+    { id: "open-external", label: "Open in system browser" },
+    { id: "copy-link", label: "Copy Link" },
+  ];
+  void showMarkdownContextMenu(items, position).then((clicked) => {
+    if (clicked === "open-external") openExternalUrl(href);
+    if (clicked === "copy-link") copyWithToast(href, "Link");
+  });
+}
+
+function navigateToThread(environmentId: EnvironmentId, threadId: ThreadId) {
+  appAtomRegistry.set(routeAtom, { kind: "thread", environmentId, threadId });
+}
+
+function createActions(context: LinkContext): MarkdownActions {
+  return {
+    activateLink(entry) {
+      const kind = entry.kind;
+      if (kind.kind === "file") {
+        openFileTarget({ meta: kind.meta, label: kind.meta.basename, copyMarkdown: entry.href }, context);
+      } else if (kind.kind === "thread") {
+        const environmentId = context.row?.threadRef.environmentId;
+        if (environmentId) navigateToThread(environmentId, kind.threadId);
+      } else if (kind.kind === "external") {
+        if (entry.href.startsWith("#")) return;
+        openExternalUrl(entry.href);
+      }
+    },
+    linkContextMenu(entry, position) {
+      const kind = entry.kind;
+      if (kind.kind === "external" && kind.faviconHost) externalContextMenu(entry.href, position);
+      if (kind.kind === "file") fileContextMenu({ meta: kind.meta, label: kind.meta.basename, copyMarkdown: entry.href }, context, position);
     },
   };
-  byKey.set(key, value);
-  return value;
 }
 
-/**
- * Web's `lineBreaks` (remark-breaks) turns every newline into a <br>. The native
- * parser is plain CommonMark, so mark each newline outside fenced code as a hard
- * break instead.
- */
-export function withHardLineBreaks(text: string): string {
-  const lines = text.split("\n");
-  let inFence = false;
-  let fence = "";
-  for (let index = 0; index < lines.length - 1; index += 1) {
-    const line = lines[index]!;
-    const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
-    if (fenceMatch) {
-      const marker = fenceMatch[1]!;
-      if (!inFence) {
-        inFence = true;
-        fence = marker[0]!.repeat(marker.length);
-      } else if (marker.startsWith(fence)) {
-        inFence = false;
+function createBoxes(context: LinkContext): InlineBoxRenderers {
+  let nextId = 0;
+  const id = (prefix: string) => `${prefix}${nextId++}`;
+  const lineWidth = (env: RenderEnv) => env.styles.body.size * 40;
+  return {
+    renderBox(atom: BoxAtom, env: RenderEnv, key: string, join: boolean): ReactNode {
+      const payload = atom.payload as { type: string };
+      switch (payload.type) {
+        case "chip":
+          return <ChipBox key={key} atom={atom} env={env} join={join} />;
+        case "favicon":
+          return <FaviconBox key={key} atom={atom} env={env} />;
+        case "checkbox":
+          return <CheckboxBox key={key} atom={atom} env={env} />;
+        case "math":
+          return <InlineMathBox key={key} atom={atom} />;
+        case "image":
+          return <InlineImageBox key={key} atom={atom} />;
+        default:
+          return null;
       }
-      continue;
-    }
-    if (inFence || line.trim() === "" || lines[index + 1]!.trim() === "") continue;
-    if (!line.endsWith("  ") && !line.endsWith("\\")) lines[index] = `${line}  `;
-  }
-  return lines.join("\n");
+    },
+    fileChip(target, env, link) {
+      const payload: ChipPayload = {
+        type: "chip",
+        kind: "mention",
+        label: target.label,
+        icon: { kind: "file", path: target.meta.filePath },
+        tooltip: target.meta.targetPath,
+        onActivate: () => openFileTarget(target, context),
+        onContextMenu: (position) => fileContextMenu(target, context, position),
+        fileMetadata: { environmentId: context.row?.threadRef.environmentId ?? null, path: target.meta.filePath, cwd: context.row?.markdownCwd },
+      };
+      return chipAtom(id("file"), payload, env.styles.body, lineWidth(env), link);
+    },
+    threadChip(threadId, label, env) {
+      const environmentId = context.row?.threadRef.environmentId;
+      const payload: ChipPayload = {
+        type: "chip",
+        kind: "thread",
+        label,
+        icon: { kind: "lucide", name: "messages-square" },
+        tooltip: "Open thread",
+        ...(environmentId
+          ? {
+              onActivate: () => navigateToThread(environmentId, threadId as ThreadId),
+              threadRef: { environmentId, threadId: threadId as ThreadId },
+            }
+          : {}),
+      };
+      return chipAtom(id("thread"), payload, env.styles.body, lineWidth(env));
+    },
+    contextChip(kind, contextId, label, env) {
+      // web renders the reference's label as plain text when the caller has no chip for it.
+      const payload = context.contextChip?.({ kind, contextId, label });
+      return payload ? chipAtom(id("ctx"), payload, env.styles.body, lineWidth(env)) : null;
+    },
+    citationChip(entry: LinkEntry, env) {
+      // AssistantCitationChip: the quote (or its comment) as the label; the source opens on click.
+      if (entry.kind.kind !== "citation") return chipAtom(id("cite"), { type: "chip", kind: "citation", label: "Quote", icon: { kind: "lucide", name: "quote" } }, env.styles.body, lineWidth(env));
+      const citation = entry.kind.citation;
+      const payload: ChipPayload = {
+        type: "chip",
+        kind: "citation",
+        label: assistantCitationLabel(citation),
+        icon: { kind: "lucide", name: "quote" },
+        tooltip: citation.comment ? `${citation.text}\n\n${citation.comment}` : citation.text,
+        onActivate: () => navigateToThread(citation.environmentId, citation.threadId),
+      };
+      return chipAtom(id("cite"), payload, env.styles.body, Math.min(lineWidth(env), env.styles.body.size * 0.86 * 16 + 40));
+    },
+    favicon(host, link, env) {
+      return faviconAtom(id("fav"), host, env.styles.body, link);
+    },
+    skillChip(skill, rawText, env) {
+      const payload: ChipPayload = {
+        type: "chip",
+        kind: "skill",
+        label: formatProviderSkillDisplayName(skill),
+        icon: { kind: "svg", source: SKILL_CHIP_ICON_SVG },
+        copyText: rawText,
+      };
+      return chipAtom(id("skill"), payload, env.styles.body, lineWidth(env));
+    },
+    checkbox(checked, env) {
+      return checkboxAtom(id("chk"), checked, env.styles.body, env.styles.listIndent);
+    },
+    inlineMath(tex, display, env, style) {
+      return inlineMathAtom(id("math"), tex, display, style, env.extent.root);
+    },
+    inlineImage(node, env, style) {
+      return inlineImageAtom(id("img"), node, style, env.extent.root);
+    },
+  };
 }
 
-function handleLinkClick(event: { value?: string }) {
-  if (event.value) openExternalUrl(event.value);
+function createBlocks(): BlockRenderers {
+  return {
+    codeBlock({ code, language, meta, width, env, key }) {
+      return <MarkdownCodeBlock key={key} code={code} language={language} meta={meta} width={width} styles={env.styles} isStreaming={false} />;
+    },
+    mathBlock({ tex, width, env, key }) {
+      return <MathBlock key={key} tex={tex} width={width} styles={env.styles} />;
+    },
+    mermaid({ code, meta, width, env, key }) {
+      return <MermaidBlock key={key} code={code} meta={meta} width={width} env={env} isStreaming={env.isStreaming} />;
+    },
+    table({ node, width, env, key }) {
+      return <MarkdownTable key={key} node={node} width={width} env={env} />;
+    },
+    details({ node, width, env, key }) {
+      return <MarkdownDetails key={key} node={node} width={width} env={env} />;
+    },
+    image({ node, width, env, key }) {
+      return <MarkdownImage key={key} node={node} width={width} env={env} />;
+    },
+  };
 }
 
-export const ChatMarkdown = memo(function ChatMarkdown({
+// T3TERM_NATIVE_MD=1: the previous native renderer, for perf comparisons only.
+const NATIVE_MARKDOWN = process.env.T3TERM_NATIVE_MD === "1";
+
+export const ChatMarkdown = memo(function ChatMarkdown(props: Parameters<typeof RenderedChatMarkdown>[0]) {
+  if (NATIVE_MARKDOWN) return <NativeChatMarkdown text={props.text} tone={props.tone ?? "assistant"} textSize={props.textSize ?? 14} lineBreaks={props.lineBreaks ?? false} />;
+  return <RenderedChatMarkdown {...props} />;
+});
+
+const RenderedChatMarkdown = memo(function RenderedChatMarkdown({
   text,
   tone = "assistant",
   textSize = 14,
   lineBreaks = false,
+  parseRawHtml = true,
+  maxWidth,
+  onFitWidth,
+  isStreaming = false,
+  contextChip,
 }: {
   text: string;
   tone?: ChatMarkdownTone;
   textSize?: 14 | 12;
   lineBreaks?: boolean;
+  /** web UserMessageBody passes false: authored HTML shows as text. */
+  parseRawHtml?: boolean;
+  /** Shrink-to-fit inside a bubble: lay out at most this wide and take the content's width. */
+  maxWidth?: number;
+  /** Reports the shrink-to-fit width, so wrappers can take it as a definite width (Taffy lays auto-width chains out repeatedly). */
+  onFitWidth?: (width: number) => void;
+  /** The message is still streaming: Mermaid shows its code until the fence closes. */
+  isStreaming?: boolean;
+  /** Chips for `t3-context:` references (user messages: UserMessageContextChips). */
+  contextChip?: LinkContext["contextChip"];
 }) {
-  const theme = useTheme();
-  const source = lineBreaks ? withHardLineBreaks(text) : text;
+  const palette = useTheme();
+  const styles = markdownStyles(palette, tone, textSize);
+  const epoch = useTextMetricsEpoch();
+  // Inline formulas and images re-lay out once their size is known.
+  const asyncEpoch = useSyncExternalStore(subscribeAsyncLayout, asyncLayoutEpoch, asyncLayoutEpoch);
+  const row = useContext(TimelineRowCtx) as TimelineRowSharedState | null;
+  const mathEnabled = useClientSettings((settings) => settings.mathRenderingEnabled);
+  const widthKey = `${tone}:${textSize}`;
+  const [measured, setMeasured] = useState(() => lastWidths.get(widthKey) ?? 0);
+  const width = maxWidth ?? measured;
+  const [hover] = useState(() => new HoverStore());
+  const tree = parseChatMarkdown(text, { lineBreaks, math: mathEnabled, rawHtml: parseRawHtml });
+  const cwd = row?.markdownCwd;
+  const context = useMemo<LinkContext>(() => ({ row, contextChip }), [row, contextChip]);
+  const handlers = useMemo(() => ({ actions: createActions(context), boxes: createBoxes(context), blocks: createBlocks() }), [context]);
+  const rendered = useMemo(() => {
+    if (width <= 0) return null;
+    const env: RenderEnv = {
+      styles,
+      index: messageLinkIndex(text, cwd),
+      links: [],
+      hover,
+      actions: handlers.actions,
+      boxes: handlers.boxes,
+      blocks: handlers.blocks,
+      mathEnabled,
+      skills: row?.skills ?? NO_SKILLS,
+      extent: { width: 0, root: width },
+      media: { environmentId: row?.threadRef.environmentId ?? null, threadId: row?.threadRef.threadId ?? null, cwd, gallery: [] },
+      isStreaming,
+    };
+    const nodes = renderDocument(tree, width, env);
+    return { nodes, extent: env.extent.width };
+    // epoch: new text metrics re-lay out lines measured with estimates.
+  }, [tree, width, styles, text, cwd, row, hover, handlers, mathEnabled, epoch, asyncEpoch, isStreaming]);
+  const fitWidth = maxWidth !== undefined && rendered ? Math.min(maxWidth, Math.ceil(rendered.extent)) : undefined;
+  useEffect(() => {
+    if (fitWidth !== undefined) onFitWidth?.(fitWidth);
+  }, [fitWidth, onFitWidth]);
   return (
-    <markdown
-      source={source}
-      theme={chatMarkdownTheme(theme, tone, textSize)}
-      onLinkClick={handleLinkClick}
-      style={{ width: "100%", minWidth: 0 }}
-    />
+    <div
+      onLayout={
+        maxWidth === undefined
+          ? (event) => {
+              const next = event.width ?? 0;
+              if (next > 0) lastWidths.set(widthKey, next);
+              if (next > 0 && Math.abs(next - measured) > 0.5) setMeasured(next);
+            }
+          : undefined
+      }
+      style={{ display: "flex", flexDirection: "column", width: fitWidth ?? "100%", minWidth: 0 }}
+    >
+      {rendered?.nodes}
+    </div>
   );
 });

@@ -326,6 +326,9 @@ export function PreviewView({
               bottom: 0,
               display: "flex",
               flexDirection: "column",
+              // An absolute box ends gpuix's hit test, which would swallow clicks on the
+              // empty and unreachable states painted under it. Its children keep their own hits.
+              pointerEvents: "none",
             }}
           >
             {viewport._tag !== "fill" && !showEmptyState && !isUnreachable ? (

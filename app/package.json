@@ -14,18 +14,29 @@
   "dependencies": {
     "@effect/atom-react": "catalog:",
     "@gpuix/native": "0.11.0",
-    "@pierre/diffs": "catalog:",
     "@gpuix/react": "0.11.0",
+    "@noble/hashes": "catalog:",
+    "@pierre/diffs": "catalog:",
     "@t3tools/client-runtime": "workspace:*",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
     "@xterm/headless": "^6.0.0",
     "effect": "catalog:",
+    "jsonc-parser": "3.3.1",
+    "jszip": "3.10.1",
     "lucide-static": "0.564.0",
-    "react": "catalog:"
+    "mathjax-full": "3.2.2",
+    "pele": "1.8.0",
+    "react": "catalog:",
+    "remark-math": "6.0.0",
+    "remark-parse": "catalog:",
+    "remark-rehype": "catalog:",
+    "unified": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/hast": "3",
+    "@types/mdast": "4",
     "@types/react": "^19.2.0",
     "typescript": "^5.9.0"
   }

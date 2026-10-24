@@ -1,13 +1,17 @@
 // Port of apps/web/src/components/settings/ConnectionsSettings.tsx (+ AuthorizedClientsSettings,
 // SavedEnvironmentRows, EnvironmentRow, EnvironmentIconPicker, SessionPermissions,
-// AddEnvironmentDialog), rendered the way the hosted web app renders it: there is
-// no desktop bridge, so network exposure, Tailscale, WSL and T3 Connect controls
-// stay out, and Network access is read-only.
+// AddEnvironmentDialog, EnvironmentRoutesList, ConnectionDiagnosisDetails,
+// LoadBalancingSettings, GitHubRoutingSettings), rendered the way the hosted web app
+// renders it: there is no desktop bridge, so network exposure, Tailscale, WSL and
+// T3 Connect controls stay out, and Network access is web's read-only row
+// (renderDisabledNetworkAccessRow). Server update actions are left out as in
+// connect/ConnectionBanner.tsx: t3-term's version is not a T3 Code release.
 //
 // The web app's primary environment is the server that served it. In t3-term it
 // is the first saved environment (app/src/state/settings.ts primaryEnvironmentIdAtom);
 // every other catalog entry is listed under Environments.
 import { useAtomValue } from "@effect/atom-react";
+import { connectionRoutes, connectionStatusText, environmentMcpUrl, hasSavedBearerRoute } from "@t3tools/client-runtime/connection";
 import { isAtomCommandInterrupted, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   AuthAccessReadScope,
@@ -32,9 +36,10 @@ import {
 import { AUTH_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
 import { getPairingTokenFromUrl } from "@t3tools/shared/remote";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import { useState, type ReactNode } from "react";
 
-import { environmentCatalog, serverEnvironment } from "../../state/environment.ts";
+import { environmentCatalog, environmentSession, serverEnvironment } from "../../state/environment.ts";
 import {
   readEnvironmentScope,
   useAtomCommand,
@@ -51,7 +56,7 @@ import { toast } from "../../ui/toast.tsx";
 import { alpha, RADIUS, useTheme } from "../../ui/theme.ts";
 import { searchableSetting } from "../../web/components/settings/settingsSearch.ts";
 import { formatExpiresInLabel } from "../../web/timestampFormat.ts";
-import { InlineButton, TextField } from "../controls.tsx";
+import { TextField } from "../controls.tsx";
 import { SettingsGroup, SettingsPageContainer, SettingsRow, SettingsSection, machineIcon } from "../layout.tsx";
 import { copyText } from "../openExternal.ts";
 import { useRelativeTimeLabel } from "../RelativeTime.tsx";
@@ -63,6 +68,10 @@ import {
   revokeOtherClientSessions,
   revokePairingLink,
 } from "../connections/state.ts";
+import { ConnectionDiagnosisPanel, ConnectionDiagnosisSummary, useConnectionDiagnosis } from "../connections/ConnectionDiagnosisDetails.tsx";
+import { EnvironmentRoutesList } from "../connections/EnvironmentRoutesList.tsx";
+import { EnvironmentRow, SubtitleToggle, environmentTransportLabel } from "../connections/EnvironmentRow.tsx";
+import { GitHubRoutingSettings, LoadBalancingSettings } from "../connections/LoadBalancingSettings.tsx";
 
 const MACHINE_KIND_LABELS: Record<EnvironmentMachineKind, string> = {
   server: "Server",
@@ -682,73 +691,151 @@ function savedStatus(environment: EnvironmentPresentation): { text: string; tone
 function SavedEnvironmentRow({
   environment,
   onRemove,
+  onAddRoute,
 }: {
   environment: EnvironmentPresentation;
   onRemove: (environment: EnvironmentPresentation) => void;
+  onAddRoute: (environment: EnvironmentPresentation) => void;
 }) {
   const theme = useTheme();
   const setEnabled = useAtomCommand(environmentCatalog.setEnabled, { reportFailure: false });
+  const retryNow = useAtomCommand(environmentCatalog.retryNow);
+  const [routesOpen, setRoutesOpen] = useState(false);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
-  const enabled = environment.entry.enabled;
-  const status = savedStatus(environment);
+  const [diagnosisOpen, setDiagnosisOpen] = useState(false);
+  const environmentId = environment.environmentId;
+  const unsupported = environment.connection.phase === "unsupported";
+  const blocked = unsupported && !hasSavedBearerRoute(environment.entry);
+  const enabled = environment.entry.enabled && !unsupported;
   const connected = environment.connection.phase === "connected";
-  const subtitle = [environment.relayManaged ? "T3 Connect" : (environment.displayUrl ?? "Remote link"), status.text].join(" · ");
-  const dotColor = !enabled ? alpha(theme.mutedForeground, 0.3) : connected ? theme.success : status.tone === "error" ? theme.error : theme.warning;
+  const errorTraceId = environment.connection.traceId;
+  const status = savedStatus(environment);
+  const { diagnosis, state: connectionState, relayOnly } = useConnectionDiagnosis(environment);
+  const prepared = useAtomValue(environmentSession.preparedConnectionValueAtom(environmentId));
+  const connectedTarget = connected && Option.isSome(prepared) ? prepared.value.target : null;
+  const mcpUrl = environmentMcpUrl({ entry: environment.entry, connectedTarget });
+  const routeCount = connectionRoutes(environment.entry).length;
+  // The diagnosis headline below names the failure in full.
+  const subtitleText = [environmentTransportLabel(environment, connectedTarget), diagnosis ? null : status.text]
+    .filter((value): value is string => value !== null)
+    .join(" · ");
+  const statusTooltip = unsupported
+    ? (environment.connection.error ?? connectionStatusText(environment.connection))
+    : enabled
+      ? connectionStatusText(environment.connection)
+      : "Switched off";
+  const dot = (
+    <Text size="xs" color={theme.mutedForeground}>
+      ·
+    </Text>
+  );
   return (
-    <div style={{ display: "flex", flexDirection: "column", paddingLeft: 16, paddingRight: 16, paddingTop: 12, paddingBottom: 12, opacity: enabled ? 1 : 0.64 }}>
-      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 12 }}>
-        <div style={{ position: "relative", width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <Icon name={machineIcon(environment.serverConfig)} size={18} color={theme.foreground} />
+    <EnvironmentRow
+      testId={`saved-environment-${environmentId}`}
+      kind={resolveEnvironmentMachineKind(environment.serverConfig)}
+      label={environment.label}
+      dimmed={!enabled}
+      subtitle={
+        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4, minWidth: 0 }}>
+          <Tooltip content={statusTooltip} side="top">
+            <div style={{ display: "flex", minWidth: 0, flexShrink: 1 }}>
+              <Text size="xs" truncate color={enabled && status.tone === "error" && !diagnosis ? theme.errorForeground : theme.mutedForeground}>
+                {subtitleText}
+              </Text>
+            </div>
+          </Tooltip>
+          {dot}
+          <SubtitleToggle label={routeCount === 1 ? "Routes" : `${routeCount} routes`} open={routesOpen} onToggle={() => setRoutesOpen(!routesOpen)} testId={`environment-routes-${environmentId}`} />
+          {dot}
+          <SubtitleToggle label="Permissions" open={permissionsOpen} onToggle={() => setPermissionsOpen(!permissionsOpen)} testId={`environment-permissions-${environmentId}`} />
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 2, flexGrow: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <StatusDot color={dotColor} tooltip={enabled ? status.text : "Switched off"} />
-            <Text weight={500}>{environment.label}</Text>
-          </div>
-          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>
-            <Text size="xs" color={enabled && status.tone === "error" ? theme.errorForeground : theme.mutedForeground}>
-              {subtitle}
-            </Text>
-            <Text size="xs" color={theme.mutedForeground}>
-              ·
-            </Text>
-            <InlineButton size="xs" tone="muted" trailingIcon={permissionsOpen ? "chevron-down" : "chevron-right"} onClick={() => setPermissionsOpen(!permissionsOpen)}>
-              Permissions
-            </InlineButton>
-          </div>
+      }
+      below={
+        diagnosis ? (
+          <ConnectionDiagnosisSummary
+            testId={`environment-diagnosis-${environmentId}`}
+            diagnosis={diagnosis}
+            retryAt={connectionState.phase === "backoff" ? connectionState.retryAt : null}
+            attempt={connectionState.attempt}
+            expanded={diagnosisOpen}
+            onToggle={() => setDiagnosisOpen(!diagnosisOpen)}
+          />
+        ) : null
+      }
+      detail={
+        diagnosis && diagnosisOpen || routesOpen || permissionsOpen ? (
+          <>
+            {diagnosis && diagnosisOpen ? (
+              <ConnectionDiagnosisPanel
+                hostLabel={environment.label}
+                diagnosis={diagnosis}
+                onRetry={() => void retryNow(environmentId)}
+                onAddRoute={relayOnly ? () => onAddRoute(environment) : null}
+              />
+            ) : null}
+            {routesOpen ? <EnvironmentRoutesList environment={environment} onAddRoute={() => onAddRoute(environment)} /> : null}
+            {permissionsOpen ? (
+              <div style={{ marginTop: 8, borderTopWidth: 1, borderColor: alpha(theme.border, 0.5) }}>
+                <SessionPermissions environmentId={environmentId} connected={connected} routeContext />
+              </div>
+            ) : null}
+          </>
+        ) : null
+      }
+    >
+      <Tooltip content={blocked ? "Client not supported" : enabled ? "Switch off" : "Switch on"} side="top">
+        <div style={{ display: "flex" }}>
+          <Switch
+            size="sm"
+            testId={`environment-enabled-${environmentId}`}
+            checked={enabled}
+            disabled={blocked}
+            onChange={async (checked) => {
+              const result = await setEnabled({ environmentId, enabled: checked });
+              if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+                toast({ type: "error", title: `Could not switch backend ${checked ? "on" : "off"}`, description: errorMessage(squashAtomCommandFailure(result), "") });
+              }
+            }}
+          />
         </div>
-        <Tooltip content={enabled ? "Switch off" : "Switch on"} side="top">
-          <div style={{ display: "flex" }}>
-            <Switch
-              testId={`environment-enabled-${environment.environmentId}`}
-              checked={enabled}
-              onChange={async (checked) => {
-                const result = await setEnabled({ environmentId: environment.environmentId, enabled: checked });
-                if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-                  toast({ type: "error", title: `Could not switch backend ${checked ? "on" : "off"}`, description: errorMessage(squashAtomCommandFailure(result), "") });
-                }
-              }}
-            />
-          </div>
-        </Tooltip>
-        <Menu
-          align="end"
-          minWidth={220}
-          trigger={({ toggle }) => <IconButton icon="ellipsis" size={24} iconSize={14} onClick={toggle} testId={`environment-menu-${environment.environmentId}`} />}
-        >
-          <EnvironmentIconMenuItems environment={environment} />
-          <MenuSeparator />
-          <MenuItem destructive onSelect={() => onRemove(environment)}>
-            Remove from this device…
+      </Tooltip>
+      <Menu
+        align="end"
+        minWidth={220}
+        trigger={({ toggle }) => <IconButton icon="ellipsis" size={24} iconSize={14} onClick={toggle} testId={`environment-menu-${environmentId}`} />}
+      >
+        <EnvironmentIconMenuItems environment={environment} />
+        <MenuItem icon="route" onSelect={() => setRoutesOpen(!routesOpen)}>
+          {routesOpen ? "Hide routes" : "Routes"}
+        </MenuItem>
+        {mcpUrl ? (
+          <MenuItem
+            onSelect={() =>
+              copyText(mcpUrl)
+                ? toast({ type: "success", title: "MCP URL copied", description: `Add it to an agent, e.g. claude mcp add --transport http t3 ${mcpUrl}` })
+                : toast({ type: "error", title: "Could not copy MCP URL" })
+            }
+          >
+            Copy MCP URL
           </MenuItem>
-        </Menu>
-      </div>
-      {permissionsOpen ? (
-        <div style={{ marginTop: 8, borderTopWidth: 1, borderColor: alpha(theme.border, 0.5), paddingLeft: 32 }}>
-          <SessionPermissions environmentId={environment.environmentId} connected={connected} routeContext />
-        </div>
-      ) : null}
-    </div>
+        ) : null}
+        {errorTraceId ? (
+          <MenuItem
+            onSelect={() =>
+              copyText(errorTraceId)
+                ? toast({ type: "success", title: "Trace ID copied", description: errorTraceId })
+                : toast({ type: "error", title: "Could not copy trace ID" })
+            }
+          >
+            Copy trace ID
+          </MenuItem>
+        ) : null}
+        <MenuSeparator />
+        <MenuItem destructive onSelect={() => onRemove(environment)}>
+          Remove from this device…
+        </MenuItem>
+      </Menu>
+    </EnvironmentRow>
   );
 }
 
@@ -782,7 +869,16 @@ function parseRemotePairingFields(input: { readonly host: string; readonly pairi
   return { host, pairingCode };
 }
 
-function AddEnvironmentDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+function AddEnvironmentDialog({
+  open,
+  onOpenChange,
+  routeTarget,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** Adding a route to this environment instead of a new one. */
+  routeTarget: EnvironmentPresentation | null;
+}) {
   const theme = useTheme();
   const pair = useAtomCommand(registerPairing, { reportFailure: false });
   const [host, setHost] = useState("");
@@ -818,7 +914,7 @@ function AddEnvironmentDialog({ open, onOpenChange }: { open: boolean; onOpenCha
       setPending(false);
       return;
     }
-    const result = await pair(input);
+    const result = await pair({ ...input, ...(routeTarget ? { expectedEnvironmentId: routeTarget.environmentId } : {}) });
     setPending(false);
     if (result._tag === "Failure") {
       if (!isAtomCommandInterrupted(result)) fail(errorMessage(squashAtomCommandFailure(result), "Failed to add backend."));
@@ -827,7 +923,11 @@ function AddEnvironmentDialog({ open, onOpenChange }: { open: boolean; onOpenCha
     setHost("");
     setCode("");
     onOpenChange(false);
-    toast({ type: "success", title: "Backend added", description: "The environment is saved and will reconnect on app startup." });
+    toast(
+      routeTarget
+        ? { type: "success", title: "Route added", description: `${routeTarget.label} now has another way to connect.` }
+        : { type: "success", title: "Backend added", description: "The environment is saved and will reconnect on app startup." },
+    );
   };
   const field = (label: string, input: ReactNode, width?: number) => (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, ...(width ? { width, flexShrink: 0 } : { flexGrow: 1, minWidth: 0 }) }}>
@@ -846,8 +946,12 @@ function AddEnvironmentDialog({ open, onOpenChange }: { open: boolean; onOpenCha
       }}
       width={768}
       testId="add-environment-dialog"
-      title="Add Environment"
-      description="Pair another environment to this client."
+      title={routeTarget ? `Add a route to ${routeTarget.label}` : "Add Environment"}
+      description={
+        routeTarget
+          ? "Pair this machine again over another address, such as its Tailscale name. It joins the existing routes instead of adding a second machine."
+          : "Pair another environment to this client."
+      }
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <div style={{ display: "flex", flexDirection: "row", gap: 12 }}>
@@ -906,7 +1010,7 @@ function AddEnvironmentDialog({ open, onOpenChange }: { open: boolean; onOpenCha
           </Text>
         ) : null}
         <Button variant="outline" icon="plus" disabled={pending} onClick={() => void submit()} testId="add-environment-submit" style={{ width: "100%" }}>
-          {pending ? "Adding…" : "Add environment"}
+          {pending ? "Adding…" : routeTarget ? "Add route" : "Add environment"}
         </Button>
       </div>
     </Dialog>
@@ -922,11 +1026,16 @@ export function ConnectionsSettings() {
   const primaryEnvironmentId = primaryEnvironment?.environmentId ?? null;
   const removeEnvironment = useAtomCommand(environmentCatalog.remove, { reportFailure: false });
   const [addOpen, setAddOpen] = useState(false);
+  const [routeTarget, setRouteTarget] = useState<EnvironmentPresentation | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<EnvironmentPresentation | null>(null);
   const [removing, setRemoving] = useState(false);
   const primarySession = useEnvironmentSessionState(primaryEnvironmentId ?? ("" as EnvironmentId));
   const authPolicy = primarySession.data?.auth.policy ?? null;
   const savedEnvironments = environments.filter((environment) => environment.environmentId !== primaryEnvironmentId);
+  const loadBalancingEnvironments = [
+    ...(primaryEnvironment ? [primaryEnvironment] : []),
+    ...savedEnvironments.filter((environment) => environment.entry.enabled),
+  ].filter((environment) => environment.connection.phase !== "unsupported");
   const primaryServerConfig = primaryEnvironment?.serverConfig ?? null;
   const versionDescription =
     [primaryServerConfig?.environment.serverVersion ?? null, primaryEnvironment?.displayUrl ?? null].filter((value): value is string => value !== null).join(" · ") ||
@@ -994,7 +1103,12 @@ export function ConnectionsSettings() {
         id="connections-environments"
         title="Environments"
         headerAction={
-          <Button size="xs" variant="ghost-muted" icon="plus" testId="connections-add-environment" onClick={() => setAddOpen(true)}>
+          <Button size="xs" variant="ghost-muted" icon="plus" testId="connections-add-environment"
+            onClick={() => {
+              setRouteTarget(null);
+              setAddOpen(true);
+            }}
+          >
             Add environment
           </Button>
         }
@@ -1023,10 +1137,22 @@ export function ConnectionsSettings() {
             <Text color={theme.mutedForeground}>Click “Add environment” to pair another environment.</Text>
           </div>
         ) : (
-          savedEnvironments.map((environment) => <SavedEnvironmentRow key={environment.environmentId} environment={environment} onRemove={setPendingRemoval} />)
+          savedEnvironments.map((environment) => (
+            <SavedEnvironmentRow
+              key={environment.environmentId}
+              environment={environment}
+              onRemove={setPendingRemoval}
+              onAddRoute={(target) => {
+                setRouteTarget(target);
+                setAddOpen(true);
+              }}
+            />
+          ))
         )}
       </SettingsSection>
-      <AddEnvironmentDialog open={addOpen} onOpenChange={setAddOpen} />
+      <LoadBalancingSettings environments={loadBalancingEnvironments} />
+      <GitHubRoutingSettings environments={loadBalancingEnvironments} />
+      <AddEnvironmentDialog open={addOpen} onOpenChange={setAddOpen} routeTarget={routeTarget} />
       <Dialog
         open={pendingRemoval !== null}
         onOpenChange={(open) => {

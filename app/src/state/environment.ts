@@ -20,6 +20,8 @@ export const environmentCatalog = createEnvironmentCatalogAtoms(connectionAtomRu
 export const environmentSession = createEnvironmentSessionAtoms(connectionAtomRuntime);
 export const serverEnvironment = createServerEnvironmentAtoms(connectionAtomRuntime, {
   initialConfigValueAtom: environmentSession.initialConfigValueAtom,
+  // Themes the environment publishes (Appearance > Themes), as web subscribes.
+  environmentThemes: true,
   usageLimitSources: true,
   usageLimitsCommand: true,
 });

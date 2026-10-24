@@ -38,6 +38,7 @@ import {
   useEnvironments,
   useEnvironmentScope,
   useEnvironmentSessionState,
+  useProjects,
   type EnvironmentPresentation,
 } from "../../state/settings.ts";
 import { Icon } from "../../ui/Icon.tsx";
@@ -73,7 +74,10 @@ import { machineIcon, PolicyTooltip, usePageWheelClaim, SettingResetButton, Sett
 import { AddProviderDialog } from "../providers/AddProviderDialog.tsx";
 import type { PaneItem } from "../providers/paneItems.ts";
 import { NumberStepper, StackedRow } from "../providers/parts.tsx";
+import { AcpSessionManagementSection } from "../providers/AcpSessionManagementSection.tsx";
+import { CodexManagedRuntimeFields, CodexSetupSection, readCodexSetupMode } from "../providers/CodexSetupSection.tsx";
 import { ProviderAuthenticationSection } from "../providers/ProviderAuthenticationSection.tsx";
+import { ProviderSetupSection } from "../providers/ProviderSetupSection.tsx";
 import { ProviderInstanceListRow, useProviderEditorItems, type ProviderInstanceCardProps } from "../providers/ProviderInstanceCard.tsx";
 import { providerClients } from "../providers/providerDriverMeta.ts";
 import {
@@ -734,6 +738,16 @@ function UsageProviderSettingsSection({
 
 // ── Detail pane ─────────────────────────────────────────────────────────
 
+function configuredBinaryPath(config: unknown): string {
+  if (config === null || typeof config !== "object" || !("binaryPath" in config)) return "";
+  return typeof config.binaryPath === "string" ? config.binaryPath.trim() : "";
+}
+
+/** AcpSessionManagementSection renders nothing without one of these. */
+function hasAcpSessionManagement(provider: ServerProvider): boolean {
+  return provider.nativeSessions?.canList === true || (provider.auth.canLogout === true && !provider.setup?.canAuthenticate) || provider.configurableProviders === true;
+}
+
 const NO_MODELS: ReadonlyArray<string> = [];
 
 function ProviderEditorPane(
@@ -754,8 +768,30 @@ function ProviderEditorPane(
   const hiddenModels = preferences?.hiddenModels ?? NO_MODELS;
   const modelOrder = preferences?.modelOrder ?? NO_MODELS;
   const favoriteModels = settings.favorites.filter((favorite) => favorite.provider === instanceId).map((favorite) => favorite.model);
+  const codexSetupMode = instance.driver === "codex" ? readCodexSetupMode(instance.config) : null;
+  const allProjects = useProjects();
+  const acpProjects = liveProvider?.driver === "acpRegistry" ? allProjects.filter((project) => project.environmentId === environmentId) : [];
   const setup: ReactNode =
-    !readOnly && liveProvider && (liveProvider.setup?.canAuthenticate || (liveProvider.driver === "acpRegistry" && liveProvider.installed)) ? (
+    instance.driver === "antigravity" ? (
+      <ProviderSetupSection
+        environmentId={environmentId}
+        environmentLabel={environmentLabel}
+        instanceId={instanceId}
+        provider={liveProvider}
+        binaryPath={configuredBinaryPath(instance.config)}
+        enabled={resolveProviderInstanceEnabled(instance)}
+        readOnly={readOnly}
+        onEnable={() => props.onUpdate({ ...instance, enabled: true })}
+      />
+    ) : codexSetupMode === "managed" ? (
+      <CodexSetupSection
+        environmentId={environmentId}
+        instanceId={instanceId}
+        provider={liveProvider}
+        enabled={resolveProviderInstanceEnabled(instance)}
+        readOnly={readOnly}
+      />
+    ) : !readOnly && liveProvider && (liveProvider.setup?.canAuthenticate || (liveProvider.driver === "acpRegistry" && liveProvider.installed)) ? (
       <ProviderAuthenticationSection
         key={`${environmentId}:${instanceId}`}
         environmentId={environmentId}
@@ -770,6 +806,22 @@ function ProviderEditorPane(
   const items = useProviderEditorItems({
     ...props,
     setup,
+    ...(codexSetupMode === "managed"
+      ? { managedRuntime: <CodexManagedRuntimeFields environmentId={environmentId} instanceId={instanceId} provider={liveProvider} /> }
+      : {}),
+    ...(liveProvider?.driver === "acpRegistry" && hasAcpSessionManagement(liveProvider)
+      ? {
+          acpSessions: (
+            <AcpSessionManagementSection
+              environmentId={environmentId}
+              instanceId={instanceId}
+              provider={liveProvider}
+              projects={acpProjects.map((project) => ({ id: project.id, title: project.title, workspaceRoot: project.workspaceRoot }))}
+              readOnly={readOnly}
+            />
+          ),
+        }
+      : {}),
     hiddenModels,
     favoriteModels,
     modelOrder,
