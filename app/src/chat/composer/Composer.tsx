@@ -181,8 +181,14 @@ import { attachmentsFromPaths } from "./composerAttachmentPaths.ts";
 import { ContextWindowMeter } from "./ContextWindowMeter.tsx";
 import { MODEL_PICKER_TRIGGER_MIN_WIDTH, ProviderModelPicker } from "./ProviderModelPicker.tsx";
 import { QueuedRunsControl } from "./QueuedRunsControl.tsx";
-import { registerShortcutHandler, resolveKeyEventCommand } from "../../keybindings/useGlobalKeybindings.ts";
-import { composerFocusAtom } from "../../state/keybindings.ts";
+import {
+  registerShortcutHandler,
+  registerTypeToFocusHandler,
+  resolveKeyEventCommand,
+} from "../../keybindings/useGlobalKeybindings.ts";
+import { isConfirmDialogActive } from "../../dialogs/confirmDialog.ts";
+import { readClipboardText } from "../../terminal/clipboard.ts";
+import { composerFocusAtom, terminalFocusAtom } from "../../state/keybindings.ts";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
 import type { KeybindingCommand } from "@t3tools/contracts";
 import { TraitsMenuContent, TraitsPicker } from "./TraitsPicker.tsx";
@@ -1612,6 +1618,49 @@ function ComposerBody({
       return true;
     },
   };
+  // ── Type-to-focus (web composerFocusRedirect + usePasteToFocusComposer) ──
+  // A printable key or a paste with nothing editable focused goes to the end of the prompt.
+  const appendToEditor = (text: string) => {
+    if (isChoiceOnlyPendingQuestion || requests.activePendingIsResponding) return false;
+    const next = `${valueRef.current}${text}`;
+    valueRef.current = next;
+    caretRef.current = next.length;
+    writeEditorValue(next);
+    if (restingRequested) appAtomRegistry.set(composerRestingAtom(draftKey), false);
+    setTrigger(detectComposerTrigger(next, next.length));
+    focusEditor();
+    return true;
+  };
+  const typeToFocus = (event: KeyEvent, eventRenderer: unknown) => {
+    const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
+    const focusedId = (eventRenderer as { getFocusedElementId?: () => number | null } | undefined)?.getFocusedElementId?.();
+    // Anything focused (a field, the terminal, this editor) keeps its own keys.
+    if (focusedId !== null && focusedId !== undefined) return false;
+    if (
+      appAtomRegistry.get(terminalFocusAtom) ||
+      appAtomRegistry.get(modelPickerOpenAtom) ||
+      appAtomRegistry.get(composerMenuOpenAtom) !== null ||
+      stash.menuOpen ||
+      isConfirmDialogActive()
+    ) {
+      return false;
+    }
+    const isPaste = (mods.ctrl || mods.cmd) && !mods.alt && !mods.shift && event.key === "v";
+    if (isPaste) {
+      void readClipboardText().then((text) => {
+        if (text.length > 0) appendToEditor(text);
+      });
+      return true;
+    }
+    if (mods.ctrl || mods.cmd || mods.alt || event.isHeld) return false;
+    const char = event.keyChar && [...event.keyChar].length === 1 ? event.keyChar : null;
+    if (char === null || char < " ") return false;
+    return appendToEditor(char);
+  };
+  const typeToFocusRef = useRef(typeToFocus);
+  typeToFocusRef.current = typeToFocus;
+  useEffect(() => registerTypeToFocusHandler((event, eventRenderer) => typeToFocusRef.current(event, eventRenderer)), []);
+
   const shortcutCommandsRef = useRef(shortcutCommands);
   shortcutCommandsRef.current = shortcutCommands;
   useEffect(() => {

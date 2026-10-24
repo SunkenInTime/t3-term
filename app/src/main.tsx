@@ -37,7 +37,7 @@ render(<App boot={boot} />, {
   keyboardFocusDim: false,
   // T3TERM_DEBUG_FRAMES=minimal|full paints GPUI draw times into the window.
   ...(process.env.T3TERM_DEBUG_FRAMES ? { debugFrameOverlay: process.env.T3TERM_DEBUG_FRAMES as "minimal" | "full" } : {}),
-  onKeyDown: (event) => handleGlobalKeyDown(event),
+  onKeyDown: (event, renderer) => handleGlobalKeyDown(event, renderer),
   onEvent: (event) => {
     if (perfProbeEnabled) perfOnEvent(event);
     // Every pointer, wheel and key event marks the user present; gpuix has no window-focus state.

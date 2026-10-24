@@ -448,11 +448,30 @@ export function handleGlobalKeyUp(event: KeyEvent): void {
   updateJumpHints(event, false);
 }
 
-export function handleGlobalKeyDown(event: KeyEvent): void {
+/**
+ * web composerFocusRedirect / usePasteToFocusComposer: the mounted composer claims printable
+ * keys and pastes that land on nothing editable. Registered by the composer; tried before
+ * shortcuts, like web's chat shortcut handler does.
+ */
+type TypeToFocusHandler = (event: KeyEvent, renderer: unknown) => boolean;
+let typeToFocusHandler: TypeToFocusHandler | null = null;
+
+export function registerTypeToFocusHandler(handler: TypeToFocusHandler): () => void {
+  typeToFocusHandler = handler;
+  return () => {
+    if (typeToFocusHandler === handler) typeToFocusHandler = null;
+  };
+}
+
+export function handleGlobalKeyDown(event: KeyEvent, renderer?: unknown): void {
   noteUserInput();
   updateJumpHints(event, true);
   if (event.defaultPrevented) return;
   if (handleEscapeToGoBack(event)) return;
+  if (!isCommandPaletteOpen() && typeToFocusHandler?.(event, renderer)) {
+    event.preventDefault();
+    return;
+  }
   const command = resolveKeyEventCommand(event);
   if (command === null) return;
 
