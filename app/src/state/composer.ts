@@ -324,6 +324,39 @@ export function restoreComposerContent(
   }));
 }
 
+/**
+ * Adds context records (a restored stash entry's) to a draft, keeping any the draft already
+ * has with the same id.
+ */
+export function addComposerContextRecords(
+  key: string,
+  records: {
+    readonly terminalContexts?: ReadonlyArray<TerminalContextDraft>;
+    readonly reviewComments?: ReadonlyArray<ReviewCommentContext>;
+    readonly threadContexts?: ReadonlyArray<ThreadContextRecord>;
+  },
+): void {
+  const terminals = records.terminalContexts ?? [];
+  const reviews = records.reviewComments ?? [];
+  const threads = records.threadContexts ?? [];
+  if (terminals.length === 0 && reviews.length === 0 && threads.length === 0) return;
+  updateComposerDraft(key, (draft) => ({
+    ...draft,
+    terminalContexts: [
+      ...(draft.terminalContexts ?? []),
+      ...terminals.filter((context) => !draft.terminalContexts?.some((existing) => existing.id === context.id)),
+    ],
+    reviewComments: [
+      ...(draft.reviewComments ?? []),
+      ...reviews.filter((comment) => !draft.reviewComments?.some((existing) => existing.id === comment.id)),
+    ],
+    threadContexts: [
+      ...(draft.threadContexts ?? []),
+      ...threads.filter((record) => !draft.threadContexts?.some((existing) => existing.contextId === record.contextId)),
+    ],
+  }));
+}
+
 // ── Inline context references ──────────────────────────────────────────
 
 /**

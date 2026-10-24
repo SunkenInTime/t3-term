@@ -9,7 +9,11 @@ import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import { termHome } from "../runtime/paths.ts";
+import type { ThreadContextRecord } from "@t3tools/contracts";
+
 import type { ComposerAttachmentDraft } from "./composer.ts";
+import type { TerminalContextDraft } from "../web/lib/terminalContext.ts";
+import type { ReviewCommentContext } from "../web/reviewCommentContext.ts";
 
 export const MAX_STASH_ENTRIES = 20;
 
@@ -18,6 +22,13 @@ export interface PromptStashEntry {
   readonly createdAt: string;
   readonly prompt: string;
   readonly attachments: ReadonlyArray<ComposerAttachmentDraft>;
+  /**
+   * The records behind the prompt's context chips (web PromptStashEntry terminal and
+   * review contexts): without them a restored chip would point at nothing.
+   */
+  readonly terminalContexts?: ReadonlyArray<TerminalContextDraft>;
+  readonly reviewComments?: ReadonlyArray<ReviewCommentContext>;
+  readonly threadContexts?: ReadonlyArray<ThreadContextRecord>;
 }
 
 const STORAGE_VERSION = 1;
