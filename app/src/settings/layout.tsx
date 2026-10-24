@@ -1386,7 +1386,11 @@ const MACHINE_ICONS: Record<EnvironmentMachineKind, IconName> = {
 
 /** EnvironmentMachineIcon as a lucide name (Linux and the Mac shapes are custom on the web). */
 export function machineIcon(config: Parameters<typeof resolveEnvironmentMachineKind>[0]): IconName {
-  return MACHINE_ICONS[resolveEnvironmentMachineKind(config)] ?? "server";
+  return machineKindIcon(resolveEnvironmentMachineKind(config));
+}
+
+export function machineKindIcon(kind: EnvironmentMachineKind): IconName {
+  return MACHINE_ICONS[kind] ?? "server";
 }
 
 export function SettingsScopeSentence() {

@@ -344,13 +344,17 @@ export function Switch({
   onChange,
   disabled,
   testId,
+  size = "default",
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
   testId?: string;
+  /** switch.tsx `sm`: a 14px thumb instead of 16px (at the sm breakpoint). */
+  size?: "default" | "sm";
 }) {
   const theme = useTheme();
+  const thumb = size === "sm" ? 14 : 16;
   return (
     <div
       testId={testId}
@@ -360,10 +364,10 @@ export function Switch({
         flexDirection: "row",
         alignItems: "center",
         justifyContent: checked ? "flex-end" : "flex-start",
-        width: 30,
-        height: 18,
+        width: thumb * 2 - 2,
+        height: thumb + 2,
         padding: 2,
-        borderRadius: 9,
+        borderRadius: (thumb + 2) / 2,
         backgroundColor: checked ? theme.primary : theme.input,
         opacity: disabled ? 0.5 : 1,
         cursor: disabled ? "default" : "pointer",
@@ -372,9 +376,9 @@ export function Switch({
     >
       <div
         style={{
-          width: 14,
-          height: 14,
-          borderRadius: 7,
+          width: thumb - 2,
+          height: thumb - 2,
+          borderRadius: (thumb - 2) / 2,
           // bg-background, dark:data-unchecked:bg-muted-foreground: a checked dark
           // switch has a dark thumb, not a white one.
           backgroundColor: !checked && theme.appearance === "dark" ? theme.mutedForeground : theme.background,

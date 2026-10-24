@@ -1,10 +1,10 @@
 // Port of apps/web/src/components/settings/TypographySettings.tsx.
 //
-// The web's family control becomes a picker once the browser grants font
-// enumeration; the hosted app (and t3-term, which has no font list API) shows
-// the text input. The web only commits a family the canvas probe can render;
-// gpuix cannot probe installed fonts, so any non-empty family is accepted and
-// GPUI falls back to the platform font for unknown names.
+// The family control becomes FontFamilyPicker once the OS font list has loaded
+// (installedFonts.ts; web: once the browser grants font enumeration) and stays a
+// text input until then or if listing fails. The web only commits a typed family
+// the canvas probe can render; gpuix cannot probe a typed name, so any non-empty
+// family is accepted and GPUI falls back to the platform font for unknown names.
 import {
   DEFAULT_UNIFIED_SETTINGS,
   MAX_CODE_FONT_SIZE,
@@ -27,7 +27,9 @@ import { searchableSetting } from "../../web/components/settings/settingsSearch.
 import { SettingsSelect, TextField } from "../controls.tsx";
 import { SettingResetButton, SettingsRow, SettingsSection } from "../layout.tsx";
 import { useScopedSettings, useUpdateScopedSettings } from "../scope.tsx";
+import { FontFamilyPicker } from "./FontFamilyPicker.tsx";
 import { CodeFontPreview, PromptFontPreview, TerminalFontPreview } from "./FontPreviews.tsx";
+import { useFontEnumeration } from "./installedFonts.ts";
 
 /** apps/web/src/appearanceFonts.ts */
 const TYPOGRAPHY_ADVANCED_STORAGE_KEY = "t3code:typography-advanced";
@@ -125,6 +127,7 @@ function CodeFontRow({
       id={searchable.id}
       title={title ?? searchable.title}
       testKey="code"
+      requireMonospace
       description={description}
       defaultFamily={defaults.code}
       defaultValue={DEFAULT_UNIFIED_SETTINGS.fontFamilyCode}
@@ -156,6 +159,7 @@ function TerminalFontRow() {
     <FontFamilySettingsRow
       {...searchableSetting("terminal-font")}
       testKey="terminal"
+      requireMonospace
       description="Terminal output, independent from code blocks and diffs."
       defaultFamily={defaults.code}
       defaultValue={DEFAULT_UNIFIED_SETTINGS.fontFamilyTerminal}
@@ -311,7 +315,9 @@ function FontFamilySettingsRow({
   onValueChange,
   onReset,
   size,
+  requireMonospace = false,
 }: {
+  requireMonospace?: boolean;
   id?: string;
   title: string;
   testKey: string;
@@ -357,8 +363,23 @@ function FontFamilySettingsRow({
     value !== defaultValue || size.value !== size.defaultValue ? (
       <SettingResetButton label={title.toLowerCase()} onClick={resetToDefault} />
     ) : null;
+  const fontEnumeration = useFontEnumeration();
   const control = (
     <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8 }}>
+      {fontEnumeration.status === "granted" ? (
+        <FontFamilyPicker
+          testId={`font-family-${testKey}`}
+          families={fontEnumeration.families}
+          defaultFamily={defaultFamily}
+          selectedFamily={value.trim()}
+          requireMonospace={requireMonospace}
+          onSelect={(family) => {
+            cancelPendingCommit();
+            setDraft(family);
+            if (family !== value) onValueChange(family);
+          }}
+        />
+      ) : (
       <div
         onKeyDown={(event) => {
           // Discard uncommitted typing without leaving the settings page,
@@ -392,6 +413,7 @@ function FontFamilySettingsRow({
           onBlur={flushDraft}
         />
       </div>
+      )}
       <SettingsSelect
         testId={`font-size-${testKey}`}
         width={144}

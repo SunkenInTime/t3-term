@@ -10,13 +10,21 @@ import {
   type TerminalBufferState,
   type TerminalOutputCursor,
 } from "@t3tools/client-runtime/state/terminal";
-import { AuthTerminalOperateScope, type EnvironmentId, type ThreadId } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import {
+  AuthPreviewOperateScope,
+  AuthTerminalOperateScope,
+  type EnvironmentId,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { memo, useEffect, useRef, useState } from "react";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
+import { previewEnvironment } from "../state/preview.ts";
 import {
   readEnvironmentScope,
   resizeTerminal,
@@ -27,6 +35,11 @@ import {
 } from "../state/terminal.ts";
 import { FONTS, useTheme } from "../ui/theme.ts";
 import { Menu, MenuItem } from "../ui/overlay.tsx";
+import { toast } from "../ui/toast.tsx";
+import {
+  type OpenPreviewMutation,
+  openTerminalLinkInPreview,
+} from "../web/components/preview/openTerminalLinkInPreview.ts";
 import { openExternalUrl, readClipboardText, writeClipboardText } from "./clipboard.ts";
 import { TerminalEmulator, type CellRun, type TerminalFrame, type TerminalTheme } from "./vt/emulator.ts";
 import { encodeKey } from "./vt/keys.ts";
@@ -325,7 +338,7 @@ function TerminalSessionView({
       );
   };
 
-  /** The URL under a window point, if any (Ctrl/Cmd+click, like the web's link activation). */
+  /** The URL under a window point, if any. */
   const urlAt = (x: number, y: number): string | null => {
     if (cellWidth === null) return null;
     const col = Math.floor((x - origin.current.x - CONTENT_PADDING) / cellWidth);
@@ -340,6 +353,40 @@ function TerminalSessionView({
     }
     return null;
   };
+
+  /**
+   * web handleLinkActivate: a plain click opens a URL in the thread's Browser
+   * when the link-target preference is "app"; Ctrl/Cmd+click, or no preview
+   * access, opens the system browser.
+   */
+  const activateLink = (url: string, forceBrowser: boolean) => {
+    const fallbackToBrowser = () => {
+      void openExternalUrl(url).catch((error: unknown) =>
+        emulator.writeSystemMessage(error instanceof Error ? error.message : "Unable to open link"),
+      );
+    };
+    if (!readEnvironmentScope(environmentId, AuthPreviewOperateScope)) {
+      fallbackToBrowser();
+      return;
+    }
+    const openPreview: OpenPreviewMutation = (input) =>
+      runAtomCommand(appAtomRegistry, previewEnvironment.open, input as never) as ReturnType<OpenPreviewMutation>;
+    void openTerminalLinkInPreview({
+      url,
+      threadRef: scopeThreadRef(environmentId, threadId),
+      openPreview,
+      fallbackToBrowser,
+      forceBrowser,
+    }).catch((error: unknown) =>
+      toast({
+        type: "error",
+        title: "Unable to open link",
+        description: error instanceof Error ? error.message : "An error occurred.",
+      }),
+    );
+  };
+  // web activates a link only when the press and the release land on the same link.
+  const linkPressRef = useRef<string | null>(null);
 
   const onKeyDown = (event: KeyEvent) => {
     const key = (event.key ?? "").toLowerCase();
@@ -417,15 +464,19 @@ function TerminalSessionView({
         setFocused(false);
         appAtomRegistry.set(terminalFocusAtom, false);
       }}
+      onMouseDown={(event) => {
+        linkPressRef.current =
+          (event.button ?? 0) === 0 && !event.modifiers?.shift && (event.clickCount ?? 1) === 1
+            ? urlAt(event.x ?? 0, event.y ?? 0)
+            : null;
+      }}
       onClick={(event) => {
-        const modifiers = event.modifiers;
-        if (!(isMac ? modifiers?.cmd : modifiers?.ctrl)) return;
+        const pressed = linkPressRef.current;
+        linkPressRef.current = null;
         const url = urlAt(event.x ?? 0, event.y ?? 0);
-        if (url) {
-          void openExternalUrl(url).catch((error: unknown) =>
-            emulator.writeSystemMessage(error instanceof Error ? error.message : "Unable to open link"),
-          );
-        }
+        if (url === null || url !== pressed) return;
+        const modifiers = event.modifiers;
+        activateLink(url, Boolean(modifiers?.ctrl || modifiers?.cmd));
       }}
       onAuxClick={(event) => {
         if (!event.isRightClick) return;
@@ -543,8 +594,11 @@ const TerminalGrid = memo(function TerminalGrid({
   focused: boolean;
 }) {
   const cursor = frame.cursor;
+  // gpuix lets an absolute box end the hit test, so the grid, its rows and runs
+  // pass the pointer through to the viewport's handlers (focus, link clicks,
+  // context menu). Text selection is window-level and does not need hits.
   return (
-    <div style={{ position: "absolute", top: CONTENT_PADDING, left: CONTENT_PADDING, right: 0, bottom: 0 }}>
+    <div style={{ position: "absolute", top: CONTENT_PADDING, left: CONTENT_PADDING, right: 0, bottom: 0, pointerEvents: "none" }}>
       {frame.rows.map((runs, row) => (
         <TerminalRow key={row} runs={runs} row={row} cellWidth={cellWidth} />
       ))}
@@ -586,7 +640,7 @@ const TerminalRow = memo(
   function TerminalRow({ runs, row, cellWidth }: { runs: ReadonlyArray<CellRun>; row: number; cellWidth: number }) {
     if (runs.length === 0) return null;
     return (
-      <div style={{ position: "absolute", top: row * CELL_HEIGHT, left: 0, right: 0, height: CELL_HEIGHT }}>
+      <div style={{ position: "absolute", top: row * CELL_HEIGHT, left: 0, right: 0, height: CELL_HEIGHT, pointerEvents: "none" }}>
         {runs.map((run) => (
           <text
             key={run.col}
@@ -600,6 +654,7 @@ const TerminalRow = memo(
               fontSize: FONT_SIZE,
               fontFamily: FONTS.mono,
               whiteSpace: "nowrap",
+              pointerEvents: "none",
               color: run.fg,
               ...(run.bg !== null ? { backgroundColor: run.bg } : {}),
               ...(run.bold ? { fontWeight: 700 } : {}),

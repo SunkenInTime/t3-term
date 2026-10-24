@@ -340,6 +340,10 @@ export interface ProviderEditorProps extends ProviderInstanceCardProps {
   readonly isDefault: boolean;
   readonly isDirty: boolean;
   readonly setup: ReactNode;
+  /** A managed Codex instance's runtime rows (CodexManagedRuntimeFields), folded under Runtime as on web. */
+  readonly managedRuntime?: ReactNode;
+  /** AcpSessionManagementSection, after Environment. */
+  readonly acpSessions?: ReactNode;
   readonly onDelete?: (() => void) | undefined;
   readonly onResetDefault?: (() => void) | undefined;
   readonly hiddenModels: ReadonlyArray<string>;
@@ -420,6 +424,7 @@ export function useProviderEditorItems(props: ProviderEditorProps): PaneItem[] {
   const environmentFieldNames = new Set(environmentFields.map((field) => field.name));
   const genericEnvironment = providerEnvironmentWithoutNames(instance.environment, environmentFieldNames);
 
+  const [runtimeOpen, setRuntimeOpen] = useState(false);
   const items: PaneItem[] = [];
 
   // Header: SettingsSection title={displayName} icon headerAction.
@@ -516,7 +521,20 @@ export function useProviderEditorItems(props: ProviderEditorProps): PaneItem[] {
   }
 
   const fields = driverOption ? deriveProviderSettingsFields(driverOption as unknown as SettingsFormDefinition, instance.config) : [];
-  if (!driverOption || fields.length > 0) {
+  if (props.managedRuntime) {
+    // FoldedSettingsSection headerPlacement="outside": the title folds the rows.
+    items.push({
+      key: "runtime-title",
+      gapBefore: 24,
+      node: (
+        <div testId="provider-managed-runtime-toggle" onClick={() => setRuntimeOpen(!runtimeOpen)} style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 8, minHeight: 28, paddingLeft: 16, paddingRight: 16, cursor: "pointer" }}>
+          <Text color={alpha(theme.foreground, 0.7)}>Runtime</Text>
+          <Icon name={runtimeOpen ? "chevron-down" : "chevron-right"} size={16} color={alpha(theme.foreground, 0.7)} />
+        </div>
+      ),
+    });
+    if (runtimeOpen) items.push(single("managed-runtime", props.managedRuntime));
+  } else if (!driverOption || fields.length > 0) {
     items.push({ key: "runtime-title", gapBefore: 24, node: <PaneSectionTitle title="Runtime" /> });
     if (!driverOption) {
       items.push(
@@ -557,6 +575,8 @@ export function useProviderEditorItems(props: ProviderEditorProps): PaneItem[] {
       />,
     ),
   );
+
+  if (props.acpSessions) items.push({ key: "acp-sessions", gapBefore: 24, node: <PaneCard position="single">{props.acpSessions}</PaneCard> });
 
   if (driverOption !== undefined) {
     items.push({ key: "models-title", gapBefore: 24, node: <PaneSectionTitle title="Models" /> });

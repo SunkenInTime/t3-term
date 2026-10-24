@@ -12,8 +12,8 @@
 //   variable table) is gone: t3-term repaints through the palette atom in
 //   state/clientSettings.ts, which reads getCustomThemes() and the editor
 //   preview.
-// - Environment-published themes and collection replacement (theme import)
-//   are not ported.
+// - getWritableCustomThemeLibrary stands in for web's readWritableCustomThemeLibrary.
+import * as Equal from "effect/Equal";
 import * as Schema from "effect/Schema";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -218,6 +218,28 @@ const EMPTY_CUSTOM_THEMES: ReadonlyArray<ThemeDefinition> = [];
 export function getCustomThemes(): ReadonlyArray<ThemeDefinition> {
   const snapshot = getCustomThemeLibrarySnapshot();
   return snapshot.status === "ready" ? snapshot.themes : EMPTY_CUSTOM_THEMES;
+}
+
+let environmentThemeDefinitions: ReadonlyArray<ThemeDefinition> = EMPTY_CUSTOM_THEMES;
+
+export function getEnvironmentThemes(): ReadonlyArray<ThemeDefinition> {
+  return environmentThemeDefinitions;
+}
+
+/**
+ * Returns whether anything changed, structurally: config snapshots arrive as
+ * fresh arrays on every reconnect, and a repaint for identical colors is the
+ * kind of wasted work users of this product notice.
+ */
+export function setEnvironmentThemes(themes: ReadonlyArray<ThemeDefinition>): boolean {
+  if (Equal.equals(environmentThemeDefinitions, themes)) return false;
+  environmentThemeDefinitions = themes;
+  notifyCustomThemeListeners();
+  return true;
+}
+
+export function getStoredCustomThemeCollection(collectionId: string): ReadonlyArray<ThemeDefinition> {
+  return getWritableCustomThemeLibrary().themes.filter((theme) => theme.collection?.id === collectionId);
 }
 
 export function isReservedThemeId(themeId: string): boolean {
@@ -1107,6 +1129,58 @@ function getWritableCustomThemeLibrary(): Extract<CustomThemeLibrarySnapshot, { 
 
 function storedThemeHasId(storedTheme: unknown, themeId: string): boolean {
   return isRecord(storedTheme) && storedTheme.id === themeId;
+}
+
+function storedThemeHasCollectionId(storedTheme: unknown, collectionId: string): boolean {
+  return isRecord(storedTheme) && isRecord(storedTheme.collection) && storedTheme.collection.id === collectionId;
+}
+
+export function replaceCustomThemeCollection(
+  collectionId: string,
+  themes: ReadonlyArray<ThemeDefinition>,
+  options?: { expectedCollection?: ReadonlyArray<ThemeDefinition> },
+): ReadonlyArray<ThemeDefinition> {
+  if (themes.length === 0) throw new Error("A theme collection cannot be empty.");
+
+  const validated = themes.map((theme) => parseStoredTheme(theme));
+  if (
+    validated.some((theme) => theme === null || theme.collection?.id !== collectionId) ||
+    new Set(validated.map((theme) => theme?.id)).size !== validated.length
+  ) {
+    throw new Error("That theme collection is invalid.");
+  }
+  const replacement = validated as ThemeDefinition[];
+  const library = getWritableCustomThemeLibrary();
+  const current = library.themes;
+  const currentCollection = current.filter((theme) => theme.collection?.id === collectionId);
+  if (options?.expectedCollection && JSON.stringify(currentCollection) !== JSON.stringify(options.expectedCollection)) {
+    throw new Error("Your installed themes changed while this package was downloading. Try again.");
+  }
+  const occupiedIds = new Set(BUILT_IN_THEME_DEFINITIONS.map((theme) => theme.id));
+  for (const storedTheme of library.storedThemes) {
+    if (!storedThemeHasCollectionId(storedTheme, collectionId) && isRecord(storedTheme) && typeof storedTheme.id === "string") {
+      occupiedIds.add(storedTheme.id);
+    }
+  }
+  const conflictingTheme = replacement.find((theme) => RESERVED_THEME_IDS.has(theme.id) || occupiedIds.has(theme.id));
+  if (conflictingTheme) {
+    throw new Error(`A theme named "${conflictingTheme.label}" is already installed.`);
+  }
+
+  const nextStoredThemes: unknown[] = [];
+  let insertedReplacement = false;
+  for (const storedTheme of library.storedThemes) {
+    if (!storedThemeHasCollectionId(storedTheme, collectionId)) {
+      nextStoredThemes.push(storedTheme);
+    } else if (!insertedReplacement) {
+      nextStoredThemes.push(...replacement);
+      insertedReplacement = true;
+    }
+  }
+  if (!insertedReplacement) nextStoredThemes.push(...replacement);
+
+  saveCustomThemes(nextStoredThemes, parseStoredThemes(nextStoredThemes));
+  return replacement;
 }
 
 export function installCustomTheme(theme: ThemeDefinition): ThemeDefinition {
