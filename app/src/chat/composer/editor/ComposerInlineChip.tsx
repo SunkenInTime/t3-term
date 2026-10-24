@@ -13,7 +13,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { AssistantCitation, EnvironmentId } from "@t3tools/contracts";
 import { assistantCitationLabel, withAssistantCitationComment } from "@t3tools/shared/assistantCitations";
-import { createContext, memo, use, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, use, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { appAtomRegistry } from "../../../runtime/runtime.ts";
 import { FileEntryIcon } from "../../../panels/files/FileEntryIcon.tsx";
@@ -43,6 +43,9 @@ export interface ComposerChipEnvironment {
 }
 
 export interface ComposerChipActions {
+  /** A citation just added by "Cite": its chip opens the comment editor (web requestCitationComment). */
+  readonly requestedCitationKey: string | null;
+  readonly clearRequestedCitation: () => void;
   /** Replaces a citation chip's citation (its comment was edited). */
   readonly updateCitation: (key: string, citation: AssistantCitation) => void;
   /** Removes a citation chip (Cancel on a citation that was just added). */
@@ -60,6 +63,8 @@ export const ComposerChipEnvironmentContext = createContext<ComposerChipEnvironm
 });
 
 export const ComposerChipActionsContext = createContext<ComposerChipActions>({
+  requestedCitationKey: null,
+  clearRequestedCitation: () => {},
   updateCitation: () => {},
   removeCitation: () => {},
   readOnly: false,
@@ -257,6 +262,14 @@ function CitationChip({ atom, width, fontSize, selected }: { atom: Extract<Atom,
   const actions = use(ComposerChipActionsContext);
   const [open, setOpen] = usePressToggle();
   const [actionHovered, setActionHovered] = useState(false);
+  // Opened right after "Cite": Cancel takes the citation out again (web removeOnCancel).
+  const removeOnCancel = useRef(false);
+  useEffect(() => {
+    if (actions.requestedCitationKey !== atom.key) return;
+    actions.clearRequestedCitation();
+    removeOnCancel.current = true;
+    open.set(true);
+  });
   const goToSource = () => {
     const citation = atom.citation;
     appAtomRegistry.set(routeAtom, { kind: "thread", environmentId: citation.environmentId, threadId: citation.threadId } as never);
@@ -313,8 +326,13 @@ function CitationChip({ atom, width, fontSize, selected }: { atom: Extract<Atom,
     >
       <CitationCommentEditor
         citation={atom.citation}
-        onCancel={() => open.set(false)}
+        onCancel={() => {
+          open.set(false);
+          if (removeOnCancel.current) actions.removeCitation(atom.key);
+          removeOnCancel.current = false;
+        }}
         onSave={(comment) => {
+          removeOnCancel.current = false;
           actions.updateCitation(atom.key, withAssistantCitationComment(atom.citation, comment));
           open.set(false);
         }}

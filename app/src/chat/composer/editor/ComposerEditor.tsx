@@ -184,6 +184,8 @@ export interface ComposerEditorProps {
   readonly onFocus?: () => void;
   readonly onBlur?: () => void;
   readonly chipEnvironment: ComposerChipEnvironment;
+  /** "Cite" just inserted this citation source: its chip opens the comment editor. */
+  readonly citationCommentRequest?: { readonly source: string; readonly nonce: number } | null;
 }
 
 const METRICS: EditorMetrics = {
@@ -495,7 +497,15 @@ export const ComposerEditor = memo(
     };
 
     // ── Keys ──
+    // Chip popovers (a citation comment, a language search) live inside this element's
+    // tree, so their keys and presses bubble here; only the editor's own are handled.
+    // Every ancestor on the focus path reports the key with its own id, so ask who has focus.
+    const fromEditor = (_event: EventPayload) => {
+      const focusedId = gpuix.getFocusedElementId?.();
+      return focusedId === undefined || focusedId === null || focusedId === editorIdRef.current?.id;
+    };
     const onKeyDown = (event: KeyEvent) => {
+      if (!fromEditor(event)) return;
       markFocused(true);
       const p = propsRef.current;
       const key = event.key ?? "";
@@ -722,8 +732,24 @@ export const ComposerEditor = memo(
     };
 
     // ── Chip and code block actions ──
+    const [requestedCitationKey, setRequestedCitationKey] = useState<string | null>(null);
+    const lastCitationNonceRef = useRef(props.citationCommentRequest?.nonce ?? 0);
+    useEffect(() => {
+      const request = props.citationCommentRequest;
+      if (!request || request.nonce === lastCitationNonceRef.current) return;
+      lastCitationNonceRef.current = request.nonce;
+      // The newest citation with that source is the one just inserted.
+      let key: string | null = null;
+      for (const block of stateRef.current!.doc.blocks) {
+        if (block.kind !== "paragraph") continue;
+        for (const atom of block.atoms) if (atom.kind === "citation" && atom.source === request.source) key = atom.key;
+      }
+      setRequestedCitationKey(key);
+    });
     const chipActions = useMemo<ComposerChipActions>(
       () => ({
+        requestedCitationKey,
+        clearRequestedCitation: () => setRequestedCitationKey(null),
         readOnly: props.readOnly,
         updateCitation: (key, citation) => {
           const current = stateRef.current!;
@@ -750,7 +776,7 @@ export const ComposerEditor = memo(
         },
       }),
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [props.readOnly],
+      [props.readOnly, requestedCitationKey],
     );
     const codeActions = useMemo<ComposerCodeBlockActions>(
       () => ({

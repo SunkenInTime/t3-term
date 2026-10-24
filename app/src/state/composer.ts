@@ -340,6 +340,22 @@ export function insertComposerReference(key: string, reference: string): void {
 }
 
 /**
+ * web requestCitationComment: after "Cite" inserts a citation, its chip opens the comment
+ * editor; Cancel there removes the citation again.
+ */
+export const citationCommentRequestAtom = Atom.make<{ readonly key: string; readonly source: string; readonly nonce: number } | null>(
+  null,
+).pipe(Atom.keepAlive);
+
+/** web ChatComposer cite: the citation lands at the caret and asks for a comment. */
+export function citeInComposer(key: string, reference: string): void {
+  const source = reference.trim();
+  insertComposerReference(key, source);
+  const previous = appAtomRegistry.get(citationCommentRequestAtom);
+  appAtomRegistry.set(citationCommentRequestAtom, { key, source, nonce: (previous?.nonce ?? 0) + 1 });
+}
+
+/**
  * web ChatComposer addTerminalContext: the selection's chip lands at the caret, and the
  * excerpt is kept as a record for the send to attach.
  */

@@ -79,6 +79,7 @@ import {
   referencedTerminalContexts,
   referencedThreadContexts,
   registerComposerInsertionHandler,
+  citationCommentRequestAtom,
   removeComposerAttachment,
   setComposerInteractionMode,
   setComposerModelOptions,
@@ -1511,6 +1512,7 @@ function ComposerBody({
   useEffect(() => registerComposerInsertionHandler(promptKey, (text) => insertAtCaretRef.current(text)), [promptKey]);
 
   // What the chips need: the records behind context references, and where a file opens.
+  const citationCommentRequest = useAtomValue(citationCommentRequestAtom);
   const draftReviewComments = promptDraft.reviewComments;
   const draftThreadContexts = promptDraft.threadContexts;
   const chipEnvironment = useMemo<ComposerChipEnvironment>(
@@ -1920,13 +1922,6 @@ function ComposerBody({
 
   const surfaceBase = surfaceStyle(theme);
   const collapsedResume = canResume && prompt.trim().length === 0 && draft.attachments.length === 0;
-  const editorTextStyle = {
-    fontSize: 14,
-    lineHeight: PROMPT_LINE_HEIGHT,
-    fontFamily: FONTS.sans,
-    color: theme.foreground,
-  };
-
   // web ChatView showProviderSubagentBar: a provider-native subagent can't take messages,
   // so the composer gives way to a bar with its model, live status and "Open parent".
   if (shell && isProviderNativeSubagentThread(shell.source)) {
@@ -2148,6 +2143,7 @@ function ComposerBody({
               minRows={isResting ? 1 : 3}
               maxRows={isResting ? 1 : 9}
               chipEnvironment={chipEnvironment}
+              citationCommentRequest={citationCommentRequest?.key === promptKey ? citationCommentRequest : null}
               isPathQueryActive={isPathQueryActive}
               onChange={onEditorChange}
               onKeyCommand={onEditorKeyCommand}
