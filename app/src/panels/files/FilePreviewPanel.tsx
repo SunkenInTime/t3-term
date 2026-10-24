@@ -395,10 +395,8 @@ export default function FilePreviewPanel({
       : null;
   const assetUrl = useAssetUrlState(environmentId, assetResource);
   const assetHref = assetUrl._tag === "Success" ? assetUrl.url : null;
-  // web canOpenInBrowser: HTML and PDF files, when the thread's Browser is available. Here
-  // only HTML: the server browser hands PDFs to the desktop client to display ("This PDF
-  // is displayed in the connected client"), and t3-term has no PDF renderer to take it.
-  const canOpenInBrowser = canOperatePreview && previewPath !== null && previewAvailable && isHtml;
+  // web canOpenInBrowser: HTML and PDF files, when the thread's Browser is available.
+  const canOpenInBrowser = canOperatePreview && previewPath !== null && previewAvailable && (isHtml || isPdf);
   const openInBrowser = () => {
     if (assetHref === null) {
       toast({ type: "error", title: "Unable to open file in browser", description: "The file's address is not ready yet." });
