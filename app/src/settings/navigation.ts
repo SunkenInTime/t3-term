@@ -1,6 +1,6 @@
 // Settings routing: maps the web app's /settings/<page> paths onto routeAtom,
 // remembers where Back returns to, and carries search-result targets.
-import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId, ProviderInstanceId, ScheduledTaskId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "../runtime/runtime.ts";
@@ -34,12 +34,39 @@ export function pageForSettingsPath(path: SettingsPath): SettingsPage {
   return (entry?.[0] as SettingsPage | undefined) ?? "general";
 }
 
+/**
+ * Web's validated route search for /settings/providers (environmentId,
+ * instanceId) and /settings/scheduled-tasks (environmentId, taskId). The nonce
+ * remounts the page content, as web keys it on the search, so following the
+ * same link twice reopens its target.
+ */
+export type SettingsPageTarget =
+  | {
+      readonly page: "providers";
+      readonly environmentId?: EnvironmentId;
+      readonly instanceId?: ProviderInstanceId;
+    }
+  | {
+      readonly page: "scheduled-tasks";
+      readonly environmentId?: EnvironmentId;
+      readonly taskId?: ScheduledTaskId;
+    };
+
+export const settingsPageTargetAtom = Atom.make<{ readonly target: SettingsPageTarget; readonly nonce: number } | null>(
+  null,
+).pipe(Atom.keepAlive);
+
 /** The last non-settings route, so Back and Escape return where you came from. */
 let returnRoute: Route = { kind: "home" };
 appAtomRegistry.subscribe(
   routeAtom,
   (route) => {
     if (route.kind !== "settings") returnRoute = route;
+    // Leaving the target's page ends the link, so returning later through a plain route opens nothing.
+    const pageTarget = appAtomRegistry.get(settingsPageTargetAtom);
+    if (pageTarget && (route.kind !== "settings" || route.page !== pageTarget.target.page)) {
+      appAtomRegistry.set(settingsPageTargetAtom, null);
+    }
   },
   { immediate: true },
 );
@@ -48,12 +75,38 @@ export function leaveSettings(): void {
   appAtomRegistry.set(routeAtom, returnRoute);
 }
 
-export function openSettingsPage(page: SettingsPage, targetId?: string): void {
+export function openSettingsPage(page: SettingsPage, targetId?: string, pageTarget?: SettingsPageTarget): void {
+  const previousTarget = appAtomRegistry.get(settingsPageTargetAtom);
+  // A plain navigation drops the last link's target, like a route without search.
+  appAtomRegistry.set(
+    settingsPageTargetAtom,
+    pageTarget && pageTarget.page === page ? { target: pageTarget, nonce: (previousTarget?.nonce ?? 0) + 1 } : null,
+  );
   appAtomRegistry.set(routeAtom, { kind: "settings", page });
   if (targetId) {
     const previous = appAtomRegistry.get(settingsSearchTargetAtom);
     appAtomRegistry.set(settingsSearchTargetAtom, { id: targetId, nonce: (previous?.nonce ?? 0) + 1 });
   }
+}
+
+/** web navigate({ to: "/settings/providers", search: { environmentId, instanceId } }) */
+export function openProviderSettings(target: { readonly environmentId?: EnvironmentId; readonly instanceId?: ProviderInstanceId }): void {
+  openSettingsPage("providers", undefined, { page: "providers", ...target });
+}
+
+/** web navigate({ to: "/settings/scheduled-tasks", search: { environmentId, taskId } }) */
+export function openScheduledTaskSettings(target: { readonly environmentId?: EnvironmentId; readonly taskId?: ScheduledTaskId }): void {
+  openSettingsPage("scheduled-tasks", undefined, { page: "scheduled-tasks", ...target });
+}
+
+/** The page target when it belongs to `page`, with the nonce that keys its content. */
+export function selectSettingsPageTarget<P extends SettingsPageTarget["page"]>(
+  value: { readonly target: SettingsPageTarget; readonly nonce: number } | null,
+  page: P,
+): { readonly target: Extract<SettingsPageTarget, { page: P }>; readonly nonce: number } | null {
+  return value && value.target.page === page
+    ? (value as { readonly target: Extract<SettingsPageTarget, { page: P }>; readonly nonce: number })
+    : null;
 }
 
 /** The sidebar search query and a request to focus its input ("/" or Ctrl+F). */

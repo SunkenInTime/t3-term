@@ -2,10 +2,10 @@
 // theme editor for the open session and applies what it saves.
 import { useAtomValue } from "@effect/atom-react";
 
-import { customThemesRevisionAtom, useThemeState } from "../../state/clientSettings.ts";
+import { customThemesRevisionAtom, previewBasePaletteAtom, useThemeState } from "../../state/clientSettings.ts";
 import { closeThemeEditor, themeEditorSessionAtom } from "../../state/themeEditor.ts";
 import { toast } from "../../ui/toast.tsx";
-import { getThemeDefinition, type ThemeAppearance, type ThemeDefinition } from "../../ui/theme.ts";
+import { ThemeContext, getThemeDefinition, useTheme, type ThemeAppearance, type ThemeDefinition } from "../../ui/theme.ts";
 import { setTheme } from "./themeActions.ts";
 import { ThemeEditorPanel } from "./ThemeEditorPanel.tsx";
 
@@ -55,9 +55,13 @@ export function ThemeEditorHost() {
     return true;
   };
 
+  const appPalette = useTheme();
+  // The inspection overlay recolors the app, never the panel doing the inspecting.
+  const panelPalette = useAtomValue(previewBasePaletteAtom) ?? appPalette;
   if (!session) return null;
 
   return (
+    <ThemeContext.Provider value={panelPalette}>
     <ThemeEditorPanel
       key={session.id}
       editingTheme={editingTheme}
@@ -67,5 +71,6 @@ export function ThemeEditorHost() {
       seedName={session.seedName ?? undefined}
       seedTheme={seedTheme}
     />
+    </ThemeContext.Provider>
   );
 }

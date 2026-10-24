@@ -15,6 +15,8 @@ import { Atom, AtomRegistry } from "effect/reactivity";
 import * as Socket from "effect/socket/Socket";
 
 import * as Platform from "./platform.ts";
+import * as BackgroundActivityReporter from "../web/lib/backgroundActivityReporter.ts";
+import * as ClientTracer from "../web/observability/clientTracer.ts";
 
 export const appAtomRegistry = AtomRegistry.make();
 
@@ -56,6 +58,8 @@ const layerRuntime = Layer.mergeAll(
   layerHttpClient,
   layerCrypto,
   Socket.layerWebSocketConstructorGlobal,
+  // Spans flow to the exporter runtime/clientTracingTarget.ts configures once an environment connects.
+  ClientTracer.layer,
   ManagedRelay.layer({ relayUrl: "http://relay.invalid", clientId: RelayWebClientId }).pipe(
     Layer.provide(Layer.mergeAll(layerHttpClient, layerCrypto, layerRelaySigner)),
   ),
@@ -69,11 +73,22 @@ const layerSnapshotLoader = Layer.mergeAll(
   PullRequestDiffLoader.layer,
 );
 
-const layerConnection = layerSnapshotLoader.pipe(
+const layerProvidedClientConnection = layerSnapshotLoader.pipe(
   Layer.provideMerge(
     Connection.layerWithOptions({ environmentThemes: true, usageLimitSources: true, usageLimitsCommand: true }),
   ),
-  Layer.provideMerge(Layer.mergeAll(layerRuntime, Platform.layer.pipe(Layer.provide(layerRuntime)))),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      layerRuntime,
+      Platform.layer.pipe(Layer.provide(layerRuntime)),
+      // Diagnostics and VCS status subscriptions become scopes in the activity reports.
+      BackgroundActivityReporter.layerObserver,
+    ),
+  ),
 );
+
+// Reports this client's focus, input and retained scopes to every environment,
+// so the server schedules background work around it as it does for web.
+const layerConnection = BackgroundActivityReporter.layer.pipe(Layer.provideMerge(layerProvidedClientConnection));
 
 export const connectionAtomRuntime = Atom.runtime(layerConnection);

@@ -4,8 +4,9 @@
 // LoadBalancingSettings, GitHubRoutingSettings), rendered the way the hosted web app
 // renders it: there is no desktop bridge, so network exposure, Tailscale, WSL and
 // T3 Connect controls stay out, and Network access is web's read-only row
-// (renderDisabledNetworkAccessRow). Server update actions are left out as in
-// connect/ConnectionBanner.tsx: t3-term's version is not a T3 Code release.
+// (renderDisabledNetworkAccessRow). The Version row and saved environment rows
+// carry web's update and retry actions (connect/ServerUpdateAction.tsx) against
+// the T3 Code version t3-term is built from.
 //
 // The web app's primary environment is the server that served it. In t3-term it
 // is the first saved environment (app/src/state/settings.ts primaryEnvironmentIdAtom);
@@ -56,6 +57,15 @@ import { toast } from "../../ui/toast.tsx";
 import { alpha, RADIUS, useTheme } from "../../ui/theme.ts";
 import { searchableSetting } from "../../web/components/settings/settingsSearch.ts";
 import { formatExpiresInLabel } from "../../web/timestampFormat.ts";
+import { PairingRevealDialog, PairingSharePanel, resolveShareablePairingUrl, usePairingCopy } from "../connections/PairingShare.tsx";
+import { OutdatedServerUpdateAction, ServerUpdateAction, ServerUpdateProgress } from "../../connect/ServerUpdateAction.tsx";
+import { APP_VERSION } from "../../runtime/platform.ts";
+import {
+  resolveServerConfigVersionMismatch,
+  resolveServerSelfUpdateCapability,
+  supportsDesktopAppUpdate,
+  supportsServerUpdateThreadContinuation,
+} from "../../web/versionSkew.ts";
 import { TextField } from "../controls.tsx";
 import { SettingsGroup, SettingsPageContainer, SettingsRow, SettingsSection, machineIcon } from "../layout.tsx";
 import { copyText } from "../openExternal.ts";
@@ -265,12 +275,15 @@ function AccessRow({ children }: { children: ReactNode }) {
 function PairingLinkRow({
   link,
   credential,
+  serverUrl,
   revoking,
   canRevoke,
   onRevoke,
 }: {
   link: AuthPairingLink;
   credential: string | undefined;
+  /** The URL this client reached the environment at; web shares its page origin. */
+  serverUrl: string | null;
   revoking: boolean;
   canRevoke: boolean;
   onRevoke: () => void;
@@ -278,42 +291,53 @@ function PairingLinkRow({
   const theme = useTheme();
   const expiresAt = isoOf(link.expiresAt)!;
   useRelativeTimeLabel(expiresAt);
+  const [sharePanelOpen, setSharePanelOpen] = useState(false);
+  const { copy, failedCopyValue, clearFailedCopy } = usePairingCopy();
   if (Date.parse(expiresAt) <= Date.now()) return null;
+  const shareableUrl = credential ? resolveShareablePairingUrl(serverUrl, credential) : null;
+  const copyCode = () => {
+    if (credential) copy(credential, "code");
+  };
   return (
-    <AccessRow>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, flexGrow: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minHeight: 20 }}>
-          <StatusDot color={theme.warning} tooltip={`Link created at ${isoOf(link.createdAt)}`} />
-          <Text weight={500}>{link.label ?? "Pairing link"}</Text>
+    <div style={{ display: "flex", flexDirection: "column", paddingLeft: 16, paddingRight: 16, paddingTop: 12, paddingBottom: 12 }}>
+      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, flexGrow: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6, minHeight: 20 }}>
+            <StatusDot color={theme.warning} tooltip={`Link created at ${isoOf(link.createdAt)}`} />
+            <Text weight={500}>{link.label ?? "Pairing link"}</Text>
+          </div>
+          <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <Text size="xs" color={theme.mutedForeground}>{`${formatExpiresInLabel(expiresAt)} · `}</Text>
+            <ScopeSummary scopes={scopesOf(link)} />
+          </div>
+          {!credential ? (
+            <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)}>
+              Create a new link to share from this client.
+            </Text>
+          ) : shareableUrl === null ? (
+            <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)}>
+              Copy the token and pair from another client using this backend’s reachable host.
+            </Text>
+          ) : null}
         </div>
-        <div style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 4 }}>
-          <Text size="xs" color={theme.mutedForeground}>{`${formatExpiresInLabel(expiresAt)} · `}</Text>
-          <ScopeSummary scopes={scopesOf(link)} />
-        </div>
-        <Text size="2xs" color={alpha(theme.mutedForeground, 0.7)}>
-          {credential
-            ? "Copy the token and pair from another client using this backend’s reachable host."
-            : "Create a new link to share from this client."}
-        </Text>
+        {shareableUrl ? (
+          <Button size="xs" variant="outline" icon="qr-code" testId={`pairing-link-share-${link.id}`} onClick={() => setSharePanelOpen(!sharePanelOpen)}>
+            Share
+          </Button>
+        ) : credential ? (
+          <Button size="xs" variant="outline" icon="copy" testId={`pairing-link-copy-${link.id}`} onClick={copyCode}>
+            Copy code
+          </Button>
+        ) : null}
+        <DestructiveOutlineButton disabled={!canRevoke || revoking} onClick={onRevoke}>
+          {revoking ? "Revoking…" : "Revoke"}
+        </DestructiveOutlineButton>
       </div>
-      {credential ? (
-        <Button
-          size="xs"
-          variant="outline"
-          icon="copy"
-          onClick={() =>
-            copyText(credential)
-              ? toast({ type: "success", title: "Pairing code copied", description: "Paste it into another client to finish pairing." })
-              : toast({ type: "error", title: "Could not copy pairing code" })
-          }
-        >
-          Copy code
-        </Button>
+      {sharePanelOpen && shareableUrl ? (
+        <PairingSharePanel url={shareableUrl} onCopyLink={() => copy(shareableUrl, "link")} onCopyCode={copyCode} />
       ) : null}
-      <DestructiveOutlineButton disabled={!canRevoke || revoking} onClick={onRevoke}>
-        {revoking ? "Revoking…" : "Revoke"}
-      </DestructiveOutlineButton>
-    </AccessRow>
+      {credential ? <PairingRevealDialog value={failedCopyValue} credential={credential} onClose={clearFailedCopy} onCopyCode={copyCode} /> : null}
+    </div>
   );
 }
 
@@ -516,7 +540,7 @@ function CreatePairingLinkDialog({
   );
 }
 
-function AuthorizedClientsSection({ environmentId }: { environmentId: EnvironmentId }) {
+function AuthorizedClientsSection({ environmentId, serverUrl }: { environmentId: EnvironmentId; serverUrl: string | null }) {
   const theme = useTheme();
   const canReadAccess = useEnvironmentScope(environmentId, AuthAccessReadScope);
   const canWriteAccess = useEnvironmentScope(environmentId, AuthAccessWriteScope);
@@ -624,6 +648,7 @@ function AuthorizedClientsSection({ environmentId }: { environmentId: Environmen
                   key={link.id}
                   link={link}
                   credential={created.get(link.id)}
+                  serverUrl={serverUrl}
                   revoking={revoking === link.id}
                   canRevoke={canWriteAccess}
                   onRevoke={() => void guarded(link.id, "Could not revoke pairing link", () => revokePairingLink(environmentId, link.id))}
@@ -715,15 +740,27 @@ function SavedEnvironmentRow({
   const connectedTarget = connected && Option.isSome(prepared) ? prepared.value.target : null;
   const mcpUrl = environmentMcpUrl({ entry: environment.entry, connectedTarget });
   const routeCount = connectionRoutes(environment.entry).length;
+  const versionMismatch = resolveServerConfigVersionMismatch(environment.serverConfig);
+  const serverUpdateState = useAtomValue(serverEnvironment.updateStateAtom(environmentId));
+  const resumingServerUpdate = serverUpdateState.status === "running" && serverUpdateState.stage === "resuming";
+  const serverVersion = environment.serverConfig?.environment.serverVersion ?? null;
   // The diagnosis headline below names the failure in full.
-  const subtitleText = [environmentTransportLabel(environment, connectedTarget), diagnosis ? null : status.text]
+  const subtitleText = [
+    environmentTransportLabel(environment, connectedTarget),
+    diagnosis ? null : resumingServerUpdate ? "Restarting" : status.text,
+    enabled && versionMismatch ? serverVersion : null,
+  ]
     .filter((value): value is string => value !== null)
     .join(" · ");
-  const statusTooltip = unsupported
-    ? (environment.connection.error ?? connectionStatusText(environment.connection))
-    : enabled
-      ? connectionStatusText(environment.connection)
-      : "Switched off";
+  const showUpdateAction =
+    enabled && connected && versionMismatch !== null && (serverUpdateState.status === "idle" || serverUpdateState.status === "failed");
+  const statusTooltip = `${
+    unsupported
+      ? (environment.connection.error ?? connectionStatusText(environment.connection))
+      : enabled
+        ? connectionStatusText(environment.connection)
+        : "Switched off"
+  }${versionMismatch ? `\nUpdate available: ${versionMismatch.serverVersion} → ${versionMismatch.clientVersion}` : ""}`;
   const dot = (
     <Text size="xs" color={theme.mutedForeground}>
       ·
@@ -783,6 +820,30 @@ function SavedEnvironmentRow({
         ) : null
       }
     >
+      {unsupported && environment.entry.serverUpdateRequired === true && serverUpdateState.status !== "running" ? (
+        <OutdatedServerUpdateAction
+          environmentId={environmentId}
+          serverLabel={`${environment.label} server`}
+          fromVersion={undefined}
+          targetVersion={APP_VERSION}
+          label={serverUpdateState.status === "failed" ? "Retry update" : "Update"}
+          testId={`environment-outdated-update-${environmentId}`}
+        />
+      ) : null}
+      {showUpdateAction ? (
+        <ServerUpdateAction
+          environmentId={environmentId}
+          serverLabel={`${environment.label} server`}
+          selfUpdate={resolveServerSelfUpdateCapability(environment.serverConfig)}
+          installation={environment.serverConfig?.environment.capabilities.serverInstallation}
+          desktopAppUpdate={supportsDesktopAppUpdate(environment.serverConfig)}
+          threadContinuation={supportsServerUpdateThreadContinuation(environment.serverConfig)}
+          targetVersion={versionMismatch.clientVersion}
+          label={serverUpdateState.status === "failed" ? "Retry update" : "Update"}
+          appearance="icon"
+          testId={`environment-update-${environmentId}`}
+        />
+      ) : null}
       <Tooltip content={blocked ? "Client not supported" : enabled ? "Switch off" : "Switch on"} side="top">
         <div style={{ display: "flex" }}>
           <Switch
@@ -1041,6 +1102,8 @@ export function ConnectionsSettings() {
     [primaryServerConfig?.environment.serverVersion ?? null, primaryEnvironment?.displayUrl ?? null].filter((value): value is string => value !== null).join(" · ") ||
     "Loading…";
   const [menuOpen, setMenuOpen] = useState(false);
+  const primaryVersionMismatch = resolveServerConfigVersionMismatch(primaryServerConfig);
+  const primaryServerUpdateState = useAtomValue(serverEnvironment.updateStateAtom(primaryEnvironmentId ?? null));
 
   return (
     <SettingsPageContainer showScope={false}>
@@ -1064,9 +1127,22 @@ export function ConnectionsSettings() {
           >
             <SettingsRow
               title="Version"
-              description={versionDescription}
+              description={primaryServerUpdateState.status !== "idle" ? <ServerUpdateProgress state={primaryServerUpdateState} /> : versionDescription}
               control={
-                primaryServerConfig ? (
+                primaryVersionMismatch && primaryServerUpdateState.status !== "running" ? (
+                  <ServerUpdateAction
+                    size="sm"
+                    environmentId={primaryEnvironment.environmentId}
+                    serverLabel={`${primaryEnvironment.label} server`}
+                    selfUpdate={resolveServerSelfUpdateCapability(primaryServerConfig)}
+                    installation={primaryServerConfig?.environment.capabilities.serverInstallation}
+                    desktopAppUpdate={supportsDesktopAppUpdate(primaryServerConfig)}
+                    threadContinuation={supportsServerUpdateThreadContinuation(primaryServerConfig)}
+                    targetVersion={primaryVersionMismatch.clientVersion}
+                    label={primaryServerUpdateState.status === "failed" ? "Retry update" : `Update to ${primaryVersionMismatch.clientVersion}`}
+                    testId="connections-primary-update"
+                  />
+                ) : primaryServerUpdateState.status === "idle" && primaryServerConfig ? (
                   <Text size="xs" color={theme.mutedForeground}>
                     Up to date
                   </Text>
@@ -1096,7 +1172,7 @@ export function ConnectionsSettings() {
               <SessionPermissions environmentId={primaryEnvironment.environmentId} connected={primaryEnvironment.connection.phase === "connected"} />
             </Disclosure>
           </SettingsSection>
-          <AuthorizedClientsSection environmentId={primaryEnvironment.environmentId} />
+          <AuthorizedClientsSection environmentId={primaryEnvironment.environmentId} serverUrl={primaryEnvironment.displayUrl} />
         </>
       ) : null}
       <SettingsSection

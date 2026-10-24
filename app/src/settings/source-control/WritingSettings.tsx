@@ -1,6 +1,6 @@
 // Ports of apps/web/src/components/settings/{SourceControlWritingSettings,BranchNamingSettings}.tsx:
 // the "Text generation" section of Source Control.
-import { BranchNamingMode, DEFAULT_SERVER_SETTINGS, type ServerSettings, type SourceControlWritingStyleMode } from "@t3tools/contracts";
+import { BranchNamingMode, DEFAULT_SERVER_SETTINGS, type ProviderInstanceId, type ServerSettings, type SourceControlWritingStyleMode } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
 import { resolveReviewGuideModelSelection, resolveSourceControlWriterModelSelection } from "@t3tools/shared/serverSettings";
@@ -17,7 +17,7 @@ import { applyProviderInstanceSettings, deriveProviderInstanceEntries, sortProvi
 import { DraftTextField, SettingsSelect, TextArea } from "../controls.tsx";
 import { SettingResetButton, SettingsRow, SettingsSection } from "../layout.tsx";
 import { SettingsModelPicker, SettingsTraitsPicker } from "../ModelPicker.tsx";
-import { openSettingsPage } from "../navigation.ts";
+import { openProviderSettings } from "../navigation.ts";
 import { useScopedModelDisabledReason } from "../ProjectDefaultsSettings.tsx";
 import { useScopedSettings, useScopedSettingsMixed, useSettingsScope, useUpdateScopedSettings } from "../scope.tsx";
 
@@ -337,13 +337,16 @@ export function SourceControlWritingSettingsSection() {
               {usesDedicatedModel && canEnableDedicatedModel ? (
                 <SettingsModelPicker
                   testId="settings-writer-model"
+                  environmentId={environment?.environmentId ?? null}
                   entries={instanceEntries}
                   activeInstanceId={activeSelection.instanceId}
                   model={activeSelection.model}
                   modelOptionsByInstance={modelOptionsByInstance}
                   {...(mixedWriterModel ? { triggerLabel: "Mixed" } : {})}
                   getModelDisabledReason={writerModelDisabledReason}
-                  onOpenProviderSetup={() => openSettingsPage("providers")}
+                  {...(environment
+                    ? { onOpenProviderSetup: (instanceId: ProviderInstanceId) => openProviderSettings({ environmentId: environment.environmentId, instanceId }) }
+                    : {})}
                   onInstanceModelChange={(instanceId, model) => {
                     const reason = writerModelDisabledReason(instanceId, model);
                     if (reason) {
@@ -357,6 +360,7 @@ export function SourceControlWritingSettingsSection() {
               {usesDedicatedModel && canEnableDedicatedModel && !mixedWriterModel && writerInstanceEntry ? (
                 <SettingsTraitsPicker
                   provider={writerInstanceEntry.driverKind}
+                  instanceId={activeSelection.instanceId}
                   models={writerInstanceEntry.models}
                   model={activeSelection.model}
                   modelOptions={activeSelection.options ?? []}
@@ -412,6 +416,7 @@ export function SourceControlWritingSettingsSection() {
                 <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
                   {(usesReviewGuideModel || mixedReviewGuideModel) && canEnableDedicatedModel ? (
                     <SettingsModelPicker
+                      environmentId={environment?.environmentId ?? null}
                       entries={instanceEntries}
                       activeInstanceId={reviewGuideSelection.instanceId}
                       model={reviewGuideSelection.model}
@@ -431,6 +436,7 @@ export function SourceControlWritingSettingsSection() {
                   {usesReviewGuideModel && canEnableDedicatedModel && !mixedReviewGuideModel && reviewGuideInstanceEntry ? (
                     <SettingsTraitsPicker
                       provider={reviewGuideInstanceEntry.driverKind}
+                      instanceId={reviewGuideSelection.instanceId}
                       models={reviewGuideInstanceEntry.models}
                       model={reviewGuideSelection.model}
                       modelOptions={reviewGuideSelection.options ?? []}

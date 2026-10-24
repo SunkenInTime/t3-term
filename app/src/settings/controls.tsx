@@ -7,6 +7,7 @@ import { Icon, type IconName } from "../ui/Icon.tsx";
 import { Menu, MenuItem, MenuSeparator } from "../ui/overlay.tsx";
 import { Text, type Style } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, alpha, useTheme, type Palette } from "../ui/theme.ts";
+import { MaskedInput } from "../ui/MaskedInput.tsx";
 import { useSmallViewport } from "../ui/viewport.tsx";
 import { SettingsRowStackedContext } from "./layout.tsx";
 
@@ -162,6 +163,7 @@ export function TextField({
   leading,
   trailing,
   style,
+  secret,
 }: {
   value: string;
   onChange?: (value: string) => void;
@@ -170,6 +172,8 @@ export function TextField({
   placeholder?: string;
   width?: number | "100%";
   mono?: boolean;
+  /** web SecretInput (type="password"): the typed value is masked. */
+  secret?: boolean;
   size?: "default" | "sm";
   readOnly?: boolean;
   disabled?: boolean;
@@ -201,6 +205,22 @@ export function TextField({
       }}
     >
       {leading}
+      {secret ? (
+        <MaskedInput
+          testId={testId}
+          value={value}
+          placeholder={placeholder}
+          readOnly={readOnly || disabled}
+          height={height - 2}
+          onChange={onChange}
+          onSubmit={(next) => onSubmit?.(next)}
+          onFocus={() => setTextEntryFocused(true)}
+          onBlur={() => {
+            setTextEntryFocused(false);
+            onBlur?.();
+          }}
+        />
+      ) : (
       <input
         testId={testId}
         value={value}
@@ -224,6 +244,7 @@ export function TextField({
           fontFamily: mono ? FONTS.mono : FONTS.sans,
         }}
       />
+      )}
       {trailing}
     </div>
   );

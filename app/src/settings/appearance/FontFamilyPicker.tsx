@@ -25,7 +25,7 @@ const PROBE_WEIGHTS = [400, 700] as const;
 const PROBE_REPEAT = 8;
 const MONOSPACE_ADVANCE_TOLERANCE = 0.01;
 
-function MonospaceProbe({ family, onResult }: { family: string; onResult: (monospace: boolean) => void }) {
+export function MonospaceProbe({ family, onResult }: { family: string; onResult: (monospace: boolean) => void }) {
   const theme = useTheme();
   const widths = useRef(new Map<string, number>());
   const done = useRef(false);

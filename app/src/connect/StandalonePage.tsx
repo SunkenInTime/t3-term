@@ -6,9 +6,10 @@ import { Text, type Style } from "../ui/primitives.tsx";
 import { FONTS, RADIUS, TEXT, alpha, useTheme } from "../ui/theme.ts";
 
 /**
- * tone "pairing". The web backdrop's emerald and sky radial washes are left out:
- * gpuix paints only two-stop linear gradients, and at 80% opacity they are
- * barely visible on the dark theme anyway. The 145deg darkening is kept.
+ * tone "pairing". Web's markup also has emerald and sky radial washes, but it
+ * paints its opaque 145deg darkening gradient after them, so they never show:
+ * web's /pair page samples neutral #0a0a0a where the washes would be. Only the
+ * gradient that is visible is drawn here.
  */
 export function StandalonePage({ children }: { readonly children: ReactNode }) {
   const theme = useTheme();

@@ -87,7 +87,13 @@ function sanitizeTheme(raw: unknown): ThemeState {
   return { theme, appearanceMode, halves };
 }
 
+// Web's hydration status (hooks/useSettings.ts): a settings file that exists but
+// can't be read or parsed is a failed read, not a fresh install, so first-run
+// onboarding (onboarding/FirstRunGate.tsx) offers a retry instead of starting over.
+let lastReadFailed = false;
+
 function readDocument(): ClientSettingsDocument {
+  lastReadFailed = false;
   try {
     const raw: unknown = JSON.parse(NodeFS.readFileSync(settingsFile(), "utf8"));
     const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
@@ -108,7 +114,8 @@ function readDocument(): ClientSettingsDocument {
       console.error("[CLIENT_SETTINGS] dropped invalid keys", error);
     }
     return { settings, theme: sanitizeTheme(record.theme) };
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") lastReadFailed = true;
     return { settings: DEFAULT_CLIENT_SETTINGS, theme: DEFAULT_THEME_STATE };
   }
 }
@@ -124,9 +131,33 @@ export const themeStateAtom = Atom.make<ThemeState>(initial.theme).pipe(
   Atom.withLabel("t3term-theme-state"),
 );
 
+export type ClientSettingsHydrationStatus = "ready" | "failed" | "retrying";
+
+export const clientSettingsHydrationStatusAtom = Atom.make<ClientSettingsHydrationStatus>(
+  lastReadFailed ? "failed" : "ready",
+).pipe(Atom.keepAlive, Atom.withLabel("t3term-client-settings-hydration"));
+
+/** web ensureClientSettingsHydrated: reads the settings file again after a failed read. */
+export async function ensureClientSettingsHydrated(): Promise<void> {
+  if (appAtomRegistry.get(clientSettingsHydrationStatusAtom) === "ready") return;
+  appAtomRegistry.set(clientSettingsHydrationStatusAtom, "retrying");
+  // A frame of "retrying" so the Retry button shows it is working.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const document = readDocument();
+  if (lastReadFailed) {
+    appAtomRegistry.set(clientSettingsHydrationStatusAtom, "failed");
+    throw new Error("Could not read client settings.");
+  }
+  appAtomRegistry.set(clientSettingsAtom, document.settings);
+  appAtomRegistry.set(themeStateAtom, document.theme);
+  appAtomRegistry.set(clientSettingsHydrationStatusAtom, "ready");
+}
+
 let writeTimer: ReturnType<typeof setTimeout> | null = null;
 
 function persist(): void {
+  // An unreadable settings file stays as it is until a retry reads it.
+  if (appAtomRegistry.get(clientSettingsHydrationStatusAtom) !== "ready") return;
   // Coalesce bursts (a slider drag) into one write.
   if (writeTimer) clearTimeout(writeTimer);
   writeTimer = setTimeout(() => {
@@ -315,11 +346,31 @@ export function setThemePreview(preview: ThemePreview | null): void {
   appAtomRegistry.set(themePreviewAtom, preview);
 }
 
+/**
+ * Theme-editor inspection paints some roles in marker colors over the draft
+ * (settings/appearance/themeInspection.ts): a highlighted role, or every role in
+ * its own probe color for one captured frame. The editor panel keeps the plain
+ * draft (previewBasePaletteAtom).
+ */
+export const themePreviewOverlayAtom = Atom.make<Partial<ThemeColors> | null>(null).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("t3term-theme-preview-overlay"),
+);
+
+/** The draft's palette without the inspection overlay, for the editor panel itself. */
+export const previewBasePaletteAtom = Atom.make((get) => {
+  const preview = get(themePreviewAtom);
+  return preview ? paletteFromThemeColors(preview.colors, preview.appearance, THEME_PREVIEW_ID) : null;
+}).pipe(Atom.keepAlive, Atom.withLabel("t3term-preview-base-palette"));
+
 /** The palette App provides through ThemeContext. */
 export const activePaletteAtom = Atom.make((get) => {
   get(customThemesRevisionAtom);
   const preview = get(themePreviewAtom);
-  if (preview) return paletteFromThemeColors(preview.colors, preview.appearance, THEME_PREVIEW_ID);
+  if (preview) {
+    const overlay = get(themePreviewOverlayAtom);
+    return paletteFromThemeColors(overlay ? { ...preview.colors, ...overlay } : preview.colors, preview.appearance, THEME_PREVIEW_ID);
+  }
   return resolvePalette(get(themeStateAtom), get(systemDarkAtom));
 }).pipe(Atom.keepAlive, Atom.withLabel("t3term-active-palette"));
 
