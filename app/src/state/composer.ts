@@ -37,6 +37,7 @@ import {
 } from "../web/lib/composerContextRecords.ts";
 import type { TerminalContextDraft } from "../web/lib/terminalContext.ts";
 import type { ReviewCommentContext } from "../web/reviewCommentContext.ts";
+import type { ChatMessage } from "../web/types.ts";
 import { clientSettingsAtom } from "./clientSettings.ts";
 import { termHome } from "../runtime/paths.ts";
 import { serverEnvironment } from "./environment.ts";
@@ -53,13 +54,24 @@ export type ComposerTarget =
       readonly kind: "draft";
       readonly environmentId: EnvironmentId | null;
       readonly projectId: ProjectId | null;
+      /** Further drafts in the same project (web draftId); absent for the first. */
+      readonly draftId?: string;
     };
 
-/** One draft per thread, and one new-thread draft per project. */
+/**
+ * One draft per thread. New-thread drafts: the project's first draft, plus any number of
+ * further ones (web useHandleNewThread keeps a draft that has content and opens another).
+ */
 export function composerTargetKey(target: ComposerTarget): string {
-  return target.kind === "thread"
-    ? `thread:${target.environmentId}:${target.threadId}`
-    : `draft:${target.environmentId ?? "-"}:${target.projectId ?? "-"}`;
+  if (target.kind === "thread") return `thread:${target.environmentId}:${target.threadId}`;
+  const base = `draft:${target.environmentId ?? "-"}:${target.projectId ?? "-"}`;
+  return target.draftId ? `${base}:${target.draftId}` : base;
+}
+
+/** The draft id in a new-thread draft key (`draft:<env>:<project>:<draftId>`), if any. */
+export function draftIdOfKey(key: string): string | undefined {
+  if (!key.startsWith("draft:")) return undefined;
+  return key.split(":")[3] || undefined;
 }
 
 // ── Draft shape ─────────────────────────────────────────────────────────
@@ -312,6 +324,39 @@ export function restoreComposerContent(
   }));
 }
 
+/**
+ * Adds context records (a restored stash entry's) to a draft, keeping any the draft already
+ * has with the same id.
+ */
+export function addComposerContextRecords(
+  key: string,
+  records: {
+    readonly terminalContexts?: ReadonlyArray<TerminalContextDraft>;
+    readonly reviewComments?: ReadonlyArray<ReviewCommentContext>;
+    readonly threadContexts?: ReadonlyArray<ThreadContextRecord>;
+  },
+): void {
+  const terminals = records.terminalContexts ?? [];
+  const reviews = records.reviewComments ?? [];
+  const threads = records.threadContexts ?? [];
+  if (terminals.length === 0 && reviews.length === 0 && threads.length === 0) return;
+  updateComposerDraft(key, (draft) => ({
+    ...draft,
+    terminalContexts: [
+      ...(draft.terminalContexts ?? []),
+      ...terminals.filter((context) => !draft.terminalContexts?.some((existing) => existing.id === context.id)),
+    ],
+    reviewComments: [
+      ...(draft.reviewComments ?? []),
+      ...reviews.filter((comment) => !draft.reviewComments?.some((existing) => existing.id === comment.id)),
+    ],
+    threadContexts: [
+      ...(draft.threadContexts ?? []),
+      ...threads.filter((record) => !draft.threadContexts?.some((existing) => existing.contextId === record.contextId)),
+    ],
+  }));
+}
+
 // ── Inline context references ──────────────────────────────────────────
 
 /**
@@ -406,10 +451,14 @@ export function referencedThreadContexts(draft: ComposerDraft, prompt = draft.pr
  * web composerDraftStore.addReviewComment: stores the comment (replacing one with the same
  * id) and appends its inline reference to the prompt the first time it is added.
  */
-export function addComposerReviewComment(key: string, comment: ReviewCommentContext): void {
+export function addComposerReviewComment(
+  key: string,
+  comment: ReviewCommentContext,
+  options?: { readonly appendReference?: boolean },
+): void {
   updateComposerDraft(key, (draft) => {
     const existing = draft.reviewComments ?? [];
-    const alreadyPresent = existing.some((entry) => entry.id === comment.id);
+    const alreadyPresent = options?.appendReference === false || existing.some((entry) => entry.id === comment.id);
     return {
       ...draft,
       prompt: alreadyPresent
@@ -525,6 +574,84 @@ export function setDraftWorkspace(
   },
 ): void {
   updateComposerDraft(key, (draft) => ({ ...draft, ...workspace }));
+}
+
+/**
+ * web useHandleNewThread: New thread reuses a draft of the project that holds nothing yet,
+ * the first draft before the others. `null` when every one of them has content.
+ */
+export function reusableProjectDraftId(environmentId: EnvironmentId, projectId: ProjectId): string | undefined | null {
+  const base = composerTargetKey({ kind: "draft", environmentId, projectId });
+  const drafts = appAtomRegistry.get(composerDraftsAtom);
+  if (!composerDraftHasUserContent(drafts[base])) return undefined;
+  for (const [key, draft] of Object.entries(drafts)) {
+    if (key.startsWith(`${base}:`) && !composerDraftHasUserContent(draft)) return draftIdOfKey(key);
+  }
+  return null;
+}
+
+/**
+ * web useDraftEnvironmentRouting.onEnvironmentChange retargets the draft itself to the
+ * other machine's project, so what the user wrote goes along. Drafts here are keyed by
+ * project, so the content moves: prompt, attachments (local files, uploaded at send),
+ * context records and the Build/Plan mode. Model and workspace choices stay behind; they
+ * name the old machine's providers and checkouts. Returns the draft id to open there (a
+ * fresh one when that project's draft already has content of its own).
+ */
+export function moveComposerDraftContent(
+  fromKey: string,
+  to: { readonly environmentId: EnvironmentId; readonly projectId: ProjectId },
+): string | undefined {
+  const source = readComposerDraft(fromKey);
+  const reusable = reusableProjectDraftId(to.environmentId, to.projectId);
+  const draftId = reusable === null ? globalThis.crypto.randomUUID() : reusable;
+  if (!composerDraftHasUserContent(source) && (source.threadContexts?.length ?? 0) === 0) return draftId;
+  const toKey = composerTargetKey({ kind: "draft", ...to, ...(draftId ? { draftId } : {}) });
+  updateComposerDraft(toKey, (draft) => ({
+    ...draft,
+    prompt: source.prompt,
+    attachments: source.attachments,
+    reviewComments: source.reviewComments ?? [],
+    terminalContexts: source.terminalContexts ?? [],
+    threadContexts: source.threadContexts ?? [],
+    ...(source.interactionMode ? { interactionMode: source.interactionMode } : {}),
+  }));
+  clearComposerContent(fromKey);
+  return draftId;
+}
+
+/** Drops a draft entry: a further draft is done once its thread exists. */
+export function deleteComposerDraft(key: string): void {
+  const drafts = appAtomRegistry.get(composerDraftsAtom);
+  if (!(key in drafts)) return;
+  const { [key]: _removed, ...rest } = drafts;
+  appAtomRegistry.set(composerDraftsAtom, rest);
+  schedulePersist();
+}
+
+// ── Optimistic sent messages ────────────────────────────────────────────
+
+const NO_OPTIMISTIC_MESSAGES: ReadonlyArray<ChatMessage> = [];
+
+/**
+ * A sent message shown in its thread's timeline from the moment of the send until the
+ * server's copy arrives (web ChatView optimisticUserMessages), by scoped thread key.
+ * The timeline drops one whose id is already committed, so a late removal only costs memory.
+ */
+export const optimisticMessagesAtom = Atom.family((_threadKey: string) =>
+  Atom.make<ReadonlyArray<ChatMessage>>(NO_OPTIMISTIC_MESSAGES).pipe(Atom.keepAlive),
+);
+
+export function addOptimisticMessage(threadKey: string, message: ChatMessage): void {
+  const atom = optimisticMessagesAtom(threadKey);
+  appAtomRegistry.set(atom, [...appAtomRegistry.get(atom), message]);
+}
+
+export function removeOptimisticMessages(threadKey: string, remove: (message: ChatMessage) => boolean): void {
+  const atom = optimisticMessagesAtom(threadKey);
+  const current = appAtomRegistry.get(atom);
+  const next = current.filter((message) => !remove(message));
+  if (next.length !== current.length) appAtomRegistry.set(atom, next.length === 0 ? NO_OPTIMISTIC_MESSAGES : next);
 }
 
 // ── Settings the composer reads ─────────────────────────────────────────

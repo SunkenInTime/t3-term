@@ -26,18 +26,38 @@ import { DraftHeroHeadline } from "./draft/DraftHeroHeadline.tsx";
 import { NoActiveThreadState, NoProjectsHero } from "./draft/EmptyStates.tsx";
 import { DraftPullRequestPanel } from "../pullRequests/DraftPullRequestPanel.tsx";
 
-export function DraftView({ environmentId, projectId }: { environmentId: EnvironmentId | null; projectId: ProjectId | null }) {
-  const draftKey = environmentId !== null && projectId !== null ? composerTargetKey({ kind: "draft", environmentId, projectId }) : null;
+export function DraftView({
+  environmentId,
+  projectId,
+  draftId,
+}: {
+  environmentId: EnvironmentId | null;
+  projectId: ProjectId | null;
+  draftId?: string | undefined;
+}) {
+  const draftKey =
+    environmentId !== null && projectId !== null
+      ? composerTargetKey({ kind: "draft", environmentId, projectId, ...(draftId ? { draftId } : {}) })
+      : null;
   return (
     <div style={{ display: "flex", flexDirection: "row", flexGrow: 1, minHeight: 0, minWidth: 0 }}>
-      <DraftCanvas environmentId={environmentId} projectId={projectId} />
+      <DraftCanvas environmentId={environmentId} projectId={projectId} draftId={draftId} />
       {/* A pull request kept open beside the draft by an Ask from its review guide. */}
       {draftKey !== null ? <DraftPullRequestPanel draftKey={draftKey} /> : null}
     </div>
   );
 }
 
-function DraftCanvas({ environmentId, projectId }: { environmentId: EnvironmentId | null; projectId: ProjectId | null }) {
+function DraftCanvas({
+  environmentId,
+  projectId,
+  draftId,
+}: {
+  environmentId: EnvironmentId | null;
+  projectId: ProjectId | null;
+  draftId?: string | undefined;
+}) {
+  const target = { kind: "draft" as const, environmentId, projectId, ...(draftId ? { draftId } : {}) };
   const theme = useTheme();
   const cardInline = useDetailsCardInline();
   const small = useSmallViewport();
@@ -88,20 +108,20 @@ function DraftCanvas({ environmentId, projectId }: { environmentId: EnvironmentI
           </div>
           <div style={{ display: "flex", flexDirection: "column", flexShrink: 0 }}>
             <ChatLane cardInline={cardInline}>
-              <Composer target={{ kind: "draft", environmentId, projectId }} layout="lane" />
+              <Composer target={target} layout="lane" />
               <div style={{ height: small ? 16 : 20, flexShrink: 0 }} />
             </ChatLane>
           </div>
           <div style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, minHeight: 0 }} />
         </div>
         {environmentId !== null && projectId !== null ? (
-          <ChatBannerLane composerTargetKey={composerTargetKey({ kind: "draft", environmentId, projectId })} overlay />
+          <ChatBannerLane composerTargetKey={composerTargetKey(target)} overlay />
         ) : null}
         {project && environmentId !== null && projectId !== null ? (
           <DraftDetailsCard
             environmentId={environmentId}
             projectId={projectId}
-            draftKey={composerTargetKey({ kind: "draft", environmentId, projectId })}
+            draftKey={composerTargetKey(target)}
           />
         ) : null}
       </div>

@@ -13,12 +13,14 @@ import {
 } from "@t3tools/client-runtime/state/project-grouping";
 import {
   resolveEnvironmentMachineKind,
+  T3_PROJECT_FILE_NAME,
   type EnvironmentId,
   type EnvironmentMachineKind,
   type ProjectId,
 } from "@t3tools/contracts";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import { resolveNewThreadEnvMode, resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import * as Option from "effect/Option";
 import { useEffect } from "react";
 
@@ -27,14 +29,18 @@ import {
   composerDraftAtom,
   composerMenuOpenAtom,
   composerSettingsAtom,
+  moveComposerDraftContent,
   setDraftWorkspace,
 } from "../../state/composer.ts";
+import { composerSendingAtom } from "./composerSend.ts";
+import { openScratchProject } from "../../palette/actions.ts";
 import { composerVcsEnvironment, useEnvironmentQuery } from "../../state/composerQueries.ts";
 import {
   environmentCatalog,
   environmentProjects,
   environmentServerConfigsAtom,
   environmentThreadShells,
+  projectEnvironment,
   serverEnvironment,
 } from "../../state/environment.ts";
 import { routeAtom } from "../../state/ui.ts";
@@ -101,9 +107,29 @@ export function BranchToolbar({ environmentId, projectId, draftKey, onComposerFo
   const currentGitBranch = status.data?.refName ?? null;
 
   // The default the web app stamps on a new draft (useHandleNewThread resolveDefaultEnvMode).
-  // The .t3 project file is not read here, so a project-file default does not apply.
-  const projectSettings =
+  // With no env mode in the server's project settings, the project's .t3 file decides.
+  const settingsOnly =
     serverConfig && project ? resolveProjectSettings(serverConfig.settings, project.id, project, null) : null;
+  const consultProjectFile = settingsOnly !== null && project !== null && settingsOnly.settings.defaultThreadEnvMode === null;
+  const projectFileQuery = useEnvironmentQuery(
+    consultProjectFile && project
+      ? projectEnvironment.readFile({
+          environmentId,
+          input: { cwd: project.workspaceRoot, relativePath: T3_PROJECT_FILE_NAME, allowMissing: true },
+        })
+      : null,
+  );
+  const projectFileData = projectFileQuery.data as { exists?: boolean; truncated?: boolean; contents?: string } | null;
+  const projectFile =
+    projectFileData && projectFileData.exists !== false && !projectFileData.truncated && typeof projectFileData.contents === "string"
+      ? parseT3ProjectFile(projectFileData.contents)
+      : null;
+  // Wait for the file before stamping a default, as web awaits it.
+  const projectFileSettled = !consultProjectFile || projectFileQuery.data !== null || projectFileQuery.error !== null;
+  const projectSettings =
+    serverConfig && project && projectFileSettled
+      ? resolveProjectSettings(serverConfig.settings, project.id, project, projectFile)
+      : null;
   const defaultEnvMode: EnvMode | null =
     projectSettings && project
       ? resolveNewThreadEnvMode({
@@ -157,7 +183,27 @@ export function BranchToolbar({ environmentId, projectId, draftKey, onComposerFo
   };
   const onEnvironmentChange = (option: EnvironmentOption) => {
     if (option.environmentId === environmentId) return;
-    appAtomRegistry.set(routeAtom, { kind: "draft", environmentId: option.environmentId, projectId: option.projectId });
+    // The draft goes along to the other machine (web retargets it rather than opening another).
+    if (appAtomRegistry.get(composerSendingAtom(draftKey))) return;
+    const retarget = (projectId: ProjectId) => {
+      // A send that started meanwhile owns the draft.
+      if (appAtomRegistry.get(composerSendingAtom(draftKey))) return;
+      const draftId = moveComposerDraftContent(draftKey, { environmentId: option.environmentId, projectId });
+      appAtomRegistry.set(routeAtom, {
+        kind: "draft",
+        environmentId: option.environmentId,
+        projectId,
+        ...(draftId ? { draftId } : {}),
+      });
+    };
+    if (option.projectId !== null) {
+      retarget(option.projectId);
+      return;
+    }
+    // web: a machine without this project gets the draft in its scratch project.
+    void openScratchProject(option.environmentId, "Could not switch machine").then((project) => {
+      if (project) retarget(project.id);
+    });
   };
 
   const runContextOpen = menuOpen === "env-mode" || menuOpen === "environment";

@@ -13,6 +13,7 @@ import {
   type SidebarDraftEntry,
 } from "../state/sidebar.ts";
 import { routeAtom } from "../state/ui.ts";
+import { draftIdOfKey } from "../state/composer.ts";
 import { Icon } from "../ui/Icon.tsx";
 import { Tooltip } from "../ui/overlay.tsx";
 import { Text } from "../ui/primitives.tsx";
@@ -42,7 +43,8 @@ const SidebarDraftRow = memo(function SidebarDraftRow({
         testId="sidebar-draft-row"
         onClick={() => {
           if (consumeClaimedClick()) return;
-          setRoute({ kind: "draft", environmentId: draft.environmentId, projectId: draft.projectId });
+          const draftId = draftIdOfKey(draft.draftId);
+          setRoute({ kind: "draft", environmentId: draft.environmentId, projectId: draft.projectId, ...(draftId ? { draftId } : {}) });
         }}
         onAuxClick={(event) => setContextMenu({ kind: "draft", draftId: draft.draftId, x: event.x ?? 0, y: event.y ?? 0 })}
         onMouseEnter={() => setHovered(true)}
@@ -112,7 +114,8 @@ export function SidebarDraftBlock({ scopedProjectKeys }: { scopedProjectKeys: Re
           isActive={
             route.kind === "draft" &&
             route.environmentId === draft.environmentId &&
-            route.projectId === draft.projectId
+            route.projectId === draft.projectId &&
+            route.draftId === draftIdOfKey(draft.draftId)
           }
         />
       ))}

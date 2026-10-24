@@ -14,7 +14,7 @@
 // so composition input (Chinese, Japanese, Korean) does not reach this editor; and a JS
 // clipboard API: paste goes through a hidden textarea's native paste (pasteSink), copy
 // through the OS clipboard tool (lib/clipboard.ts).
-import { useGpuixRequired, type EventPayload, type KeyEvent } from "@gpuix/react";
+import { isTerminal, useGpuixRequired, type EventPayload, type KeyEvent } from "@gpuix/react";
 import type { ServerProviderSkill } from "@t3tools/contracts";
 import { isProviderSkillUserInvocable } from "@t3tools/client-runtime/providerSkills";
 import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
@@ -22,6 +22,7 @@ import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import { forwardRef, memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 
 import { copyToClipboard } from "../../../lib/clipboard.ts";
+import { readClipboardText } from "../../../terminal/clipboard.ts";
 import { useTextMetricsEpoch } from "../../markdown/measure.ts";
 import { TextMeasureHost } from "../../markdown/TextMeasureHost.tsx";
 import { FONTS, alpha, useTheme } from "../../../ui/theme.ts";
@@ -157,6 +158,12 @@ export interface ComposerEditorHandle {
    * on its way here (a burst after type-to-focus) arrives only at the window.
    */
   handleKey(event: KeyEvent): void;
+  /**
+   * web isCaretOnVisualEdge: the caret is collapsed on the first (start) or last (end)
+   * visual line, with no newline between it and that edge. Prompt history only takes
+   * ArrowUp/ArrowDown there, so the arrows still move between lines of a long prompt.
+   */
+  isCaretOnVisualEdge(edge: "start" | "end"): boolean;
   /** Element id of the focusable editor, for renderer.focusElement. */
   readonly id: number | null;
 }
@@ -186,6 +193,13 @@ export interface ComposerEditorProps {
   readonly onChange: (value: string, cursor: number, suppressTrigger: boolean) => void;
   /** Composer-level keys (menus, send, mode); true when it handled the key. */
   readonly onKeyCommand: (event: KeyEvent, context: ComposerEditorKeyContext) => boolean;
+  /**
+   * A paste's text before it goes in; true when the composer took it (web foldPastedText
+   * attaches a long paste as a file). Not called for paste-as-text (Shift).
+   */
+  readonly onPasteText?: (text: string) => boolean;
+  /** A paste found no text: the clipboard may hold a picture or files. */
+  readonly onPasteNonText?: () => void;
   /** web isPathQueryActive: a paste continuing an @path query stays text. */
   readonly isPathQueryActive?: () => boolean;
   readonly onFocus?: () => void;
@@ -240,6 +254,21 @@ export function typedText(keyChar: string | undefined): string | null {
 
 /** The last copy, pasted from memory while the OS clipboard tool is still taking it. */
 let lastCopy: { text: string; at: number } | null = null;
+/**
+ * The sink's simulated paste keystroke is on its way. With no text on the clipboard the
+ * sink's paste lets it go on, and it reaches the window handlers after focus is back on
+ * the editor: handed to the editor as a missed key of a burst, it would paste again, forever.
+ */
+let sinkPasteKeystrokeUntil = 0;
+export function consumeComposerSinkPasteKeystroke(event: KeyEvent): boolean {
+  if (sinkPasteKeystrokeUntil === 0) return false;
+  const mods = event.modifiers;
+  const isPaste = event.key === "v" && Boolean(IS_MAC ? mods?.cmd : mods?.ctrl);
+  if (!isPaste) return false;
+  const expected = Date.now() <= sinkPasteKeystrokeUntil;
+  sinkPasteKeystrokeUntil = 0;
+  return expected;
+}
 /** The editor's last measured width, for the first frame of the next mount. */
 let lastKnownWidth = 0;
 
@@ -253,6 +282,9 @@ export const ComposerEditor = memo(
     skillMetaRef.current = skillMeta;
     const propsRef = useRef(props);
     propsRef.current = props;
+    // isTerminal() is read during render (gpuix); handlers read it from here.
+    const terminalRef = useRef(false);
+    terminalRef.current = isTerminal();
 
     const parseOptions = () => ({
       skillMeta: skillMetaRef.current,
@@ -415,10 +447,12 @@ export const ComposerEditor = memo(
     };
 
     /** web handlePaste. */
-    const pasteText = (raw: string) => {
+    const pasteText = (raw: string, asText = false) => {
       const current = stateRef.current!;
       const pasted = raw.replace(/\r\n?/g, "\n");
       if (pasted.length === 0) return;
+      // web onComposerPaste → foldPastedText: the composer may take a long paste as a file.
+      if (!asText && propsRef.current.onPasteText?.(pasted)) return;
       const headBlock = current.doc.blocks[current.selection.head.block]!;
       if (selectionInOneCodeBlock(current.doc, current.selection) || headBlock.kind === "code") {
         const removed = deleteSelection(current.doc, current.selection);
@@ -453,18 +487,44 @@ export const ComposerEditor = memo(
 
     // ── Clipboard ──
     const pendingPasteRef = useRef(false);
-    const paste = () => {
+    const pasteAsTextRef = useRef(false);
+    const pasteFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const paste = (asText: boolean) => {
       if (propsRef.current.readOnly) return;
       // A copy still on its way to the OS clipboard (the tool takes a moment) pastes from memory.
       if (lastCopy && Date.now() - lastCopy.at < 1500) {
-        pasteText(lastCopy.text);
+        pasteText(lastCopy.text, asText);
+        return;
+      }
+      // In a terminal GPUI's clipboard is the terminal's, and it only holds what this app
+      // copied: the sink textarea would paste nothing, and the focus hop leaves the
+      // editor deaf to the keys that follow. Read the system clipboard with the OS tool.
+      if (terminalRef.current) {
+        void readClipboardText().then(
+          (text) => {
+            if (text.length > 0) pasteText(text, asText);
+            else propsRef.current.onPasteNonText?.();
+          },
+          () => {},
+        );
         return;
       }
       const host = renderer();
       if (!sinkIdRef.current || !host?.simulateKeystrokes) return;
       pendingPasteRef.current = true;
+      pasteAsTextRef.current = asText;
+      // No text on the clipboard: the sink pastes nothing, and the clipboard may hold a
+      // picture or copied files instead.
+      if (pasteFallbackTimerRef.current !== null) clearTimeout(pasteFallbackTimerRef.current);
+      pasteFallbackTimerRef.current = setTimeout(() => {
+        pasteFallbackTimerRef.current = null;
+        if (!pendingPasteRef.current) return;
+        pendingPasteRef.current = false;
+        propsRef.current.onPasteNonText?.();
+      }, 500);
       pastingRef.current = true;
       gpuix.focusElement?.(sinkIdRef.current.id);
+      sinkPasteKeystrokeUntil = Date.now() + 1000;
       host.simulateKeystrokes(IS_MAC ? "cmd-v" : "ctrl-v");
       focusEditor();
       // The blur from the hop arrives as an event after this returns.
@@ -667,7 +727,7 @@ export const ComposerEditor = memo(
             return;
           case "v":
             handled();
-            paste();
+            paste(mods.shift);
             return;
         }
         return;
@@ -840,6 +900,15 @@ export const ComposerEditor = memo(
         },
         readSnapshot: snapshot,
         receivedKeystroke: (id) => receivedKeystrokesRef.current.includes(id),
+        isCaretOnVisualEdge: (edge) => {
+          const current = stateRef.current!;
+          const value = serializeDocCached(current.doc);
+          if (value.length === 0) return true;
+          if (!isCollapsed(current.selection)) return false;
+          const cursor = posToMarkdown(current.doc, current.selection.head);
+          if (edge === "start" ? value.slice(0, cursor).includes("\n") : value.slice(cursor).includes("\n")) return false;
+          return verticalTarget(layoutRef.current, current.selection.head, 0, edge === "start" ? -1 : 1) === null;
+        },
         handleKey: (event) => handleKey(event),
         appendTyped: (text) => {
           const current = stateRef.current!;
@@ -982,7 +1051,7 @@ export const ComposerEditor = memo(
             setSinkKey((value) => value + 1);
             if (!pendingPasteRef.current) return;
             pendingPasteRef.current = false;
-            if (text.length > 0) pasteText(text);
+            if (text.length > 0) pasteText(text, pasteAsTextRef.current);
           }}
         />
       </div>

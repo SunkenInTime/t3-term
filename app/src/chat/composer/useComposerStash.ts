@@ -8,7 +8,16 @@ import { useAtomValue } from "@effect/atom-react";
 import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts";
 import { useEffect, useRef, useState } from "react";
 
-import { addComposerAttachments, readComposerDraft, setComposerPrompt, clearComposerContent } from "../../state/composer.ts";
+import {
+  addComposerAttachments,
+  addComposerContextRecords,
+  clearComposerContent,
+  readComposerDraft,
+  referencedReviewComments,
+  referencedTerminalContexts,
+  referencedThreadContexts,
+  setComposerPrompt,
+} from "../../state/composer.ts";
 import {
   MAX_STASH_ENTRIES,
   type PromptStashEntry,
@@ -70,6 +79,8 @@ export function useComposerStash(input: {
         : current.prompt.trim().length > 0
           ? `${current.prompt.replace(/\s+$/, "")}\n\n${entry.prompt}`
           : entry.prompt;
+    // Records first: the chips in the restored text look them up as soon as it lands.
+    addComposerContextRecords(draftKey, entry);
     if (nextPrompt !== current.prompt) setComposerPrompt(draftKey, nextPrompt);
     const existing = new Set(current.attachments.map((attachment) => attachment.path));
     const missing: string[] = [];
@@ -122,6 +133,10 @@ export function useComposerStash(input: {
       createdAt: new Date().toISOString(),
       prompt: trimmed,
       attachments: draft.attachments,
+      // web snapshots the terminal and review contexts with the prompt (useComposerStash).
+      terminalContexts: referencedTerminalContexts(draft),
+      reviewComments: referencedReviewComments(draft),
+      threadContexts: referencedThreadContexts(draft),
     });
     if (!written) {
       toast({

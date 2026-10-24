@@ -2,8 +2,9 @@
 // question, its options, collapse and dismiss. The custom answer is typed into the
 // composer editor; Previous / Submit live in the composer's primary actions.
 //
-// Not ported: the 1-9 digit shortcuts (the composer editor holds focus, and gpuix
-// textareas swallow digits), and the "Show details" popover for overflowing text.
+// The 1-9 option shortcuts reach the card through handlePendingQuestionDigit, which the
+// composer calls for a digit that has no editor to go to (web's document keydown handler).
+// Not ported: the "Show details" popover for overflowing text.
 import type { ThreadPendingUserInput } from "@t3tools/client-runtime/state/thread-requests";
 import type { RuntimeRequestId } from "@t3tools/contracts";
 import { memo, useEffect, useRef, useState } from "react";
@@ -23,6 +24,14 @@ import {
   BannerText,
   BannerToggleIcon,
 } from "./ComposerBannerParts.tsx";
+
+/** The open question's option picker, while it takes picks. */
+let digitShortcut: ((digit: number) => boolean) | null = null;
+
+/** web 1-9 shortcut: picks the nth option of the open question. True when it did. */
+export function handlePendingQuestionDigit(digit: number): boolean {
+  return digitShortcut?.(digit) ?? false;
+}
 
 interface PendingUserInputPanelProps {
   readonly pendingUserInputs: ReadonlyArray<ThreadPendingUserInput>;
@@ -119,9 +128,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
     return clearAutoAdvance;
   }, [activeQuestion?.id, disabled]);
 
-  if (!activeQuestion) return null;
-
   const handleOptionSelection = (questionId: string, optionValue: string) => {
+    if (!activeQuestion) return;
     if (disabled || isResponding) return;
     if (activeQuestion.multiSelect) {
       onToggleOption(questionId, optionValue);
@@ -135,6 +143,23 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
       advanceRef.current();
     }, 200);
   };
+  const selectByDigitRef = useRef<(digit: number) => boolean>(() => false);
+  selectByDigitRef.current = (digit) => {
+    if (!activeQuestion || disabled || isResponding || isCollapsed) return false;
+    const option = activeQuestion.options[digit - 1];
+    if (!option) return false;
+    handleOptionSelection(activeQuestion.id, option.value ?? option.label);
+    return true;
+  };
+  useEffect(() => {
+    const handler = (digit: number) => selectByDigitRef.current(digit);
+    digitShortcut = handler;
+    return () => {
+      if (digitShortcut === handler) digitShortcut = null;
+    };
+  }, []);
+
+  if (!activeQuestion) return null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>

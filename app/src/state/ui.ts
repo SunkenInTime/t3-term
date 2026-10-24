@@ -28,6 +28,11 @@ export type Route =
       readonly kind: "draft";
       readonly environmentId: EnvironmentId | null;
       readonly projectId: ProjectId | null;
+      /**
+       * One of several drafts in the project (web draftId). Absent for the project's first
+       * draft, which every older entry point opens.
+       */
+      readonly draftId?: string;
     }
   | { readonly kind: "settings"; readonly page: SettingsPage }
   // Sidebar footer utility pages (web: /pull-requests, /usage).

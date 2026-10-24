@@ -40,10 +40,14 @@ import {
 } from "@t3tools/client-runtime/state/thread-execution";
 import { threadSupportsProviderHandoff } from "@t3tools/client-runtime/state/thread-workflows";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
+  type ChatAttachment,
   type EnvironmentId,
   isProviderNativeSubagentThread,
   MessageId,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ModelSelection,
   type ProjectId,
   type ProviderInstanceId,
@@ -54,6 +58,9 @@ import {
 } from "@t3tools/contracts";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { createModelSelection } from "@t3tools/shared/model";
+import { sourceControlRepositorySelector } from "@t3tools/shared/sourceControl";
+import { buildPullRequestReferenceContext } from "../../web/components/pullRequest/pullRequestDetail.logic.ts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { proposedPlanTitle } from "@t3tools/shared/proposedPlanText";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -66,6 +73,8 @@ import {
   type ComposerTarget,
   addComposerAttachments,
   composerDraftAtom,
+  optimisticMessagesAtom,
+  removeOptimisticMessages,
   focusComposer,
   restoreComposerContent,
   setDraftWorkspace,
@@ -81,6 +90,7 @@ import {
   registerComposerInsertionHandler,
   citationCommentRequestAtom,
   addComposerThreadContext,
+  addComposerReviewComment,
   removeComposerAttachment,
   setComposerInteractionMode,
   setComposerModelOptions,
@@ -157,6 +167,12 @@ import {
   selectComposerTasksPlan,
 } from "../../web/session-logic.ts";
 import { resolveThreadSyncPhase } from "../../web/threadSync.ts";
+import { deriveTimelineEntriesFromVisibleTurnItems } from "../../web/session-logic.ts";
+import {
+  type ComposerPromptHistoryPosition,
+  buildComposerPromptHistoryEntries,
+  stepComposerPromptHistory,
+} from "../../web/components/chat/composerPromptHistory.ts";
 import { useDelayedStatus } from "../../web/hooks/useDelayedStatus.ts";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import { BranchToolbar } from "./BranchToolbar.tsx";
@@ -164,7 +180,10 @@ import {
   ComposerAttachButton,
   ComposerAttachmentFileList,
   ComposerAttachmentMediaRow,
+  type ComposerFileItem,
+  type ComposerMediaItem,
 } from "./ComposerAttachmentStrip.tsx";
+import { useAttachmentImageUrls } from "./useAttachmentUrls.ts";
 import { ComposerTopBanners } from "./ComposerBanner.tsx";
 import { ComposerCommandMenu, ComposerCommandMenuLayer } from "./ComposerCommandMenu.tsx";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu.tsx";
@@ -180,6 +199,12 @@ import {
   type ComposerSendTarget,
 } from "./composerSend.ts";
 import { attachmentsFromPaths } from "./composerAttachmentPaths.ts";
+import { readClipboardAttachmentPaths, writePastedTextFile } from "./clipboardAttachments.ts";
+import {
+  nextPastedTextFileName,
+  pastedTextDisposition,
+  wouldTextPasteExceedLimit,
+} from "@t3tools/client-runtime/text-paste";
 import { ContextWindowMeter } from "./ContextWindowMeter.tsx";
 import { MODEL_PICKER_TRIGGER_MIN_WIDTH, ProviderModelPicker } from "./ProviderModelPicker.tsx";
 import { QueuedRunsControl } from "./QueuedRunsControl.tsx";
@@ -204,11 +229,20 @@ import { usePendingThreadRequests } from "./usePendingThreadRequests.ts";
 import { useQueuedRunEdit } from "./useQueuedRunEdit.ts";
 import { composerRestingAtom } from "./composerResting.ts";
 import { useComposerBannerItems } from "./useComposerBannerItems.tsx";
+import { useComposerTypingGuard } from "../../web/components/chat/useComposerTypingGuard.ts";
+import { handlePendingQuestionDigit } from "./ComposerPendingUserInputPanel.tsx";
 import { filterTerminalContextsWithText, type TerminalContextDraft } from "../../web/lib/terminalContext.ts";
-import { ComposerEditor, type ComposerEditorHandle, type ComposerEditorKeyContext, typedText } from "./editor/ComposerEditor.tsx";
+import {
+  ComposerEditor,
+  type ComposerEditorHandle,
+  type ComposerEditorKeyContext,
+  consumeComposerSinkPasteKeystroke,
+  typedText,
+} from "./editor/ComposerEditor.tsx";
 import type { ComposerChipEnvironment } from "./editor/ComposerInlineChip.tsx";
 import {
   reviewCommentContextId,
+  reviewCommentContextReference,
   terminalContextReference,
   threadContextRecord,
   threadContextReference,
@@ -250,6 +284,8 @@ const RESTING_PICKER_LABEL_MAX_SURFACE_PX = 640;
 const SM_BREAKPOINT = 640;
 
 const NO_TERMINAL_CONTEXTS: ReadonlyArray<TerminalContextDraft> = [];
+const NO_CHAT_ATTACHMENTS: ReadonlyArray<ChatAttachment> = [];
+const NO_PENDING_USER_INPUTS: ReturnType<typeof usePendingThreadRequests>["pendingUserInputs"] = [];
 const NO_THREAD_SHELL_ATOM = Atom.make<EnvironmentThreadShell | null>(null);
 const NO_THREAD_STATUS_ATOM = Atom.make<EnvironmentThreadStatus>("live");
 const NO_THREAD_STATE_ATOM = Atom.make(
@@ -264,6 +300,55 @@ const NO_SKILLS: ServerProvider["skills"] = [];
 const NO_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
 const DEFAULT_PLACEHOLDER = "Ask anything, @tag files/folders, $use skills, or / for commands";
 const PROMPT_LINE_HEIGHT = 23;
+
+/** Whether a focused element id is a native text field, by id (ids are never reused). */
+const editableById = new Map<number, boolean>();
+
+/**
+ * True when focus sits on an editable element still on screen: a native <input> or
+ * <textarea>, or this composer's editor (web TYPE_TO_FOCUS_EDITABLE_SELECTOR). GPUI keeps
+ * the id of a focused element after it unmounts, and focuses the row or control a click
+ * landed on, so neither a bare id nor "something is focused" means the keys have a home.
+ * Surfaces that take keys themselves (terminal, browser, device stream, file tree) stop or
+ * prevent them before the window sees them.
+ */
+function hasEditableFocus(renderer: unknown, editorId: number | null): boolean {
+  return focusKind(renderer, editorId) === "editable";
+}
+
+/**
+ * What holds focus: an editable element, a control still on screen (a row or button a
+ * click focused), or nothing (no focus, or the focused element is gone).
+ */
+function focusKind(renderer: unknown, editorId: number | null): "editable" | "control" | "none" {
+  const host = renderer as
+    | { getFocusedElementId?: () => number | null; getElementBounds?: (id: number) => unknown; getAutomationTree?: () => string }
+    | undefined;
+  const id = host?.getFocusedElementId?.();
+  if (id === null || id === undefined) return "none";
+  if (id === editorId) return "editable";
+  if (host?.getElementBounds && host.getElementBounds(id) == null) return "none";
+  let editable = editableById.get(id);
+  if (editable === undefined) {
+    editable = false;
+    try {
+      const find = (node: { id?: number; type?: string; children?: unknown[] }): string | null => {
+        if (node.id === id) return node.type ?? null;
+        for (const child of (node.children ?? []) as Array<typeof node>) {
+          const type = find(child);
+          if (type !== null) return type;
+        }
+        return null;
+      };
+      const type = host?.getAutomationTree ? find(JSON.parse(host.getAutomationTree())) : "input";
+      editable = type === "input" || type === "textarea";
+    } catch {
+      editable = true;
+    }
+    editableById.set(id, editable);
+  }
+  return editable ? "editable" : "control";
+}
 
 /** Mixes `color` over `base` at `amount`, for opaque stand-ins of web's translucent glass. */
 function mix(color: string, base: string, amount: number): string {
@@ -455,6 +540,12 @@ function ComposerBody({
   const queuedEdit = useQueuedRunEdit({ environmentId, threadId });
   const promptKey = queuedEdit.isEditing ? queuedEdit.draftKey ?? draftKey : draftKey;
   const promptDraft = useAtomValue(composerDraftAtom(promptKey));
+  // Staged attachments live with the prompt: a queued edit's new attachments in its edit draft.
+  const stagedAttachments = promptDraft.attachments;
+  const editingAttachments = queuedEdit.editingAttachments;
+  const editingImageUrls = useAttachmentImageUrls(environmentId, editingAttachments ?? NO_CHAT_ATTACHMENTS);
+  const composerAttachments: ReadonlyArray<{ readonly id: string }> =
+    editingAttachments && editingAttachments.length > 0 ? [...editingAttachments, ...stagedAttachments] : stagedAttachments;
   const sticky = useAtomValue(stickyModelAtom);
   const settings = useAtomValue(composerSettingsAtom(environmentId));
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
@@ -568,8 +659,13 @@ function ComposerBody({
   );
 
   // ── Modes ─────────────────────────────────────────────────────────────
+  // web useHandleNewThread seeds a draft with its project's runtime mode default.
+  const projectRuntimeMode =
+    threadId === null && project && serverConfig
+      ? (resolveProjectSettings(serverConfig.settings, project.id, project).settings.defaultRuntimeMode ?? null)
+      : null;
   const requestedRuntimeMode: RuntimeMode =
-    draft.runtimeMode ?? shell?.runtimeMode ?? settings.defaultRuntimeMode ?? "full-access";
+    draft.runtimeMode ?? shell?.runtimeMode ?? projectRuntimeMode ?? settings.defaultRuntimeMode ?? "full-access";
   const requestedInteractionMode: ProviderInteractionMode =
     draft.interactionMode ?? shell?.interactionMode ?? "default";
   const { enabled: planModeUiEnabled, interactionMode } = resolveComposerInteractionMode({
@@ -587,7 +683,33 @@ function ComposerBody({
     : (compatibleRuntimeModeOptions[0]?.mode ?? requestedRuntimeMode);
 
   // ── Pending requests and plan follow-up ──────────────────────────────
-  const requests = usePendingThreadRequests({ environmentId, threadId });
+  const incomingRequests = usePendingThreadRequests({ environmentId, threadId });
+  // web ChatComposer useComposerTypingGuard: an approval or question that arrives while the
+  // user is typing waits until they pause (1.5 s), send or leave the editor, so it cannot
+  // take over the editor mid-word.
+  const typingGuard = useComposerTypingGuard(draftKey, [
+    ...incomingRequests.pendingApprovals.map((request) => request.requestId),
+    ...incomingRequests.pendingUserInputs.map((request) => request.requestId),
+  ]);
+  const holdingUserInput = incomingRequests.pendingUserInputs[0]
+    ? typingGuard.heldRequestIds.has(incomingRequests.pendingUserInputs[0].requestId)
+    : false;
+  // The send reads these after its awaits, when this render's values are stale.
+  const liveRequestsRef = useRef(incomingRequests);
+  liveRequestsRef.current = incomingRequests;
+  const requests = {
+    ...incomingRequests,
+    activePendingApproval:
+      incomingRequests.activePendingApproval &&
+      !typingGuard.heldRequestIds.has(incomingRequests.activePendingApproval.requestId)
+        ? incomingRequests.activePendingApproval
+        : null,
+    pendingUserInputs: holdingUserInput ? NO_PENDING_USER_INPUTS : incomingRequests.pendingUserInputs,
+    activePendingUserInput: holdingUserInput ? null : incomingRequests.activePendingUserInput,
+    activePendingProgress: holdingUserInput ? null : incomingRequests.activePendingProgress,
+    activePendingResolvedAnswers: holdingUserInput ? null : incomingRequests.activePendingResolvedAnswers,
+    activePendingIsResponding: !holdingUserInput && incomingRequests.activePendingIsResponding,
+  };
   const activePendingProgress = requests.activePendingProgress;
   const isComposerApprovalState = requests.activePendingApproval !== null;
   const latestProposedPlan = projection ? findLatestProposedPlan(projection, shell?.latestRun?.runId ?? null) : null;
@@ -599,7 +721,7 @@ function ComposerBody({
       interactionMode,
       latestTurnSettled: !isRunning && phase !== "connecting",
       hasActionableProposedPlan: hasActionableProposedPlan(latestProposedPlan),
-      hasComposerAttachments: draft.attachments.length > 0,
+      hasComposerAttachments: composerAttachments.length > 0,
     });
   const resumableRunId = (() => {
     if (!projection) return null;
@@ -669,6 +791,32 @@ function ComposerBody({
     lastFocusRequestRef.current = focusRequest;
     focusEditor();
   });
+  // web: opening a thread or draft puts the caret in its composer (the editor mounts
+  // focused), so a click on a sidebar row is followed by typing into the prompt. Only when
+  // nothing live holds focus: the focused element of the composer this one replaced is gone.
+  useEffect(() => {
+    if (small) return;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const attempt = () => {
+      timer = null;
+      if (!hasEditableFocus(renderer, editorRef.current?.id ?? null) && !isConfirmDialogActive()) {
+        if (editorRef.current?.id != null) {
+          editorRef.current.focusAtEnd();
+          return;
+        }
+      } else {
+        return;
+      }
+      if (++tries < 10) timer = setTimeout(attempt, 16);
+    };
+    attempt();
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+    };
+    // Once per mount: the body is keyed by its target.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Command menu ──────────────────────────────────────────────────────
   const selectedProviderSkills = selectedProviderStatus
@@ -681,7 +829,7 @@ function ComposerBody({
     trigger?.kind === "slash-command" &&
     prompt.slice(0, trigger.rangeStart).trim() === "" &&
     prompt.slice(trigger.rangeEnd).trim() === "" &&
-    draft.attachments.length === 0 &&
+    composerAttachments.length === 0 &&
     threadId !== null &&
     threadShellHasStarted(shell);
   const menu = useComposerMenuItems({
@@ -689,6 +837,12 @@ function ComposerBody({
     environmentId,
     gitCwd: cwd,
     activeThreadId: threadId,
+    pullRequestProjectId: serverConfig?.environment.capabilities.pullRequests === true ? (project?.id ?? null) : null,
+    pullRequestRepository:
+      serverConfig?.environment.capabilities.pullRequests === true
+        ? sourceControlRepositorySelector(project?.repositoryIdentity)
+        : null,
+    threadPullRequests: shell?.pullRequests,
     planModeUiEnabled,
     compactSlashCommandAvailable,
     selectedProvider,
@@ -728,13 +882,61 @@ function ComposerBody({
     const valueChanged = nextValue !== valueRef.current;
     valueRef.current = nextValue;
     caretRef.current = caret;
-    if (valueChanged) setSubmissionError(null);
+    if (valueChanged) {
+      setSubmissionError(null);
+      typingGuard.onDraftChange();
+    }
     if (isChoiceOnlyPendingQuestion) return;
+    if (valueChanged && !activePendingProgress && promptHistoryPositionRef.current?.position.recalled !== nextValue) {
+      promptHistoryPositionRef.current = null;
+    }
     if (valueChanged) {
       writeEditorValue(nextValue);
       if (restingRequested) appAtomRegistry.set(composerRestingAtom(draftKey), false);
     }
     setTrigger(isLiteralPendingAnswer || suppressTrigger ? null : detectComposerTrigger(nextValue, caret));
+  };
+
+  // ── Prompt history (web useComposerCommandKey navigatePromptHistory) ──
+  // Keyed by draft: a recall made in one thread is not a browsing position in another.
+  const promptHistoryPositionRef = useRef<{ targetKey: string; position: ComposerPromptHistoryPosition } | null>(null);
+  const navigatePromptHistory = (direction: "backward" | "forward", event: KeyEvent): boolean => {
+    const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
+    if (mods.shift || mods.alt || mods.cmd || mods.ctrl) return false;
+    if (threadId === null || requests.pendingUserInputs.length > 0 || queuedEdit.isEditing) return false;
+    const current = readComposerDraft(promptKey);
+    if (
+      current.attachments.length > 0 ||
+      referencedTerminalContexts(current).length > 0 ||
+      referencedReviewComments(current).length > 0
+    ) {
+      return false;
+    }
+    const recalled = promptHistoryPositionRef.current;
+    const position = recalled?.targetKey === promptKey ? recalled.position : null;
+    if (position === null && current.prompt.length > 0) return false;
+    if (!editorRef.current?.isCaretOnVisualEdge(direction === "backward" ? "start" : "end")) return false;
+    // Built on the keypress, not per render: the timeline changes on every streamed delta.
+    const visibleTurnItems = appAtomRegistry.get(
+      environmentThreadDetails.visibleTurnItemsAtom(scopeThreadRef(environmentId, threadId)),
+    );
+    const messages = deriveTimelineEntriesFromVisibleTurnItems({ visibleTurnItems, optimisticMessages: [] }).flatMap(
+      (entry) => (entry.kind === "message" ? [entry.message] : []),
+    );
+    const step = stepComposerPromptHistory({
+      direction,
+      entries: buildComposerPromptHistoryEntries(messages as never),
+      position,
+      currentPrompt: current.prompt,
+    });
+    if (!step) return false;
+    promptHistoryPositionRef.current = step.position ? { targetKey: promptKey, position: step.position } : null;
+    valueRef.current = step.prompt;
+    caretRef.current = step.prompt.length;
+    setComposerPrompt(promptKey, step.prompt);
+    setTriggerState(null);
+    setHighlightedItemId(null);
+    return true;
   };
 
   const applyPromptReplacement = (rangeStart: number, rangeEnd: number, replacement: string) => {
@@ -782,7 +984,7 @@ function ComposerBody({
     if (item.type === "provider-slash-command") {
       // web ChatComposer onSelectComposerItem: choosing /usage-limits opens the panel
       // right away (only when nothing but the prompt is staged, like web's gate).
-      if (item.command.name === USAGE_LIMITS_COMMAND.name && banners.usageLimitsOffered && draft.attachments.length === 0) {
+      if (item.command.name === USAGE_LIMITS_COMMAND.name && banners.usageLimitsOffered && composerAttachments.length === 0) {
         applyPromptReplacement(active.rangeStart, active.rangeEnd, "");
         setTriggerState(null);
         setHighlightedItemId(null);
@@ -792,6 +994,17 @@ function ComposerBody({
       const replacement = `/${item.command.name} `;
       const end = extendReplacementRangeForTrailingSpace(current, active.rangeEnd, replacement);
       applyPromptReplacement(active.rangeStart, end, replacement);
+      return;
+    }
+    if (item.type === "pull-request") {
+      // web onSelectComposerItem: a # match becomes a pull-request reference chip, with its
+      // review-comment record kept for the send.
+      if (active.kind !== "pull-request") return;
+      const comment = buildPullRequestReferenceContext(item.pullRequest);
+      const replacement = `${formatInlineContextReference(reviewCommentContextReference(comment))} `;
+      const end = extendReplacementRangeForTrailingSpace(current, active.rangeEnd, replacement);
+      applyPromptReplacement(active.rangeStart, end, replacement);
+      addComposerReviewComment(promptKey, comment, { appendReference: false });
       return;
     }
     if (item.type === "thread") {
@@ -880,7 +1093,7 @@ function ComposerBody({
     isWorking: isRunning || sending,
     activePendingRequestId:
       requests.activePendingApproval?.requestId ?? requests.activePendingUserInput?.requestId ?? null,
-    composerHasDraftContent: prompt.trim().length > 0 || draft.attachments.length > 0,
+    composerHasDraftContent: prompt.trim().length > 0 || composerAttachments.length > 0,
     providerInstanceId: noProviderAvailable ? null : selectedInstanceId,
     providerDriver: selectedProviderStatus?.driver ?? null,
     providers: providerStatuses,
@@ -908,7 +1121,7 @@ function ComposerBody({
   );
   const composerSendState = deriveComposerSendState({
     prompt,
-    imageCount: draft.attachments.length,
+    imageCount: composerAttachments.length,
     terminalContexts: referencedComposerTerminalContexts,
     elementContextCount: referencedReviewComments(draft, prompt).length,
   });
@@ -958,7 +1171,7 @@ function ComposerBody({
     // web useComposerSend: /usage-limits is answered locally from the Limits snapshot.
     if (
       banners.usageLimitsOffered &&
-      draft.attachments.length === 0 &&
+      composerAttachments.length === 0 &&
       !queuedEdit.isEditing &&
       isUsageLimitsCommand(readComposerDraft(promptKey).prompt)
     ) {
@@ -979,7 +1192,7 @@ function ComposerBody({
       void queuedEdit.saveEdit(promptAtSend);
       return;
     }
-    const attachments = readComposerDraft(draftKey).attachments;
+    const attachments = readComposerDraft(promptKey).attachments;
     const trimmed = promptAtSend.trim();
     // Plan follow-up: blank implements the plan, text refines it (web submitPlanFollowUp).
     if (showPlanFollowUpPrompt && latestProposedPlan && attachments.length === 0 && threadId) {
@@ -1164,6 +1377,7 @@ function ComposerBody({
           startFromOrigin: draft.startFromOrigin ?? false,
         };
     setTriggerState(null);
+    typingGuard.onSend();
     const approvalsToDecline = requests.pendingApprovals.filter(
       (approval) => !requests.respondingRequestIds.includes(approval.requestId),
     );
@@ -1184,8 +1398,11 @@ function ComposerBody({
       approvalsToDecline,
       respondToApproval: async (requestId, decision) =>
         (await requests.onRespondToApproval(requestId, decision)) as never,
+      readPendingApprovalIds: () => liveRequestsRef.current.pendingApprovals.map((approval) => approval.requestId),
+      readRespondingApprovalIds: () => liveRequestsRef.current.respondingRequestIds,
       ...(input.sourceProposedPlan ? { sourceProposedPlan: input.sourceProposedPlan } : {}),
       ...(input.background ? { background: { projectId } } : {}),
+      running: isRunning,
     });
     if (sent) {
       valueRef.current = "";
@@ -1351,7 +1568,7 @@ function ComposerBody({
   const fileStagingAllowed = !activePendingProgress;
   const addPaths = (paths: ReadonlyArray<string>) => {
     const { attachments, folders } = attachmentsFromPaths(paths);
-    if (attachments.length > 0) addComposerAttachments(draftKey, attachments);
+    if (attachments.length > 0) addComposerAttachments(promptKey, attachments);
     if (folders.length > 0) {
       const mentions = folders.map((folder) => serializeComposerFileLink(folder)).join(" ");
       const current = valueRef.current;
@@ -1360,12 +1577,82 @@ function ComposerBody({
     }
     focusEditor();
   };
+  // web foldPastedText: a paste of 32 KB or more, or one that would push the prompt past
+  // the input limit, goes in as a pasted-text.txt attachment instead of prompt text.
+  const onPasteText = (text: string): boolean => {
+    if (isLiteralPendingAnswer || activePendingProgress) return false;
+    const current = readComposerDraft(promptKey);
+    const snapshot = editorRef.current?.readSnapshot();
+    const wouldExceedInputLimit = wouldTextPasteExceedLimit({
+      valueLength: current.prompt.length,
+      selection: snapshot ? { start: snapshot.selectionStart, end: snapshot.selectionEnd } : { start: 0, end: 0 },
+      textLength: text.length,
+      maxLength: PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+    });
+    if (pastedTextDisposition({ text, canAttach: true, wouldExceedInputLimit }) !== "attachment") return false;
+    const canStage =
+      fileStagingAllowed &&
+      !queuedEdit.isEditing &&
+      serverConfig?.environment.capabilities.fileAttachments !== undefined &&
+      current.attachments.length < PROVIDER_SEND_TURN_MAX_ATTACHMENTS;
+    if (!canStage) {
+      if (!wouldExceedInputLimit) return false;
+      toast({ type: "error", title: "Pasted text is too large for this message", description: "Remove some text or an attachment, then paste again." });
+      return true;
+    }
+    const name = nextPastedTextFileName(current.attachments.map((attachment) => attachment.name));
+    const { attachments } = attachmentsFromPaths([writePastedTextFile(name, text)]);
+    addComposerAttachments(promptKey, attachments.map((attachment) => ({ ...attachment, mimeType: "text/plain" })));
+    return true;
+  };
+  // web onComposerPaste with clipboardData.files: a copied file or a picture attaches.
+  const onPasteNonText = () => {
+    if (!fileStagingAllowed || queuedEdit.isEditing) return;
+    void readClipboardAttachmentPaths().then((paths) => {
+      if (paths.length > 0) addPaths(paths);
+    });
+  };
   const onAttach = async () => {
     const paths = await renderer.promptForPaths?.({ files: true, multiple: true, prompt: "Attach" });
     if (paths && paths.length > 0) addPaths(paths);
   };
-  const images = draft.attachments.filter((attachment) => attachment.type === "image");
-  const files = draft.attachments.filter((attachment) => attachment.type === "file");
+  // The queued message's own attachments come first, from the server; then staged ones.
+  const images: ComposerMediaItem[] = [
+    ...(editingAttachments ?? [])
+      .filter((attachment) => attachment.type === "image")
+      .map((attachment) => ({
+        id: attachment.id,
+        name: attachment.name,
+        src: editingImageUrls.get(attachment.id) ?? null,
+        onRemove: () => queuedEdit.removeEditingAttachment(attachment.id),
+      })),
+    ...stagedAttachments
+      .filter((attachment) => attachment.type === "image")
+      .map((attachment) => ({
+        id: attachment.id,
+        name: attachment.name,
+        src: attachment.path,
+        onRemove: () => removeComposerAttachment(promptKey, attachment.id),
+      })),
+  ];
+  const files: ComposerFileItem[] = [
+    ...(editingAttachments ?? [])
+      .filter((attachment) => attachment.type !== "image")
+      .map((attachment) => ({
+        id: attachment.id,
+        name: "name" in attachment ? String(attachment.name) : "attachment",
+        sizeBytes: "sizeBytes" in attachment ? Number(attachment.sizeBytes) : 0,
+        onRemove: () => queuedEdit.removeEditingAttachment(attachment.id),
+      })),
+    ...stagedAttachments
+      .filter((attachment) => attachment.type === "file")
+      .map((attachment) => ({
+        id: attachment.id,
+        name: attachment.name,
+        sizeBytes: attachment.sizeBytes,
+        onRemove: () => removeComposerAttachment(promptKey, attachment.id),
+      })),
+  ];
 
   // ── Context window ────────────────────────────────────────────────────
   const activeProviderThread = projection?.providerThreads.find(
@@ -1438,6 +1725,10 @@ function ComposerBody({
     // A key here proves editor focus even when focus moved without onFocus (focusElement).
     if (!appAtomRegistry.get(composerFocusAtom)) appAtomRegistry.set(composerFocusAtom, true);
     const plainEnter = key === "enter" && !ctrl && !mods.alt && !mods.shift;
+    // A choice-only question leaves the editor read-only: digits pick its options.
+    if (isChoiceOnlyPendingQuestion && !ctrl && !mods.alt && /^[1-9]$/.test(key ?? "") && handlePendingQuestionDigit(Number(key))) {
+      return true;
+    }
     if (stash.menuOpen && !menuIsOpen) {
       if (key === "escape") {
         stash.close();
@@ -1478,6 +1769,9 @@ function ComposerBody({
     if (key === "tab" && mods.shift && !ctrl && !mods.alt) {
       toggleInteractionMode();
       return true;
+    }
+    if (key === "up" || key === "down") {
+      return navigatePromptHistory(key === "up" ? "backward" : "forward", event);
     }
     if (plainEnter) {
       if (event.isHeld) return true;
@@ -1677,6 +1971,7 @@ function ComposerBody({
     return true;
   };
   const typeToFocus = (event: KeyEvent, eventRenderer: unknown) => {
+    if (consumeComposerSinkPasteKeystroke(event)) return true;
     const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
     const focusedId = (eventRenderer as { getFocusedElementId?: () => number | null } | undefined)?.getFocusedElementId?.();
     // A burst typed with nothing focused: the first key focused the editor, but GPUI had
@@ -1694,8 +1989,22 @@ function ComposerBody({
       editor.handleKey(event);
       return true;
     }
-    // Anything focused (a field, the terminal, this editor) keeps its own keys.
-    if (focusedId !== null && focusedId !== undefined) return false;
+    // A focused field or this editor keeps its own keys (web shouldRedirectInputToComposer);
+    // a focused row or control, or an element no longer on screen, does not.
+    const focus = focusKind(eventRenderer, editor?.id ?? null);
+    if (focus === "editable") return false;
+    // web ComposerPendingUserInputPanel: 1-9 pick an option when the key has no editor to go
+    // to: focus on a control (an option just clicked), or a question without a custom answer.
+    if (
+      !mods.ctrl &&
+      !mods.cmd &&
+      !mods.alt &&
+      /^[1-9]$/.test(event.key ?? "") &&
+      (focus === "control" || isChoiceOnlyPendingQuestion) &&
+      handlePendingQuestionDigit(Number(event.key))
+    ) {
+      return true;
+    }
     if (
       appAtomRegistry.get(terminalFocusAtom) ||
       appAtomRegistry.get(modelPickerOpenAtom) ||
@@ -1707,9 +2016,13 @@ function ComposerBody({
     }
     const isPaste = (mods.ctrl || mods.cmd) && !mods.alt && !mods.shift && event.key === "v";
     if (isPaste) {
-      void readClipboardText().then((text) => {
-        if (text.length > 0) appendToEditor(text);
-      });
+      void readClipboardText().then(
+        (text) => {
+          if (text.length === 0) onPasteNonText();
+          else if (!onPasteText(text.replace(/\r\n?/g, "\n"))) appendToEditor(text);
+        },
+        () => onPasteNonText(),
+      );
       return true;
     }
     if (mods.ctrl || mods.cmd || mods.alt || event.isHeld) return false;
@@ -1738,10 +2051,12 @@ function ComposerBody({
 
   const isPathQueryActive = () => trigger?.kind === "path";
   const onEditorFocus = () => {
+    typingGuard.onFocus();
     setFocused(true);
     appAtomRegistry.set(composerFocusAtom, true);
   };
   const onEditorBlur = () => {
+    typingGuard.onBlur();
     setFocused(false);
     setMobileExpanded(false);
     appAtomRegistry.set(composerFocusAtom, false);
@@ -1935,8 +2250,8 @@ function ComposerBody({
       isConnecting={phase === "connecting" && !isRunning && sending}
       isEnvironmentUnavailable={environmentUnavailable || noProviderAvailable}
       isPreparingWorktree={sending && target.kind === "draft" && draft.envMode === "worktree"}
-      hasSendableContent={composerSendState.hasSendableContent || draft.attachments.length > 0}
-      canResume={canResume && prompt.trim().length === 0 && draft.attachments.length === 0}
+      hasSendableContent={composerSendState.hasSendableContent || composerAttachments.length > 0}
+      canResume={canResume && prompt.trim().length === 0 && composerAttachments.length === 0}
       alternateModifier={false}
       isEditingQueuedMessage={queuedEdit.isEditing}
       alternateShortcutLabel={
@@ -1956,7 +2271,7 @@ function ComposerBody({
   );
 
   const surfaceBase = surfaceStyle(theme);
-  const collapsedResume = canResume && prompt.trim().length === 0 && draft.attachments.length === 0;
+  const collapsedResume = canResume && prompt.trim().length === 0 && composerAttachments.length === 0;
   // web ChatView showProviderSubagentBar: a provider-native subagent can't take messages,
   // so the composer gives way to a bar with its model, live status and "Open parent".
   if (shell && isProviderNativeSubagentThread(shell.source)) {
@@ -2091,6 +2406,7 @@ function ComposerBody({
         }}
       >
         <ThreadContextDragGhost />
+        {threadId ? <OptimisticMessageReconciler environmentId={environmentId} threadId={threadId} /> : null}
         <SurfaceHighlight />
         {stash.menuOpen && !menuIsOpen && surfaceWidth !== null ? (
           <ComposerCommandMenuLayer surfaceWidth={surfaceWidth}>
@@ -2130,7 +2446,7 @@ function ComposerBody({
               sending ||
               environmentUnavailable ||
               noProviderAvailable ||
-              (!collapsedResume && !(composerSendState.hasSendableContent || draft.attachments.length > 0))
+              (!collapsedResume && !(composerSendState.hasSendableContent || composerAttachments.length > 0))
             }
             onExpand={expandMobileComposer}
             onPrimary={() => {
@@ -2163,8 +2479,8 @@ function ComposerBody({
             gap: isResting ? 4 : 0,
           }}
         >
-          {!isResting ? <ComposerAttachmentMediaRow images={images} onRemove={(id) => removeComposerAttachment(draftKey, id)} /> : null}
-          {!isResting ? <ComposerAttachmentFileList files={files} onRemove={(id) => removeComposerAttachment(draftKey, id)} /> : null}
+          {!isResting ? <ComposerAttachmentMediaRow images={images} /> : null}
+          {!isResting ? <ComposerAttachmentFileList files={files} /> : null}
           <div style={{ position: "relative", flexGrow: 1, minWidth: 0 }}>
             <ComposerEditor
               ref={editorRef}
@@ -2184,6 +2500,8 @@ function ComposerBody({
               isPathQueryActive={isPathQueryActive}
               onChange={onEditorChange}
               onKeyCommand={onEditorKeyCommand}
+              onPasteText={onPasteText}
+              onPasteNonText={onPasteNonText}
               onFocus={onEditorFocus}
               onBlur={onEditorBlur}
             />
@@ -2333,6 +2651,36 @@ function CollapsedMobilePromptRow({
 
 const COLLAPSED_SEND_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3L8 13M8 3L4 7M8 3L12 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+/**
+ * web ChatView: an optimistic message leaves once the server's copy is in the thread. Only
+ * subscribes to the thread's items while one is pending, so streaming does not re-render
+ * the composer.
+ */
+function OptimisticMessageReconciler({ environmentId, threadId }: { environmentId: EnvironmentId; threadId: ThreadId }) {
+  const threadKey = useMemo(() => scopedThreadKey(scopeThreadRef(environmentId, threadId)), [environmentId, threadId]);
+  const pending = useAtomValue(optimisticMessagesAtom(threadKey));
+  if (pending.length === 0) return null;
+  return <OptimisticMessageWatcher environmentId={environmentId} threadId={threadId} threadKey={threadKey} />;
+}
+
+function OptimisticMessageWatcher({
+  environmentId,
+  threadId,
+  threadKey,
+}: {
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  threadKey: string;
+}) {
+  const items = useAtomValue(environmentThreadDetails.visibleTurnItemsAtom(scopeThreadRef(environmentId, threadId)));
+  useEffect(() => {
+    const committed = new Set<string>();
+    for (const { item } of items) if (item.type === "user_message") committed.add(item.messageId);
+    if (committed.size > 0) removeOptimisticMessages(threadKey, (message) => committed.has(message.id));
+  }, [items, threadKey]);
+  return null;
+}
 
 /**
  * web ComposerSurface.ContextStrip: a strip under the composer, inset 22px a side, whose top

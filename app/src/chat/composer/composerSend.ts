@@ -39,6 +39,7 @@ import {
   type UploadChatAttachment,
 } from "@t3tools/contracts";
 import { imageMimeType } from "@t3tools/shared/image";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 
@@ -46,11 +47,17 @@ import { appAtomRegistry } from "../../runtime/runtime.ts";
 import {
   type ComposerAttachmentDraft,
   type DraftThreadEnvMode,
+  addOptimisticMessage,
   clearComposerContent,
+  deleteComposerDraft,
+  readComposerDraft,
+  draftIdOfKey,
+  removeOptimisticMessages,
   composerAttachmentEnvironment,
   restoreComposerContent,
 } from "../../state/composer.ts";
 import { buildComposerMessageContext } from "../../web/lib/composerContextRecords.ts";
+import { approvalRedirectNotice } from "../../web/components/chat/composerSend.logic.ts";
 import type { TerminalContextDraft } from "../../web/lib/terminalContext.ts";
 import type { ReviewCommentContext } from "../../web/reviewCommentContext.ts";
 import {
@@ -260,6 +267,9 @@ export interface ComposerSendInput {
   /** Shown approvals a redirecting send declines first (web: approvalsToDecline). */
   readonly approvalsToDecline?: ReadonlyArray<ThreadPendingApproval>;
   readonly respondToApproval?: ApprovalResponder;
+  /** The thread's pending approvals and those being answered, read live (web refs). */
+  readonly readPendingApprovalIds?: () => ReadonlyArray<string>;
+  readonly readRespondingApprovalIds?: () => ReadonlyArray<string>;
   /** Implements a proposed plan (web: sourceProposedPlan). */
   readonly sourceProposedPlan?: { readonly threadId: ThreadId; readonly planId: string };
   /**
@@ -268,6 +278,8 @@ export interface ComposerSendInput {
    * `backgroundProjectId` once the send lands (send and new thread).
    */
   readonly background?: { readonly projectId: ProjectId | null };
+  /** A run is in progress: a queued send waits behind it instead of showing in the timeline. */
+  readonly running?: boolean;
 }
 
 export async function sendComposerMessage(input: ComposerSendInput): Promise<boolean> {
@@ -286,15 +298,73 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
     reviewComments: input.reviewComments ?? [],
     threadContexts: input.threadContexts ?? [],
   });
+  // web useComposerSend: a message sent over approvals declines them first, and only goes
+  // out if it is still the message the user sent, no approval was already being answered,
+  // and no new approval arrived meanwhile. Otherwise the draft stays for the next send.
+  const approvalsToDecline = input.approvalsToDecline ?? [];
+  if (approvalsToDecline.length > 0 && input.respondToApproval) {
+    const attachmentIdsAtSend = input.attachments.map((attachment) => attachment.id).join("\n");
+    const draftChangedSinceSend = () => {
+      const live = readComposerDraft(input.draftKey);
+      return live.prompt !== input.prompt || live.attachments.map((attachment) => attachment.id).join("\n") !== attachmentIdsAtSend;
+    };
+    const changedBeforeDecline = draftChangedSinceSend();
+    const pendingIdsBeforeDecline = input.readPendingApprovalIds?.() ?? approvalsToDecline.map((approval) => approval.requestId);
+    const responding = input.readRespondingApprovalIds?.() ?? [];
+    const approvalResponding = approvalsToDecline.some((approval) => responding.includes(approval.requestId));
+    const declined =
+      !changedBeforeDecline &&
+      !approvalResponding &&
+      (await declinePendingApprovals(approvalsToDecline, input.respondToApproval).catch(() => false));
+    const draftChanged = changedBeforeDecline || draftChangedSinceSend();
+    const approvalArrived = (input.readPendingApprovalIds?.() ?? []).some((id) => !pendingIdsBeforeDecline.includes(id));
+    if (!declined || draftChanged || approvalArrived) {
+      appAtomRegistry.set(sendingAtom, false);
+      const notice = approvalRedirectNotice({ draftChanged, declined, approvalResponding, approvalArrived });
+      if (notice !== null) toast({ type: "info", title: notice, description: "Send again when it's ready." });
+      else if (!declined) toast({ type: "error", title: "Couldn't decline the pending approval.", description: "Send again when it's ready." });
+      return false;
+    }
+  }
   // Clear first, like web: the prompt leaves the composer the moment the user sends.
   clearComposerContent(input.draftKey);
   const createdAt = new Date().toISOString();
+  const messageId = MessageId.make(newId());
+  // web useComposerSend: the message shows in the thread at once, before uploads and the
+  // server round trip; images preview from their local files until the server's copy lands.
+  const optimisticThreadKey =
+    input.target.kind === "thread" ? scopedThreadKey(scopeThreadRef(input.environmentId, input.target.threadId)) : null;
+  if (optimisticThreadKey !== null) {
+    addOptimisticMessage(optimisticThreadKey, {
+      id: messageId,
+      role: "user",
+      text: input.outgoingText,
+      ...(input.attachments.length > 0
+        ? {
+            attachments: input.attachments.map((attachment) => ({
+              type: attachment.type,
+              id: attachment.id as never,
+              name: attachment.name,
+              mimeType: attachment.mimeType,
+              sizeBytes: attachment.sizeBytes,
+              ...(attachment.type === "image" ? { previewUrl: attachment.path } : {}),
+            })),
+          }
+        : {}),
+      ...(messageContext ? { context: messageContext } : {}),
+      runId: null,
+      streaming: false,
+      createdAt,
+      updatedAt: createdAt,
+      ...(input.running && input.dispatchMode === "queue"
+        ? { inputIntent: "queued_turn" as const }
+        : input.running && input.dispatchMode === "steer"
+          ? { inputIntent: "steer" as const }
+          : {}),
+    });
+  }
   let failure: string | null = null;
   try {
-    if (input.approvalsToDecline && input.approvalsToDecline.length > 0 && input.respondToApproval) {
-      const declined = await declinePendingApprovals(input.approvalsToDecline, input.respondToApproval);
-      if (!declined) throw new Error("Couldn't decline the pending approval. Send again when it's ready.");
-    }
     if (input.target.kind === "thread") {
       const { threadId } = input.target;
       if (input.runtimeMode !== input.target.currentRuntimeMode) {
@@ -312,6 +382,13 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
         if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       }
     }
+    // web planComposerTurn: a worktree draft with a worktree already picked (a previous
+    // one) runs there; only a draft with no path creates one, and that needs a base branch.
+    const shouldCreateWorktree =
+      input.target.kind === "draft" && input.target.envMode === "worktree" && !input.target.worktreePath;
+    if (shouldCreateWorktree && input.target.kind === "draft" && !input.target.branch) {
+      throw new Error("Select a base branch before sending in New worktree mode.");
+    }
     const attachments = await prepareTurnAttachments(input.environmentId, input.attachments);
     const title = deriveThreadTitleSeed({ text: input.prompt, attachments: input.attachments });
     const threadId =
@@ -326,10 +403,10 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
               runtimeMode: input.runtimeMode,
               interactionMode: input.interactionMode,
               branch: input.target.branch,
-              worktreePath: input.target.envMode === "worktree" ? null : input.target.worktreePath,
+              worktreePath: input.target.worktreePath,
               createdAt,
             },
-            ...(input.target.envMode === "worktree" && input.target.branch
+            ...(shouldCreateWorktree && input.target.branch
               ? {
                   prepareWorktree: {
                     projectCwd: input.target.projectCwd,
@@ -349,7 +426,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
         input: {
           threadId,
           message: {
-            messageId: MessageId.make(newId()),
+            messageId,
             role: "user",
             text: input.outgoingText,
             ...(messageContext ? { context: messageContext } : {}),
@@ -370,14 +447,24 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
       { reportFailure: false },
     );
     if (result._tag === "Failure") {
-      if (isAtomCommandInterrupted(result)) return false;
+      if (isAtomCommandInterrupted(result)) {
+        if (optimisticThreadKey !== null) removeOptimisticMessages(optimisticThreadKey, (message) => message.id === messageId);
+        return false;
+      }
       throw squashAtomCommandFailure(result);
+    }
+    // A queued message waits in the queue control, never in the timeline.
+    if (optimisticThreadKey !== null && input.running && input.dispatchMode === "queue") {
+      removeOptimisticMessages(optimisticThreadKey, (message) => message.id === messageId);
     }
     if (input.background) {
       finishBackgroundSend(input.environmentId, input.target.kind, threadId, input.background.projectId);
     } else if (input.target.kind === "draft") {
       appAtomRegistry.set(routeAtom, { kind: "thread", environmentId: input.environmentId, threadId });
     }
+    // A further draft of the project has become its thread; the first draft stays as the
+    // project's empty new-thread composer.
+    if (input.target.kind === "draft" && draftIdOfKey(input.draftKey) && !input.background) deleteComposerDraft(input.draftKey);
     return true;
   } catch (error) {
     failure = errorMessage(error);
@@ -385,6 +472,7 @@ export async function sendComposerMessage(input: ComposerSendInput): Promise<boo
   } finally {
     appAtomRegistry.set(sendingAtom, false);
     if (failure !== null) {
+      if (optimisticThreadKey !== null) removeOptimisticMessages(optimisticThreadKey, (message) => message.id === messageId);
       restoreComposerContent(input.draftKey, snapshot);
       appAtomRegistry.set(composerSendErrorAtom(input.draftKey), failure);
       toast({
