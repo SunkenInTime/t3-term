@@ -27,7 +27,10 @@ import {
   segmentsFor,
   useMonoCharWidth,
   wrapLine,
+  type SegmentMark,
 } from "../code/codeRows.tsx";
+import { DiffFindBar, type DiffFindOption } from "./DiffFindBar.tsx";
+import { collectDiffMatches, findSameMatch, type DiffSearchMatch, type DiffSearchParams } from "./diffSearch.ts";
 import { requestSyntaxTokens, peekSyntaxTokens, type SyntaxLines } from "../code/highlighter.ts";
 import { EXPAND_BOTH, EXPAND_DOWN, EXPAND_UP, FILE_ADDED, FILE_DELETED, FILE_MODIFIED, FILE_MOVED } from "./pierreIcons.ts";
 import { useListWindow } from "../code/listWindow.ts";
@@ -58,6 +61,8 @@ function wasConsumed(event: EventPayload): boolean {
   return consumed !== null && consumed.x === Number(event.x ?? 0) && consumed.y === Number(event.y ?? 0) && Date.now() - consumed.at < 500;
 }
 const HEADER_HEIGHT = 32;
+const NO_MARKS: ReadonlyArray<SegmentMark> = [];
+const isMac = process.platform === "darwin";
 const SEPARATOR_HEIGHT = 24;
 const BLOCK_GAP = 8;
 
@@ -179,6 +184,7 @@ export function DiffView(props: DiffViewProps) {
   const palette = diffPalette(theme);
   const { width: ch, probe } = useMonoCharWidth();
   const [width, setWidth] = useState(0);
+  const [height, setHeight] = useState(0);
   const { listRef, start, onVisibleRange, reset, topIndex } = useListWindow(WINDOW);
   const [visible, setVisible] = useState<{ start: number; end: number }>({ start: 0, end: 0 });
   const [scrollX, setScrollX] = useState(0);
@@ -186,6 +192,19 @@ export function DiffView(props: DiffViewProps) {
   const requested = useRef(new WeakSet<DiffFileModel>());
 
   const renderer = useGpuixRequired();
+  const rootRef = useRef<{ id: number } | null>(null);
+
+  // Find in diff (CodeViewSearch): Ctrl/Cmd+F in the diff opens the panel.
+  const findEnabled = !props.inline;
+  const [findOpen, setFindOpen] = useState(false);
+  const [findParams, setFindParams] = useState<DiffSearchParams>({ text: "", caseSensitive: false, wholeWord: false, regex: false });
+  const [findCurrent, setFindCurrent] = useState<number | null>(null);
+  const [findReveal, setFindReveal] = useState<{ index: number; id: number } | null>(null);
+  const [findFocusId, setFindFocusId] = useState(0);
+  const findMatches = useMemo(
+    () => (findOpen ? collectDiffMatches(props.files, findParams) : []),
+    [findOpen, props.files, findParams],
+  );
   const comments = useDiffComments(props.files, props.comments ?? null);
   const [hovered, setHovered] = useState<{ key: string; side: "old" | "new"; via: "gutter" | "button" } | null>(null);
   const hover = (key: string, side: "old" | "new", via: "gutter" | "button") =>
@@ -250,6 +269,108 @@ export function DiffView(props: DiffViewProps) {
     () => buildDiffRows(props.files, props.layout, props.collapsed, annotations),
     [props.files, props.layout, props.collapsed, annotations],
   );
+
+  const rowIndexByLine = useMemo(() => {
+    const byLine = new Map<DiffLine, number>();
+    rows.forEach((row, index) => {
+      if (row.type === "line") byLine.set(row.cell.line, index);
+      else if (row.type === "split") {
+        if (row.left && !byLine.has(row.left.line)) byLine.set(row.left.line, index);
+        if (row.right && !byLine.has(row.right.line)) byLine.set(row.right.line, index);
+      }
+    });
+    return byLine;
+  }, [rows]);
+
+  // ::highlight(diffs-search-match) #ff963266 / (diffs-search-focus) the modified blue at 45%.
+  const matchColor = theme.appearance === "dark" ? "#ff963266" : "#ff963288";
+  const focusColor = alpha(palette.modified, 0.45);
+  const marksByLine = useMemo(() => {
+    const byLine = new Map<DiffLine, SegmentMark[]>();
+    findMatches.forEach((match, index) => {
+      const list = byLine.get(match.line) ?? [];
+      list.push({ start: match.start, end: match.end, color: index === findCurrent ? focusColor : matchColor });
+      byLine.set(match.line, list);
+    });
+    return byLine;
+  }, [findMatches, findCurrent, focusColor, matchColor]);
+  const marksFor = (line: DiffLine | null | undefined) => (line ? (marksByLine.get(line) ?? NO_MARKS) : NO_MARKS);
+
+  // A query or option change keeps the current match when it survives, else starts at the
+  // first match at or below the top of the viewport (getFirstVisibleSearchMatchIndex).
+  const previousMatch = useRef<DiffSearchMatch | null>(null);
+  useEffect(() => {
+    if (!findOpen) return;
+    if (findMatches.length === 0) {
+      setFindCurrent(null);
+      return;
+    }
+    const kept = previousMatch.current ? findSameMatch(findMatches, previousMatch.current) : -1;
+    if (kept >= 0) {
+      setFindCurrent(kept);
+      return;
+    }
+    let first = findMatches.findIndex((match) => (rowIndexByLine.get(match.line) ?? -1) >= visible.start);
+    if (first < 0) first = 0;
+    setFindCurrent(first);
+    setFindReveal((current) => ({ index: first, id: (current?.id ?? 0) + 1 }));
+  }, [findMatches]);
+  useEffect(() => {
+    previousMatch.current = findCurrent === null ? null : (findMatches[findCurrent] ?? null);
+  }, [findCurrent, findMatches]);
+
+  const navigateFind = (previous: boolean) => {
+    if (findMatches.length === 0) return;
+    const base = findCurrent ?? (previous ? 0 : -1);
+    const next = (base + (previous ? -1 : 1) + findMatches.length) % findMatches.length;
+    setFindCurrent(next);
+    setFindReveal((current) => ({ index: next, id: (current?.id ?? 0) + 1 }));
+  };
+  const closeFind = () => {
+    setFindOpen(false);
+    setFindCurrent(null);
+    setFindReveal(null);
+    if (rootRef.current) renderer.focusElement?.(rootRef.current.id);
+  };
+  const openFind = () => {
+    if (!findEnabled) return;
+    setFindOpen(true);
+    // Reopening refocuses the input (pierre's open() on a live panel).
+    setFindFocusId((id) => id + 1);
+  };
+
+  // revealSearchMatch: unfold the match's file, then bring its line on screen (centred below
+  // the sticky header and the panel) unless it is already fully visible; with wrapping off,
+  // pan the code so the match is in view.
+  const handledFindReveal = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    if (!findReveal || handledFindReveal.current === findReveal.id || listRef.current === null) return;
+    const match = findMatches[findReveal.index];
+    if (!match) return;
+    if (props.collapsed.has(match.file.path)) {
+      props.onToggleFile(match.file.path);
+      return;
+    }
+    const index = rowIndexByLine.get(match.line);
+    if (index === undefined) return;
+    handledFindReveal.current = findReveal.id;
+    const inView = index >= visible.start + 3 && index <= visible.end - 2;
+    if (!inView) {
+      reset(Math.max(0, index - Math.floor(WINDOW / 4)));
+      renderer.scrollToItem?.(listRef.current.id, index, -Math.max(0, Math.round(height / 2 - CODE_LINE_HEIGHT / 2)));
+    }
+    if (!props.wrap && ch > 0) {
+      const codeWidth = contentWidth - gutterWidth(match.file.numberDigits, ch) - 2 - 2 * ch;
+      const left = match.start * ch;
+      const right = match.end * ch;
+      const padding = 24;
+      setScrollX((current) => {
+        if (left < current + padding) return Math.max(0, left - padding);
+        if (right > current + codeWidth - padding) return Math.min(maxScrollX, right - codeWidth + padding);
+        return current;
+      });
+    }
+  }, [findReveal, rows, findMatches]);
 
   // The file tree's reveal: put the file's header at the top of the list.
   const handledReveal = useRef<number | null>(null);
@@ -324,10 +445,38 @@ export function DiffView(props: DiffViewProps) {
 
   return (
     <div
+      ref={rootRef as never}
       testId="diff-view"
+      {...(findEnabled ? { tabIndex: 0 } : {})}
+      onKeyDown={(event) => {
+        if (!findEnabled) return;
+        const key = (event.key ?? "").toLowerCase();
+        const mods = event.modifiers ?? { shift: false, ctrl: false, alt: false, cmd: false };
+        const primary = isMac ? mods.cmd : mods.ctrl;
+        // Before the window's chat.find: in the diff, Ctrl/Cmd+F searches the diff.
+        if (primary && !mods.alt && !mods.shift && key === "f") {
+          event.preventDefault();
+          event.stopPropagation();
+          openFind();
+          return;
+        }
+        if (!findOpen) return;
+        const findAgain = key === "f3" || (isMac && mods.cmd && key === "g");
+        if (findAgain) {
+          event.preventDefault();
+          event.stopPropagation();
+          navigateFind(mods.shift);
+        } else if (key === "escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          closeFind();
+        }
+      }}
       onLayout={(event) => {
         const next = Math.floor(Number(event.width ?? 0));
         if (next > 0 && next !== width) setWidth(next);
+        const nextHeight = Math.floor(Number(event.height ?? 0));
+        if (nextHeight !== height) setHeight(nextHeight);
       }}
       onMouseUp={() => comments.pointerUp()}
       onScroll={(event: EventPayload) => {
@@ -366,6 +515,9 @@ export function DiffView(props: DiffViewProps) {
               selected={comments.selectedLines}
               interaction={interaction}
               draftText={row.type === "annotation" && row.annotation.entries.some((entry) => entry.kind === "draft") ? comments.draftText : ""}
+              marks={row.type === "line" ? marksFor(row.cell.line) : NO_MARKS}
+              leftMarks={row.type === "split" ? marksFor(row.left?.line) : NO_MARKS}
+              rightMarks={row.type === "split" ? marksFor(row.right?.line) : NO_MARKS}
             />
           ))}
         </div>
@@ -404,6 +556,9 @@ export function DiffView(props: DiffViewProps) {
               selected={comments.selectedLines}
               interaction={interaction}
               draftText={row.type === "annotation" && row.annotation.entries.some((entry) => entry.kind === "draft") ? comments.draftText : ""}
+              marks={row.type === "line" ? marksFor(row.cell.line) : NO_MARKS}
+              leftMarks={row.type === "split" ? marksFor(row.left?.line) : NO_MARKS}
+              rightMarks={row.type === "split" ? marksFor(row.right?.line) : NO_MARKS}
             />
           ))}
         </virtual-list>
@@ -418,6 +573,23 @@ export function DiffView(props: DiffViewProps) {
             onToggleFile={props.onToggleFile}
             onOpenFile={props.onOpenFile}
             {...(props.renderHeaderExtras ? { extras: props.renderHeaderExtras(stickyFile) } : {})}
+          />
+        </div>
+      ) : null}
+      {findOpen ? (
+        // [data-search-panel]: sticky at the top right of the viewport, below the sticky file
+        // header (getStickyHeaderOffset). Painted after the list and the sticky header so it
+        // sits over both.
+        <div style={{ position: "absolute", top: HEADER_HEIGHT + 8, right: 32, display: "flex" }}>
+          <DiffFindBar
+            key={findFocusId}
+            params={findParams}
+            matchCount={findMatches.length}
+            current={findCurrent}
+            onQueryChange={(text) => setFindParams((current) => ({ ...current, text }))}
+            onToggle={(option: DiffFindOption) => setFindParams((current) => ({ ...current, [option]: !current[option] }))}
+            onNavigate={navigateFind}
+            onClose={closeFind}
           />
         </div>
       ) : null}
@@ -440,6 +612,10 @@ const DiffRowView = memo(function DiffRowView(props: {
   selected: ReadonlySet<DiffLine>;
   interaction: RowInteraction;
   draftText: string;
+  /** Find matches on this row's line (stacked) or on each side (split). */
+  marks: ReadonlyArray<SegmentMark>;
+  leftMarks: ReadonlyArray<SegmentMark>;
+  rightMarks: ReadonlyArray<SegmentMark>;
 }) {
   const { row, palette } = props;
   const gutterProps = (side: "old" | "new", cellSide: "old" | "new" | "any", line: DiffLine) => ({
@@ -531,6 +707,7 @@ const DiffRowView = memo(function DiffRowView(props: {
             tokens={props.tokens}
             palette={palette}
             rows={null}
+            marks={props.marks}
             interaction={gutterProps(row.cell.line.kind === "deletion" ? "old" : "new", "any", row.cell.line)}
           />
         </div>
@@ -555,6 +732,7 @@ const DiffRowView = memo(function DiffRowView(props: {
             tokens={props.tokens}
             palette={palette}
             rows={rowCount}
+            marks={which === "old" ? props.leftMarks : props.rightMarks}
             interaction={gutterProps(which, which, cell.line)}
           />
         ) : (
@@ -591,6 +769,7 @@ function LineCellView(props: {
   palette: DiffPalette;
   /** Split rows pass the taller side's row count so both halves match. */
   rows: number | null;
+  marks: ReadonlyArray<SegmentMark>;
   interaction: GutterInteraction;
 }) {
   const { cell, palette } = props;
@@ -651,7 +830,7 @@ function LineCellView(props: {
             ) : (
               <CodeRun
                 key={index}
-                segments={segmentsFor(line.text, tokens, range[0], range[1], cell.emphasis, palette.fg)}
+                segments={segmentsFor(line.text, tokens, range[0], range[1], cell.emphasis, palette.fg, props.marks)}
                 {...(emphasisColor ? { emphasisColor } : {})}
               />
             ),
