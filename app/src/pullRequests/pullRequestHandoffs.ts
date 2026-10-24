@@ -18,7 +18,6 @@ import { startNewThread } from "../palette/actions.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
 import {
   addComposerReviewComment,
-  composerTargetKey,
   focusComposer,
   readComposerDraft,
   setDraftWorkspace,
@@ -65,13 +64,12 @@ export function writeTaskToComposer(draftKey: string, task: PullRequestThreadTas
   for (const comment of task.reviewComments ?? []) addComposerReviewComment(draftKey, comment);
 }
 
-export function openThreadWithTask(projectRef: ScopedProjectRef, task: PullRequestThreadTask): void {
-  startNewThread(projectRef);
-  writeTaskToComposer(
-    composerTargetKey({ kind: "draft", environmentId: projectRef.environmentId, projectId: projectRef.projectId }),
-    task,
-  );
+/** Returns the composer key of the new draft (suffixed when the project's first draft has content). */
+export function openThreadWithTask(projectRef: ScopedProjectRef, task: PullRequestThreadTask): string {
+  const draftKey = startNewThread(projectRef);
+  writeTaskToComposer(draftKey, task);
   focusComposer();
+  return draftKey;
 }
 
 export function startPullRequestAsk(
@@ -92,13 +90,13 @@ export function startPullRequestAsk(
     });
     return;
   }
-  openThreadWithTask(projectRef, task);
+  const draftKey = openThreadWithTask(projectRef, task);
   const keepGuide = options?.keepGuide;
   if (keepGuide) {
     // web: the pull request reopens on its Guide beside the new draft, so the reader can keep
     // walking the guide while the question waits to be sent.
     appAtomRegistry.set(draftPullRequestPaneAtom, {
-      draftKey: composerTargetKey({ kind: "draft", environmentId: projectRef.environmentId, projectId: projectRef.projectId }),
+      draftKey,
       environmentId: keepGuide.environmentId,
       reference: keepGuide.reference,
       tab: "guide",
@@ -152,9 +150,9 @@ export async function runPullRequestCheckoutHandoff(handoff: PullRequestCheckout
     runAtomCommand(appAtomRegistry, gitEnvironment.preparePullRequestThread, { environmentId, input }, { reportFailure: false }),
   );
   if (prepared instanceof PullRequestDryRunError && SIMULATE_DRY_RUN_CHECKOUT) {
-    startNewThread(projectRef);
+    const draftKey = startNewThread(projectRef);
     if (task !== null) {
-      writeTaskToComposer(composerTargetKey({ kind: "draft", environmentId: projectRef.environmentId, projectId: projectRef.projectId }), task);
+      writeTaskToComposer(draftKey, task);
       focusComposer();
     }
     updateToast(toastId, { type: "info", title: "Dry run: checkout recorded, not run", description: "The task is in the composer of a thread on the current workspace. Nothing was checked out." });
@@ -171,8 +169,7 @@ export async function runPullRequestCheckoutHandoff(handoff: PullRequestCheckout
     });
     return;
   }
-  startNewThread(projectRef);
-  const draftKey = composerTargetKey({ kind: "draft", environmentId: projectRef.environmentId, projectId: projectRef.projectId });
+  const draftKey = startNewThread(projectRef);
   setDraftWorkspace(draftKey, {
     envMode: prepared.value.worktreePath === null ? "local" : "worktree",
     branch: prepared.value.branch,
