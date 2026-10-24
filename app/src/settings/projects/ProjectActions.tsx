@@ -823,7 +823,7 @@ export function ProjectActionsSettings() {
                 )}
               >
                 <MenuLabel>Import from t3.json</MenuLabel>
-                <div style={{ paddingLeft: 8, paddingRight: 8, paddingBottom: 8, maxWidth: 288 }}>
+                <div style={{ paddingLeft: 8, paddingRight: 8, paddingBottom: 8 }}>
                   <Text size="sm" color={theme.mutedForeground}>
                     Add actions declared by this checkout without editing them first.
                   </Text>
