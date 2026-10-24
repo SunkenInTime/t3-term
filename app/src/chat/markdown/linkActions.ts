@@ -10,6 +10,7 @@ import { executeAtomQuery, isAtomCommandInterrupted, runAtomCommand, squashAtomC
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { mediaFileReference } from "@t3tools/client-runtime/media-reference";
 import {
+  AuthFilesystemReadScope,
   AuthOrchestrationOperateScope,
   AuthPreviewOperateScope,
   EDITORS,
@@ -17,10 +18,20 @@ import {
   type EnvironmentId,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
+import {
+  WORKSPACE_BASENAME_LOOKUP_LIMIT,
+  needsWorkspaceBasenameLookup,
+  pickStrippedWorkspaceMatch,
+  pickWorkspaceBasenameMatch,
+  stripRepeatedWorkspacePrefix,
+  type WorkspaceEntryCandidate,
+} from "@t3tools/client-runtime/workspace-basename-lookup";
+import { resolveWorkspaceFilePath } from "@t3tools/shared/path";
 import * as Option from "effect/Option";
 
 import { appAtomRegistry } from "../../runtime/runtime.ts";
-import { environmentSession, serverEnvironment, shellEnvironment } from "../../state/environment.ts";
+import { environmentSession, projectEnvironment, serverEnvironment, shellEnvironment } from "../../state/environment.ts";
+import { filesystemEnvironment } from "../../state/palette.ts";
 import { preferredEditorPref } from "../../state/git.ts";
 import { isPreviewAvailableFor, openPreviewSession, previewEnvironment } from "../../state/preview.ts";
 import { rightPanelActions } from "../../state/rightPanel.ts";
@@ -29,7 +40,7 @@ import { toast } from "../../ui/toast.tsx";
 import { readRemoteOpenState } from "../details/WorkspaceRows.tsx";
 import { openInEditorMenuLabel } from "../../web/editorLabels.ts";
 import { revealInFileExplorerLabelForKind, revealInFileExplorerLabelForOs } from "../../web/components/preview/fileExplorerLabel.ts";
-import { markdownFileEditorTarget, resolveMarkdownFileHostPath } from "../../web/markdownFileHostPath.ts";
+import { markdownFileCopyPaths, markdownFileEditorTarget, resolveMarkdownFileHostPath } from "../../web/markdownFileHostPath.ts";
 import type { MarkdownFileLinkMeta } from "../../web/markdown-links.ts";
 import { openTerminalLinkInPreview, type OpenPreviewMutation } from "../../web/components/preview/openTerminalLinkInPreview.ts";
 import { readEnvironmentScope } from "../../web/state/session.ts";
@@ -80,9 +91,54 @@ function failureToast(title: string, error: unknown) {
   toast({ type: "error", title, description: error instanceof Error ? error.message : "An error occurred." });
 }
 
-async function hostPathFor(meta: MarkdownFileLinkMeta, cwd: string | undefined) {
-  // web looks a bare basename up in the workspace first; without that search the link's own path stands.
-  return resolveMarkdownFileHostPath({ meta, cwd, findWorkspaceMatch: async () => null });
+/**
+ * web ChatMarkdown findWorkspaceFileMatch: a bare basename (`Foo.ts`) is looked
+ * up in the workspace, and a path that repeats the project's own folders
+ * (`apps/web/src/x.ts` inside `apps/web`) is matched with them stripped, but
+ * only when the literal path does not exist on the host.
+ */
+export async function findWorkspaceFileMatch(
+  environmentId: EnvironmentId | null,
+  meta: MarkdownFileLinkMeta,
+  cwd: string | undefined,
+): Promise<string | null> {
+  const workspaceRelativePath = meta.workspaceLookupPath;
+  if (!workspaceRelativePath || !cwd || environmentId === null || !readEnvironmentScope(environmentId, AuthFilesystemReadScope)) {
+    return null;
+  }
+  const isBasename = needsWorkspaceBasenameLookup(workspaceRelativePath);
+  const strippedPath = isBasename ? null : stripRepeatedWorkspacePrefix(workspaceRelativePath, cwd);
+  if (!isBasename && strippedPath === null) return null;
+  const result = await executeAtomQuery(
+    appAtomRegistry,
+    projectEnvironment.searchEntries({
+      environmentId,
+      input: { cwd, query: strippedPath ?? workspaceRelativePath, limit: WORKSPACE_BASENAME_LOOKUP_LIMIT, kind: "file" },
+    } as never) as never,
+    { label: "markdown file link lookup", reportFailure: false },
+  );
+  if (result._tag !== "Success") return null;
+  const entries = (result.value as { entries: ReadonlyArray<WorkspaceEntryCandidate> }).entries;
+  if (strippedPath === null) return pickWorkspaceBasenameMatch(workspaceRelativePath, entries);
+  const match = pickStrippedWorkspaceMatch(strippedPath, cwd, entries);
+  if (match === null) return null;
+  // Search can be truncated or still scanning, so it cannot rule out the
+  // literal path. Check the host before redirecting to the stripped match.
+  const metadata = await executeAtomQuery(
+    appAtomRegistry,
+    filesystemEnvironment.getMetadata({ environmentId, input: { paths: [resolveWorkspaceFilePath(workspaceRelativePath, cwd)] } } as never) as never,
+    { label: "markdown file link metadata", reportFailure: false },
+  );
+  return metadata._tag === "Success" && (metadata.value as { entries: ReadonlyArray<unknown> }).entries[0] === null ? match : null;
+}
+
+export async function hostPathFor(environmentId: EnvironmentId | null, meta: MarkdownFileLinkMeta, cwd: string | undefined) {
+  return resolveMarkdownFileHostPath({ meta, cwd, findWorkspaceMatch: () => findWorkspaceFileMatch(environmentId, meta, cwd) });
+}
+
+/** web resolveCopyPaths: the copy menu's paths, after the workspace lookup. */
+export async function resolveCopyPaths(environmentId: EnvironmentId | null, meta: MarkdownFileLinkMeta, cwd: string | undefined) {
+  return markdownFileCopyPaths(meta, await hostPathFor(environmentId, meta, cwd), cwd);
 }
 
 export async function openFileInEditor(environmentId: EnvironmentId, meta: MarkdownFileLinkMeta, cwd: string | undefined) {
@@ -91,7 +147,7 @@ export async function openFileInEditor(environmentId: EnvironmentId, meta: Markd
     toast({ type: "error", title: "No editor available", description: meta.targetPath });
     return;
   }
-  const target = markdownFileEditorTarget(meta, await hostPathFor(meta, cwd));
+  const target = markdownFileEditorTarget(meta, await hostPathFor(environmentId, meta, cwd));
   const result = await runAtomCommand(appAtomRegistry, shellEnvironment.openInEditor, { environmentId, input: { cwd: target, editor } });
   if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) failureToast("Unable to open file", squashAtomCommandFailure(result));
 }
@@ -101,7 +157,7 @@ export async function revealFileInFileManager(environmentId: EnvironmentId, meta
     failureToast("Unable to reveal file", new Error("This connection cannot reveal files on this environment."));
     return;
   }
-  const { absolutePath } = await hostPathFor(meta, cwd);
+  const { absolutePath } = await hostPathFor(environmentId, meta, cwd);
   const result = await runAtomCommand(appAtomRegistry, shellEnvironment.openInEditor, {
     environmentId,
     input: { cwd: absolutePath, editor: "file-manager", reveal: true },
