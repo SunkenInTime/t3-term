@@ -1743,8 +1743,9 @@ function ComposerBody({
     return accepted;
   };
   const removeStagedAttachment = (attachmentId: string) => {
+    const removed = readComposerDraft(attachmentKey).attachments.find((attachment) => attachment.id === attachmentId);
     removeComposerAttachment(attachmentKey, attachmentId);
-    releaseAttachmentUpload(attachmentId);
+    releaseAttachmentUpload(attachmentId, removed);
   };
   // web compressAndStoreImages: images are converted (HEIC) or shrunk to the provider's limit
   // before they are staged; a send meanwhile waits, or the image would miss the turn.
@@ -1870,7 +1871,8 @@ function ComposerBody({
     if (!uploadsEnabled || !connectionReady) return;
     for (const attachment of visibleStaged) {
       if (appAtomRegistry.get(attachmentUploadStateAtom(attachment.id)) !== null) continue;
-      if (!NodeFs.existsSync(attachment.path)) continue;
+      // A file uploaded in an earlier run is checked on the server even if its bytes are gone.
+      if (!NodeFs.existsSync(attachment.path) && attachment.uploadedAttachmentId === undefined) continue;
       void startAttachmentUpload(environmentId, attachment);
     }
   }, [visibleStaged, environmentId, uploadsEnabled, connectionReady]);
@@ -1882,6 +1884,7 @@ function ComposerBody({
           .filter(
             (attachment) =>
               !NodeFs.existsSync(attachment.path) &&
+              attachment.uploadedAttachmentId === undefined &&
               appAtomRegistry.get(attachmentUploadStateAtom(attachment.id))?.status !== "ready",
           )
           .map((attachment) => attachment.id),

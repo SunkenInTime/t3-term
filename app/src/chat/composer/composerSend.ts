@@ -114,7 +114,11 @@ export async function prepareTurnAttachments(
     throw new Error(`You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`);
   }
   for (const attachment of attachments) {
-    if (!NodeFs.existsSync(attachment.path) && appAtomRegistry.get(attachmentUploadStateAtom(attachment.id))?.status !== "ready") {
+    if (
+      !NodeFs.existsSync(attachment.path) &&
+      attachment.uploadEnvironmentId !== environmentId &&
+      appAtomRegistry.get(attachmentUploadStateAtom(attachment.id))?.status !== "ready"
+    ) {
       throw new Error(`'${attachment.name}' is no longer on disk. Remove it and attach it again.`);
     }
   }

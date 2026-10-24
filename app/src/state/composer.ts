@@ -177,9 +177,10 @@ function loadPersisted(): PersistedDrafts {
       drafts[key] = {
         ...EMPTY_COMPOSER_DRAFT,
         ...draft,
-        // Paths can vanish between runs; a missing file would fail the send later.
-        attachments: (draft.attachments ?? []).filter((attachment) =>
-          NodeFs.existsSync(attachment.path),
+        // Paths can vanish between runs; a missing file would fail the send later. A file
+        // already uploaded stays (web: the draft then references the server's copy).
+        attachments: (draft.attachments ?? []).filter(
+          (attachment) => NodeFs.existsSync(attachment.path) || attachment.uploadedAttachmentId !== undefined,
         ),
       };
     }
@@ -610,7 +611,12 @@ export function moveComposerDraftContent(
   updateComposerDraft(toKey, (draft) => ({
     ...draft,
     prompt: source.prompt,
-    attachments: source.attachments,
+    // web moveDraft: a file uploaded to the old machine uploads again at the new one.
+    attachments: source.attachments.map((attachment) => {
+      if (attachment.uploadEnvironmentId === undefined || attachment.uploadEnvironmentId === to.environmentId) return attachment;
+      const { uploadedAttachmentId: _id, uploadEnvironmentId: _environment, ...rest } = attachment;
+      return rest;
+    }),
     reviewComments: source.reviewComments ?? [],
     terminalContexts: source.terminalContexts ?? [],
     threadContexts: source.threadContexts ?? [],

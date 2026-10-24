@@ -119,7 +119,7 @@ export function pruneQuestionAttachmentDrafts(
   const prefix = questionPrefix(environmentId, threadId);
   for (const key of Object.keys(appAtomRegistry.get(composerDraftsAtom))) {
     if (!key.startsWith(prefix) || retainedKeys.has(key)) continue;
-    for (const attachment of readComposerDraft(key).attachments) releaseAttachmentUpload(attachment.id);
+    for (const attachment of readComposerDraft(key).attachments) releaseAttachmentUpload(attachment.id, attachment);
     deleteComposerDraft(key);
   }
 }
