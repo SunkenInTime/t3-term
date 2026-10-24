@@ -315,11 +315,31 @@ export function setThemePreview(preview: ThemePreview | null): void {
   appAtomRegistry.set(themePreviewAtom, preview);
 }
 
+/**
+ * Theme-editor inspection paints some roles in marker colors over the draft
+ * (settings/appearance/themeInspection.ts): a highlighted role, or every role in
+ * its own probe color for one captured frame. The editor panel keeps the plain
+ * draft (previewBasePaletteAtom).
+ */
+export const themePreviewOverlayAtom = Atom.make<Partial<ThemeColors> | null>(null).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("t3term-theme-preview-overlay"),
+);
+
+/** The draft's palette without the inspection overlay, for the editor panel itself. */
+export const previewBasePaletteAtom = Atom.make((get) => {
+  const preview = get(themePreviewAtom);
+  return preview ? paletteFromThemeColors(preview.colors, preview.appearance, THEME_PREVIEW_ID) : null;
+}).pipe(Atom.keepAlive, Atom.withLabel("t3term-preview-base-palette"));
+
 /** The palette App provides through ThemeContext. */
 export const activePaletteAtom = Atom.make((get) => {
   get(customThemesRevisionAtom);
   const preview = get(themePreviewAtom);
-  if (preview) return paletteFromThemeColors(preview.colors, preview.appearance, THEME_PREVIEW_ID);
+  if (preview) {
+    const overlay = get(themePreviewOverlayAtom);
+    return paletteFromThemeColors(overlay ? { ...preview.colors, ...overlay } : preview.colors, preview.appearance, THEME_PREVIEW_ID);
+  }
   return resolvePalette(get(themeStateAtom), get(systemDarkAtom));
 }).pipe(Atom.keepAlive, Atom.withLabel("t3term-active-palette"));
 
