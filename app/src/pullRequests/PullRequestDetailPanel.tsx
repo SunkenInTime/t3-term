@@ -10,14 +10,12 @@ import { useAtomValue } from "@effect/atom-react";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { sourceControlClients, UNKNOWN_SOURCE_CONTROL_CLIENT } from "@t3tools/client-runtime/source-control-clients";
 import {
-  isAtomCommandInterrupted,
   runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
-  ThreadId,
   resolveEnvironmentMachineKind,
   type EnvironmentId,
   type PullRequestAction,
@@ -38,11 +36,9 @@ import { useEffect, useState, type ReactNode } from "react";
 import { copyTextToClipboard } from "../chat/header/osActions.ts";
 import { requestConfirmDialog } from "../dialogs/confirmDialog.ts";
 import { registerShortcutHandler } from "../keybindings/useGlobalKeybindings.ts";
-import { startNewThread } from "../palette/actions.ts";
 import { appAtomRegistry } from "../runtime/runtime.ts";
-import { composerTargetKey, setDraftWorkspace } from "../state/composer.ts";
 import { environmentProjects } from "../state/environment.ts";
-import { gitEnvironment, vcsEnvironment } from "../state/git.ts";
+import { vcsEnvironment } from "../state/git.ts";
 import { activeKeybindingsAtom } from "../state/keybindings.ts";
 import {
   guideRunKey,
@@ -62,7 +58,7 @@ import {
 import { Icon } from "../ui/Icon.tsx";
 import { Tooltip } from "../ui/overlay.tsx";
 import { IconButton, Text } from "../ui/primitives.tsx";
-import { toast, updateToast } from "../ui/toast.tsx";
+import { toast } from "../ui/toast.tsx";
 import { FONTS, LAYOUT, RADIUS, alpha, useTheme } from "../ui/theme.ts";
 import { openExternalUrl } from "../usage/openExternal.ts";
 import { shortcutLabelForCommand } from "../web/keybindings.ts";
@@ -79,7 +75,6 @@ import {
   buildFixFindingsHandoff,
   buildResolveConflictsPrompt,
   canDeletePullRequestBranch,
-  checkoutFailureDescription,
   isPullRequestNotFound,
   isStackedPullRequestBase,
   latestPullRequestReviewOutcomes,
@@ -117,7 +112,12 @@ import {
   PullRequestCopyableCode,
   PullRequestTitleEditor,
 } from "./PullRequestHeaderPieces.tsx";
-import { startPullRequestAsk, writeTaskToComposer, type PullRequestThreadTask } from "./pullRequestHandoffs.ts";
+import {
+  runPullRequestCheckoutHandoff,
+  startPullRequestAsk,
+  writeTaskToComposer,
+  type PullRequestThreadTask,
+} from "./pullRequestHandoffs.ts";
 import { PullRequestChecksPopover } from "./PullRequestList.tsx";
 import { GhostBar, PullRequestsUnavailableState } from "./PullRequestListStates.tsx";
 import {
@@ -135,7 +135,7 @@ import { PullRequestThreadLinks } from "./PullRequestThreadLinks.tsx";
 import { PullRequestSummaryTab } from "./PullRequestSummaryTab.tsx";
 import { PullRequestTimelineTab } from "./PullRequestTimelineTab.tsx";
 import { PullRequestCodeTab } from "./PullRequestCodeTab.tsx";
-import { guardPullRequestWrite, PullRequestDryRunError, runPullRequestWrite } from "./pullRequestWrites.ts";
+import { PullRequestDryRunError, runPullRequestWrite } from "./pullRequestWrites.ts";
 
 const TABS: ReadonlyArray<{ value: PullRequestDetailTab; label: string }> = [
   { value: "summary", label: "Summary" },
@@ -429,13 +429,6 @@ const ACTION_FAILURE_HINTS: Record<PullRequestAction, string> = {
 
 const UPDATE_BRANCH_REBASE_FAILURE_HINT =
   "The host refused it. A rebase stops at the first commit that does not apply cleanly; updating with a merge commit may still work.";
-
-const OFF_HEAD_PULL_REQUEST_CHECKOUT_TOAST = {
-  type: "warning",
-  title: "Checked out, but not confirmed on the latest commit",
-  description:
-    "This checkout could not be confirmed at the pull request's latest commit, so its code may differ. Local commits or uncommitted work keep a checkout where it is.",
-} as const;
 
 export interface PullRequestDetailViewProps {
   environmentId: EnvironmentId;
@@ -760,69 +753,15 @@ export function PullRequestDetailView({
     }
     if (checkoutRoot === null || !canWriteSourceControl || (mode === "worktree" && !canOperateThread)) return;
     setHandoff(kind);
-    const toastId = toast({ type: "loading", title: "Preparing the pull request checkout..." });
-    const projectRef = actingProjectRef(handoffSummary.projectId);
-    // The thread id is chosen before the checkout: a worktree's setup script runs for the thread
-    // it was made for.
-    const threadId = ThreadId.make(globalThis.crypto.randomUUID());
-    const input = {
-      cwd: checkoutRoot,
-      reference: handoffSummary.url,
+    await runPullRequestCheckoutHandoff({
+      environmentId: actingEnvironmentId,
+      projectRef: actingProjectRef(handoffSummary.projectId),
+      checkoutRoot,
+      url: handoffSummary.url,
       mode,
-      ...(mode === "worktree" ? { threadId } : {}),
-    };
-    const prepared = await guardPullRequestWrite(
-      gitEnvironment.preparePullRequestThread.label,
-      { environmentId: actingEnvironmentId, input },
-      () =>
-        runAtomCommand(
-          appAtomRegistry,
-          gitEnvironment.preparePullRequestThread,
-          { environmentId: actingEnvironmentId, input },
-          { reportFailure: false },
-        ),
-    );
+      task,
+    });
     setHandoff(null);
-    if (prepared instanceof PullRequestDryRunError || prepared._tag === "Failure") {
-      updateToast(toastId, {
-        type: "error",
-        title: "Could not prepare the pull request checkout",
-        description:
-          prepared instanceof PullRequestDryRunError
-            ? prepared.message
-            : checkoutFailureDescription(
-                isAtomCommandInterrupted(prepared) ? undefined : squashAtomCommandFailure(prepared),
-              ),
-      });
-      return;
-    }
-    startNewThread(projectRef);
-    const draftKey = composerTargetKey({
-      kind: "draft",
-      environmentId: projectRef.environmentId,
-      projectId: projectRef.projectId,
-    });
-    setDraftWorkspace(draftKey, {
-      envMode: prepared.value.worktreePath === null ? "local" : "worktree",
-      branch: prepared.value.branch,
-      worktreePath: prepared.value.worktreePath,
-    });
-    if (task !== null) writeTaskToComposer(draftKey, task);
-    updateToast(
-      toastId,
-      !prepared.value.isOnPullRequestHead
-        ? OFF_HEAD_PULL_REQUEST_CHECKOUT_TOAST
-        : task !== null
-          ? { type: "success", title: "Checkout ready", description: "The task is in the composer. Read it over, then send." }
-          : {
-              type: "success",
-              title: mode === "local" ? "Checked out here" : "Checked out",
-              description:
-                mode === "local"
-                  ? "This repository is on the pull request's branch, with a thread open on it."
-                  : "The pull request is in its own worktree, with a thread open on it.",
-            },
-    );
   };
   const handoffBase = detail
     ? {
