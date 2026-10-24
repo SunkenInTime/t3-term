@@ -29,10 +29,12 @@ import { AppCoordinators } from "../coordinators/AppCoordinators.tsx";
 import { noteUserInput } from "../notifications/platform.ts";
 import { PerfRegion } from "../dev/PerfRegion.tsx";
 import { AppErrorBoundary, DevCrash } from "./AppErrorBoundary.tsx";
+import { useDismissLayerTracking } from "../ui/dismissLayers.ts";
 
 export function App({ boot }: { boot: Boot }) {
   // "Reload app" on the error screen remounts everything under the boundary.
   const [appKey, setAppKey] = useState(0);
+  useDismissLayerTracking();
   return (
     <RegistryContext.Provider value={appAtomRegistry}>
       <AppThemeProvider>

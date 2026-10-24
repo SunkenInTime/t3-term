@@ -3,6 +3,7 @@
 // SettingsSidebar (the nav App shows in place of the thread sidebar) lives in
 // SettingsSidebarNav.tsx.
 import { useAtomValue } from "@effect/atom-react";
+import { hasOpenDismissLayer } from "../ui/dismissLayers.ts";
 import { useState, type ComponentType, type ReactNode } from "react";
 
 import { setSidebarVisible, sidebarVisibleAtom, type SettingsPage } from "../state/ui.ts";
@@ -99,7 +100,7 @@ function SettingsContentLayout({ page }: { page: SettingsPage }) {
           return;
         }
         // useEscapeToGoBack: Escape leaves settings unless something above consumed it.
-        if (event.key === "escape" && !event.defaultPrevented && !isTextEntryFocused()) {
+        if (event.key === "escape" && !event.defaultPrevented && !isTextEntryFocused() && !hasOpenDismissLayer()) {
           leaveSettings();
         }
       }}
